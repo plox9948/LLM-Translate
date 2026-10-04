@@ -55,18 +55,20 @@ abstract class BaseDownloader {
             }
 
             val totalBytes = bytesDone + (urlConn.contentLengthLong.takeIf { it > 0 } ?: 0L)
-            partFile.outputStream().use { out ->
-                if (bytesDone > 0) {
-                    // Докачка: режим append.
-                    partFile.setLength(partFile.length())
-                }
+            // При докачке открываем файл в режиме append, иначе — с нуля.
+            val out: java.io.OutputStream = if (bytesDone > 0) {
+                java.io.FileOutputStream(partFile, true)
+            } else {
+                partFile.outputStream()
+            }
+            out.use { os ->
                 urlConn.inputStream.buffered().use { input ->
                     val buffer = ByteArray(64 * 1024)
                     var received = 0L
                     while (true) {
                         val read = input.read(buffer)
                         if (read < 0) break
-                        out.write(buffer, 0, read)
+                        os.write(buffer, 0, read)
                         received += read
                         if (totalBytes > 0) {
                             val percent = ((bytesDone + received) * 100 / totalBytes).toInt()

@@ -47,10 +47,17 @@ class ModelDownloadWorker @Inject constructor(
 
         Timber.d("Запуск скачивания $modelId из ${urls.size} URL")
 
+        // Троттлинг записи в Room: пишем только при изменении процента.
+        var lastSavedPercent = -1
         val result = installer.install(urls, sha256, modelsDir, modelId) { progress ->
             setProgress(workDataOf(KEY_PROGRESS to progress))
-            model?.let {
-                repository.upsert(it.copy(status = ModelStatus.DOWNLOADING, progress = progress))
+            if (progress != lastSavedPercent) {
+                lastSavedPercent = progress
+                model?.let {
+                    repository.upsert(
+                        it.copy(status = ModelStatus.DOWNLOADING, progress = progress)
+                    )
+                }
             }
         }
 
@@ -72,7 +79,7 @@ class ModelDownloadWorker @Inject constructor(
                 if (result.message.contains("SHA-256")) {
                     // Повторная попытка не поможет — файл повреждён на сервере.
                     model?.let { repository.upsert(it.copy(status = ModelStatus.ERROR)) }
-                    Result.failure(workDataOf(KEY_ERROR to result.message))
+                    return Result.failure(workDataOf(KEY_ERROR to result.message))
                 }
                 // Сетевая ошибка — повторяем (докачка продолжит с места обрыва).
                 model?.let { repository.upsert(it.copy(status = ModelStatus.DOWNLOADING)) }

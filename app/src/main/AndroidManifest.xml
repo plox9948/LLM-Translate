@@ -11,6 +11,13 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Видимость TTS-движков (RHVoice/eSpeak) для TextToSpeech.getInstalledEngines на Android 11+. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".OfflineTranslatorApp"
         android:allowBackup="true"

@@ -58,7 +58,7 @@ class InstallCheckLogicTest {
         val device = goodDevice.copy(freeDiskBytes = 100L * 1024 * 1024)
         val result = InstallCheckLogic.evaluate(card(sizeBytes = 500L * 1024 * 1024), device)
         assertTrue(result is InstallCheck.Warning)
-        assertTrue((result as InstallCheck.Warning).message.contains("Место"))
+        assertTrue((result as InstallCheck.Warning).message.contains("Мало места"))
     }
 
     @Test

@@ -125,6 +125,15 @@ class ModelManagerImpl @Inject constructor(
 
     override fun cancelDownload(modelId: String) {
         ModelDownloadWorker.cancel(context, modelId)
+        scope.launch {
+            val model = repository.getById(modelId) ?: return@launch
+            if (model.status != ModelStatus.READY) {
+                // Незавершённую запись удаляем, чтобы UI снова показал «Скачать».
+                // Файл .part остаётся на диске — при повторном скачивании
+                // докачка продолжится по Range.
+                repository.deleteById(modelId)
+            }
+        }
     }
 
     override suspend fun importFromUri(uri: Uri): String? =
@@ -202,6 +211,8 @@ class ModelManagerImpl @Inject constructor(
         }
 
     override fun delete(modelId: String) {
+        // Отменяем возможную загрузку, чтобы воркер не воскресил удалённую запись.
+        ModelDownloadWorker.cancel(context, modelId)
         scope.launch {
             val model = repository.getById(modelId) ?: return@launch
             val path = model.filePath
@@ -214,7 +225,7 @@ class ModelManagerImpl @Inject constructor(
             if (preferences.getActiveModelId(model.category) == modelId) {
                 val fallback = repository.getFirstReady(model.category)
                 if (fallback != null) {
-                    Timber.d("Переключаемся на $fallback.id (категория ${model.category})")
+                    Timber.d("Переключаемся на ${fallback.id} (категория ${model.category})")
                 } else {
                     Timber.d("Нет доступных моделей категории ${model.category}")
                 }

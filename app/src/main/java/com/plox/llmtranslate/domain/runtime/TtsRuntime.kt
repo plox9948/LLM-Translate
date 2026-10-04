@@ -14,9 +14,10 @@ import javax.inject.Singleton
 import kotlin.coroutines.resume
 
 /**
- * Рантайм TTS на системном Android TextToSpeech.
- * Fallback на RHVoice/eSpeak NG выполняется через системный TTS:
- * если установлен альтернативный движок — Android сам его использует.
+ * Рантайм TTS на Android TextToSpeech с выбором движка.
+ * Поддерживаются значения движка: "system" (движок по умолчанию),
+ * "rhvoice" (RHVoice), "espeak" (eSpeak NG). При недоступности
+ * выбранного движка выполняется откат на системный по умолчанию.
  */
 @Singleton
 class TtsRuntime @Inject constructor(
@@ -25,33 +26,75 @@ class TtsRuntime @Inject constructor(
 
     private var tts: TextToSpeech? = null
     private var ready = false
+    private var lastEngine: String? = null
 
     /**
-     * Инициализировать системный TTS.
+     * Инициализировать TTS указанным движком.
+     * Повторный вызов с тем же движком при готовности — no-op.
+     * @param engine "system" | "rhvoice" | "espeak" (настройка ttsEngine).
      * @return null при успехе или [RuntimeError].
      */
-    suspend fun init(): RuntimeError? = suspendCancellableCoroutine { cont ->
-        if (tts != null && ready) {
-            cont.resume(null)
-            return@suspendCancellableCoroutine
-        }
-        try {
-            tts = TextToSpeech(context.applicationContext) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    ready = true
-                    if (cont.isActive) cont.resume(null)
-                } else {
-                    Timber.e("TTS инициализация: статус $status")
-                    if (cont.isActive) {
-                        cont.resume(RuntimeError.LoadFailed("tts", "Системный TTS недоступен"))
-                    }
+    suspend fun init(engine: String): RuntimeError? {
+        if (engine == lastEngine && tts != null && ready) return null
+        // Смена движка (или повтор после сбоя) — освобождаем старый экземпляр.
+        release()
+        lastEngine = engine
+        val enginePackage = resolveEnginePackage(engine)
+        return suspendCancellableCoroutine { cont ->
+            try {
+                tts = TextToSpeech(
+                    context.applicationContext,
+                    { status ->
+                        if (status == TextToSpeech.SUCCESS) {
+                            ready = true
+                            if (cont.isActive) cont.resume(null)
+                        } else {
+                            Timber.e("TTS инициализация: статус $status")
+                            if (cont.isActive) {
+                                cont.resume(
+                                    RuntimeError.LoadFailed("tts", "Системный TTS недоступен")
+                                )
+                            }
+                        }
+                    },
+                    enginePackage ?: TextToSpeech.ENGINE_DEFAULT
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "Ошибка инициализации TTS")
+                if (cont.isActive) {
+                    cont.resume(RuntimeError.LoadFailed("tts", e.message ?: "Неизвестная ошибка"))
                 }
             }
-        } catch (e: Exception) {
-            Timber.e(e, "Ошибка инициализации TTS")
-            if (cont.isActive) {
-                cont.resume(RuntimeError.LoadFailed("tts", e.message ?: "Неизвестная ошибка"))
+        }
+    }
+
+    /**
+     * Найти пакет движка по настройке. Для "system" или при отсутствии
+     * движка (Android < 11, не установлен) возвращает null — движок по умолчанию.
+     */
+    private fun resolveEnginePackage(engine: String): String? {
+        if (engine != "rhvoice" && engine != "espeak") return null
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
+            Timber.w("Выбор TTS-движка доступен с Android 11+, используем движок по умолчанию")
+            return null
+        }
+        val needle = engine.lowercase() // "rhvoice"/"espeak" матчатся по пакету и метке.
+        return try {
+            val match = TextToSpeech.getInstalledEngines(context.applicationContext)
+                .firstOrNull { info ->
+                    info.name.lowercase().contains(needle) ||
+                        info.label?.lowercase().orEmpty().contains(needle)
+                }
+            if (match == null) {
+                Timber.w("TTS-движок '$engine' не найден, откат на движок по умолчанию")
+                null
+            } else {
+                Timber.d("TTS-движок '$engine': пакет ${match.name}")
+                match.name
             }
+        } catch (e: Exception) {
+            Timber.w(e, "Не удалось получить список TTS-движков, откат на движок по умолчанию")
+            null
         }
     }
 
@@ -73,6 +116,14 @@ class TtsRuntime @Inject constructor(
         val engine = tts
             ?: return RuntimeError.LoadFailed("tts", "TTS не инициализирован")
         if (!ready) return RuntimeError.LoadFailed("tts", "TTS не готов")
+
+        // Язык озвучиваемого текста должен быть установлен в движке.
+        val langResult = engine.setLanguage(Locale(lang))
+        if (langResult == TextToSpeech.LANG_MISSING_DATA ||
+            langResult == TextToSpeech.LANG_NOT_SUPPORTED
+        ) {
+            return RuntimeError.InferenceFailed("tts", "Язык не поддерживается: $lang")
+        }
 
         val utteranceId = UUID.randomUUID().toString()
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -107,5 +158,6 @@ class TtsRuntime @Inject constructor(
         tts?.shutdown()
         tts = null
         ready = false
+        lastEngine = null
     }
 }

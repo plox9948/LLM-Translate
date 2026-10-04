@@ -24,7 +24,9 @@ class NllbTokenizer @Inject constructor(
 
     private var vocab: Map<String, Int> = emptyMap()
     private var invVocab: Map<Int, String> = emptyMap()
-    private var merges: List<Pair<String, String>> = emptyList()
+
+    // Ранг слияния по паре pieces: поиск O(1) вместо линейного по ~514k записей.
+    private var mergeRanks: Map<Pair<String, String>, Int> = emptyMap()
     private var loaded = false
 
     // Специальные токены NLLB.
@@ -125,10 +127,8 @@ class NllbTokenizer @Inject constructor(
         return current
     }
 
-    private fun mergeRank(piece1: String, piece2: String): Int {
-        val idx = merges.indexOfFirst { it.first == piece1 && it.second == piece2 }
-        return if (idx == -1) -1 else idx
-    }
+    private fun mergeRank(piece1: String, piece2: String): Int =
+        mergeRanks[piece1 to piece2] ?: -1
 
     /**
      * Обработка спецсимволов SentencePiece (▁ -> пробел).
@@ -158,17 +158,18 @@ class NllbTokenizer @Inject constructor(
     }
 
     private fun loadMerges() {
-        val list = ArrayList<Pair<String, String>>()
+        // Ранг = позиция первой строки слияния в файле (как в прежнем списке).
+        val ranks = HashMap<Pair<String, String>, Int>()
         context.assets.open("nllb_merges.txt").bufferedReader().use { reader ->
             var line = reader.readLine()
             while (line != null) {
                 val parts = line.trim().split(Regex("\\s+"))
                 if (parts.size >= 3) {
-                    list.add(parts[1] to parts[2])
+                    ranks.putIfAbsent(parts[1] to parts[2], ranks.size)
                 }
                 line = reader.readLine()
             }
         }
-        merges = list
+        mergeRanks = ranks
     }
 }

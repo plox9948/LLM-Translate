@@ -108,6 +108,10 @@ class ModelsViewModel @Inject constructor(
         }
     }
 
+    /** Причина последней блокировки установки (баннер в UI). */
+    private val _blockedReason = MutableStateFlow<String?>(null)
+    val blockedReason: StateFlow<String?> = _blockedReason
+
     /** Проверка возможности установки. */
     fun checkInstall(card: ModelCard, deviceInfo: DeviceInfo): InstallCheck =
         modelManager.checkInstall(card, deviceInfo)
@@ -117,7 +121,8 @@ class ModelsViewModel @Inject constructor(
         val device = _deviceInfo.value ?: return
         when (val check = modelManager.checkInstall(card, device)) {
             is InstallCheck.Blocked -> {
-                // Блокировка: показываем причину через snackbar в UI.
+                // Блокировка: причина показывается баннером на экране.
+                _blockedReason.value = check.reason
             }
             else -> {
                 if (card.requiresLicenseConfirmation) {
@@ -234,6 +239,11 @@ class ModelsViewModel @Inject constructor(
 
     fun clearStatusMessage() {
         uiState.value = uiState.value.copy(statusMessage = null)
+    }
+
+    /** Скрыть баннер причины блокировки установки. */
+    fun clearBlockedReason() {
+        _blockedReason.value = null
     }
 
     /**

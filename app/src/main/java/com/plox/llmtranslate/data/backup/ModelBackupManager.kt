@@ -146,8 +146,16 @@ class ModelBackupManager @Inject constructor(
                             name.startsWith(MODELS_PREFIX) -> {
                                 // Сохраняем файл во временный каталог.
                                 val outFile = File(tempDir, name)
-                                outFile.parentFile?.mkdirs()
-                                outFile.outputStream().use { zip.transferTo(it) }
+                                // Защита от zip-slip: файл не должен выходить
+                                // за пределы временного каталога.
+                                val canonicalTemp = tempDir.canonicalPath
+                                val canonicalOut = outFile.canonicalPath
+                                if (!canonicalOut.startsWith(canonicalTemp + File.separator)) {
+                                    Timber.w("ZIP-запись вне каталога, пропущена: $name")
+                                } else {
+                                    outFile.parentFile?.mkdirs()
+                                    outFile.outputStream().use { zip.transferTo(it) }
+                                }
                             }
                         }
                         zip.closeEntry()
@@ -161,7 +169,13 @@ class ModelBackupManager @Inject constructor(
 
             // Создаём записи моделей.
             manifestData.models.forEach { entry ->
+                // Путь из манифеста может выйти за пределы каталога моделей.
                 val targetPath = resolveTargetPath(entry)
+                if (targetPath == null) {
+                    Timber.w("Некорректный путь модели в архиве: ${entry.relativePath}")
+                    skipped++
+                    return@forEach
+                }
                 val tempPath = MODELS_PREFIX + entry.relativePath
                 val tempFile = File(tempDir, tempPath)
 
@@ -302,11 +316,27 @@ class ModelBackupManager @Inject constructor(
 
     /**
      * Целевой путь модели при импорте.
+     * @return абсолютный путь внутри каталога моделей или null,
+     *   если путь из манифеста выходит за его пределы (zip-slip).
      */
-    private fun resolveTargetPath(entry: BackupModelEntry): String {
-        val modelsRoot = context.getExternalFilesDir("models")!!
+    private fun resolveTargetPath(entry: BackupModelEntry): String? {
+        val modelsRoot = context.getExternalFilesDir("models") ?: return null
         val relative = entry.relativePath.removePrefix(MODELS_PREFIX)
-        return File(modelsRoot, relative).absolutePath
+        val target = File(modelsRoot, relative)
+        return try {
+            val rootCanonical = modelsRoot.canonicalPath
+            val targetCanonical = target.canonicalPath
+            if (targetCanonical == rootCanonical ||
+                targetCanonical.startsWith(rootCanonical + File.separator)
+            ) {
+                target.absolutePath
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Не удалось канонализировать путь: ${target.absolutePath}")
+            null
+        }
     }
 
     /**

@@ -85,7 +85,8 @@ fun TranslateScreen(
         Row(verticalAlignment = Alignment.CenterVertically) {
             LanguageChip(
                 selected = state.sourceLang,
-                onSelect = viewModel::onSourceLangChange
+                onSelect = viewModel::onSourceLangChange,
+                allowAuto = true
             )
             IconButton(
                 onClick = {
@@ -228,10 +229,15 @@ fun TranslateScreen(
     }
 }
 
+/**
+ * Чип выбора языка.
+ * @param allowAuto разрешать ли выбор автоопределения (только для исходного языка).
+ */
 @Composable
 private fun LanguageChip(
     selected: TranslateLanguage,
-    onSelect: (TranslateLanguage) -> Unit
+    onSelect: (TranslateLanguage) -> Unit,
+    allowAuto: Boolean = false
 ) {
     // Простой выбор языка через чипы.
     var expanded by remember { mutableStateOf(false) }
@@ -247,7 +253,10 @@ private fun LanguageChip(
             title = { Text("Выберите язык") },
             text = {
                 Column {
-                    TranslateLanguage.entries.forEach { lang ->
+                    // Для целевого языка автоопределение недоступно.
+                    TranslateLanguage.entries
+                        .filter { allowAuto || it != TranslateLanguage.AUTO }
+                        .forEach { lang ->
                         TextButton(
                             onClick = {
                                 onSelect(lang)

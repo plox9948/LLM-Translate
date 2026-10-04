@@ -138,8 +138,8 @@ class ModelCatalogParserTest {
         assertEquals(26, card.minAndroidSdk)
     }
 
-    @Test(expected = IllegalStateException::class)
-    fun `throws on unknown category`() {
+    @Test
+    fun `skips model with unknown category`() {
         val json = """
             {
               "version": 1,
@@ -150,15 +150,24 @@ class ModelCatalogParserTest {
                   "displayName": "X",
                   "runtime": "GGUF",
                   "sizeBytes": 1
+                },
+                {
+                  "id": "ok",
+                  "category": "TRANSLATION",
+                  "displayName": "OK",
+                  "runtime": "GGUF",
+                  "sizeBytes": 2
                 }
               ]
             }
         """.trimIndent()
-        parser.parse(json)
+        val cards = parser.parse(json)
+        assertEquals(1, cards.size)
+        assertEquals("ok", cards[0].id)
     }
 
-    @Test(expected = IllegalStateException::class)
-    fun `throws on unknown runtime`() {
+    @Test
+    fun `skips model with unknown runtime`() {
         val json = """
             {
               "version": 1,
@@ -169,11 +178,20 @@ class ModelCatalogParserTest {
                   "displayName": "X",
                   "runtime": "UNKNOWN",
                   "sizeBytes": 1
+                },
+                {
+                  "id": "ok",
+                  "category": "STT",
+                  "displayName": "OK",
+                  "runtime": "VOSK",
+                  "sizeBytes": 2
                 }
               ]
             }
         """.trimIndent()
-        parser.parse(json)
+        val cards = parser.parse(json)
+        assertEquals(1, cards.size)
+        assertEquals("ok", cards[0].id)
     }
 
     @Test(expected = Exception::class)

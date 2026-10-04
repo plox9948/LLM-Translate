@@ -2,6 +2,7 @@ package com.plox.llmtranslate.ui.translate
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.LanguageDetector
 import com.plox.llmtranslate.domain.model.ModelCategory
@@ -50,7 +51,8 @@ class TranslateViewModel @Inject constructor(
     private val modelManager: ModelManager,
     private val runtimeRouter: RuntimeRouter,
     private val ttsRuntime: TtsRuntime,
-    private val audioRecorder: AudioRecorder
+    private val audioRecorder: AudioRecorder,
+    private val preferences: ModelPreferences
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TranslateUiState())
@@ -70,7 +72,10 @@ class TranslateViewModel @Inject constructor(
                 }
         }
         viewModelScope.launch {
-            ttsRuntime.init()
+            // Инициализация TTS текущим движком и переконфигурация при смене настройки.
+            preferences.ttsEngine.collect { engine ->
+                ttsRuntime.init(engine)
+            }
         }
     }
 

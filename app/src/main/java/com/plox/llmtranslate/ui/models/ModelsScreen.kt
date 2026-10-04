@@ -64,6 +64,7 @@ fun ModelsScreen(
     val uiState by viewModel.uiState.collectAsState()
     val deviceInfo by viewModel.deviceInfo.collectAsState()
     val licenseModel by viewModel.licenseConfirmModel.collectAsState()
+    val blockedReason by viewModel.blockedReason.collectAsState()
 
     // SAF: импорт своего GGUF.
     val importLauncher = rememberLauncherForActivityResult(
@@ -125,6 +126,24 @@ fun ModelsScreen(
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(8.dp))
+
+            // Баннер причины блокировки установки (тап — скрыть).
+            blockedReason?.let { reason ->
+                Surface(
+                    onClick = { viewModel.clearBlockedReason() },
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = reason,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             // Баннер предупреждения об ОЗУ.
             if (ramWarning != null) {

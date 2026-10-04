@@ -79,26 +79,31 @@ class VoskSttRuntime @Inject constructor() : SttEngine {
                 }
 
                 val recognizer = KaldiRecognizer(loadedModel, SAMPLE_RATE)
-                recognizer.setWords(true)
+                try {
+                    recognizer.setWords(true)
 
-                // Кормим PCM чанками по 4096 байт.
-                val chunkSize = 4096
-                var offset = 0
-                while (offset < pcm.size) {
-                    val len = minOf(chunkSize, pcm.size - offset)
-                    recognizer.WaveForm(pcm, offset, len)
-                    offset += len
-                }
+                    // Кормим PCM чанками по 4096 байт.
+                    val chunkSize = 4096
+                    var offset = 0
+                    while (offset < pcm.size) {
+                        val len = minOf(chunkSize, pcm.size - offset)
+                        recognizer.WaveForm(pcm, offset, len)
+                        offset += len
+                    }
 
-                val resultJson = recognizer.FinalResult()
-                val text = JSONObject(resultJson).optString("text", "").trim()
+                    val resultJson = recognizer.FinalResult()
+                    val text = JSONObject(resultJson).optString("text", "").trim()
 
-                if (text.isEmpty()) {
-                    Result.failure(
-                        RuntimeError.InferenceFailed("vosk", "Распознавание не выполнено")
-                    )
-                } else {
-                    Result.success(text)
+                    if (text.isEmpty()) {
+                        Result.failure(
+                            RuntimeError.InferenceFailed("vosk", "Распознавание не выполнено")
+                        )
+                    } else {
+                        Result.success(text)
+                    }
+                } finally {
+                    // Нативные ресурсы распознавателя освобождаем всегда.
+                    recognizer.close()
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка распознавания Vosk")
