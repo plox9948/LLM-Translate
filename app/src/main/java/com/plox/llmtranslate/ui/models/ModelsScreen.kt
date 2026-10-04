@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FileExport
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Star
@@ -37,6 +38,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -73,10 +75,15 @@ fun ModelsScreen(
 
     // SAF: экспорт модели на другое устройство.
     val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/octet-stream")
+        ActivityResultContracts.CreateDocument("*/*")
     ) { uri ->
-        if (uri != null) {
-            // Передача данных через ContentResolver выполняется в ViewModel/репозитории.
+        viewModel.onExportResult(uri)
+    }
+
+    // Запуск экспорта при появлении запроса.
+    LaunchedEffect(uiState.exportRequest) {
+        uiState.exportRequest?.let { request ->
+            exportLauncher.launch(request.fileName)
         }
     }
 
@@ -133,7 +140,8 @@ fun ModelsScreen(
                     onDownload = { viewModel.onDownloadClick(card) },
                     onDelete = { installedModel?.let { viewModel.onDeleteClick(it) } },
                     onActive = { installedModel?.let { viewModel.onActiveClick(it) } },
-                    onCancel = { installedModel?.let { viewModel.onCancelDownload(it) } }
+                    onCancel = { installedModel?.let { viewModel.onCancelDownload(it) } },
+                    onExport = { installedModel?.let { viewModel.onExportClick(it) } }
                 )
             }
         }
@@ -192,7 +200,8 @@ private fun ModelCardItem(
     onDownload: () -> Unit,
     onDelete: () -> Unit,
     onActive: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onExport: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -325,6 +334,12 @@ private fun ModelCardItem(
                     else -> {
                         Button(onClick = onActive, modifier = Modifier.weight(1f)) {
                             Text("Выбрать")
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Filled.FileExport, contentDescription = null)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Экспорт")
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                         OutlinedButton(onClick = onDelete, modifier = Modifier.weight(1f)) {

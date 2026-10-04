@@ -2,9 +2,7 @@ package com.plox.llmtranslate.domain
 
 import android.content.Context
 import android.net.Uri
-import android.os.Environment
 import android.os.StatFs
-import androidx.core.content.FileProvider
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
 import com.plox.llmtranslate.data.download.ModelDownloadWorker
 import com.plox.llmtranslate.data.model.ModelRepository
@@ -107,6 +105,7 @@ class ModelManagerImpl @Inject constructor(
             quality = card.quality,
             speed = card.speed,
             url = card.url,
+            urls = card.urls,
             sha256 = card.sha256,
             license = card.license,
             minAndroidSdk = card.minAndroidSdk,
@@ -165,21 +164,40 @@ class ModelManagerImpl @Inject constructor(
         }
     }
 
-    override suspend fun exportUri(modelId: String): Uri? {
-        val model = repository.getById(modelId) ?: return null
-        val file = model.filePath?.let(::File) ?: return null
-        if (!file.exists()) return null
-        return try {
-            FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file
-            )
-        } catch (e: Exception) {
-            Timber.e(e, "Ошибка формирования Uri экспорта")
-            null
+    override suspend fun exportToUri(modelId: String, targetUri: Uri): Boolean =
+        withContext(Dispatchers.IO) {
+            val model = repository.getById(modelId) ?: return@withContext false
+            val source = model.filePath?.let(::File) ?: return@withContext false
+            if (!source.exists()) {
+                Timber.w("Файл модели $modelId не найден: ${source.path}")
+                return@withContext false
+            }
+            try {
+                val output = context.contentResolver.openOutputStream(targetUri)
+                    ?: return@withContext false
+                output.use { out ->
+                    if (source.isDirectory) {
+                        // Каталог модели упаковываем в zip потоково.
+                        java.util.zip.ZipOutputStream(out.buffered()).use { zip ->
+                            source.walkTopDown().filter { it.isFile }.forEach { f ->
+                                zip.putNextEntry(
+                                    java.util.zip.ZipEntry(f.relativeTo(source).path)
+                                )
+                                f.inputStream().buffered().use { it.copyTo(zip) }
+                                zip.closeEntry()
+                            }
+                        }
+                    } else {
+                        source.inputStream().buffered().use { it.copyTo(out) }
+                    }
+                }
+                Timber.d("Модель $modelId экспортирована")
+                true
+            } catch (e: Exception) {
+                Timber.e(e, "Ошибка экспорта модели $modelId")
+                false
+            }
         }
-    }
 
     override fun delete(modelId: String) {
         scope.launch {
@@ -190,9 +208,15 @@ class ModelManagerImpl @Inject constructor(
                 if (file.isDirectory) file.deleteRecursively() else file.delete()
             }
             repository.deleteById(modelId)
-            // Если удалена активная модель — сбрасываем выбор.
+            // Если удалена активная модель — переключаемся на первую доступную.
             if (preferences.getActiveModelId(model.category) == modelId) {
-                preferences.setActiveModelId(model.category, null)
+                val fallback = repository.getFirstReady(model.category)
+                if (fallback != null) {
+                    Timber.d("Переключаемся на $fallback.id (категория ${model.category})")
+                } else {
+                    Timber.d("Нет доступных моделей категории ${model.category}")
+                }
+                preferences.setActiveModelId(model.category, fallback?.id)
             }
             Timber.d("Модель $modelId удалена")
         }

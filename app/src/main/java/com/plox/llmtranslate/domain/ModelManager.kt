@@ -48,8 +48,12 @@ interface ModelManager {
      */
     suspend fun importFromUri(uri: android.net.Uri): String?
 
-    /** Экспорт модели через SAF: возвращает Uri для передачи пользователю. */
-    suspend fun exportUri(modelId: String): android.net.Uri?
+    /**
+     * Экспортировать модель в SAF-uri, выбранный пользователем.
+     * Файл копируется напрямую; каталог (Vosk, мультифайл ONNX) — в zip.
+     * @return true при успехе.
+     */
+    suspend fun exportToUri(modelId: String, targetUri: android.net.Uri): Boolean
 
     /** Удалить модель (файл + запись). */
     fun delete(modelId: String)

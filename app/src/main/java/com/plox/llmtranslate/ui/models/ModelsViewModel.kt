@@ -18,6 +18,14 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
+ * Запрос экспорта модели через SAF.
+ */
+data class ExportRequest(
+    val modelId: String,
+    val fileName: String
+)
+
+/**
  * Состояние UI экрана «Модели».
  */
 data class ModelsUiState(
@@ -26,7 +34,8 @@ data class ModelsUiState(
     val activeIds: Map<ModelCategory, String?> = emptyMap(),
     val diskUsage: DiskUsage? = null,
     val deviceInfo: DeviceInfo? = null,
-    val licenseConfirmModel: ModelCard? = null
+    val licenseConfirmModel: ModelCard? = null,
+    val exportRequest: ExportRequest? = null
 )
 
 /**
@@ -126,6 +135,30 @@ class ModelsViewModel @Inject constructor(
     fun onImportResult(uri: android.net.Uri) {
         viewModelScope.launch {
             modelManager.importFromUri(uri)
+        }
+    }
+
+    /**
+     * Подготовить запрос экспорта модели (UI запустит SAF-лаунчер).
+     */
+    fun onExportClick(model: InstalledModel) {
+        if (!model.isReady || model.filePath.isNullOrBlank()) return
+        val ext = model.filePath!!.substringAfterLast('.', "").lowercase()
+        val finalExt = if (ext in listOf("gguf", "onnx", "zip")) ext else "gguf"
+        uiState.value = uiState.value.copy(
+            exportRequest = ExportRequest(model.id, "${model.displayName}.$finalExt")
+        )
+    }
+
+    /**
+     * Завершить экспорт: скопировать модель в выбранный SAF-uri.
+     */
+    fun onExportResult(uri: android.net.Uri?) {
+        val request = uiState.value.exportRequest
+        uiState.value = uiState.value.copy(exportRequest = null)
+        if (uri == null || request == null) return
+        viewModelScope.launch {
+            modelManager.exportToUri(request.modelId, uri)
         }
     }
 
