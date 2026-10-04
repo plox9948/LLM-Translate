@@ -58,6 +58,19 @@ class ModelCatalogParser(
         val dto = json.decodeFromString(ModelCatalogDto.serializer(), raw)
         return dto.models.map { it.toCard() }
     }
+
+    /**
+     * Извлечь версию каталога из JSON.
+     * @return версия или 0 при ошибке.
+     */
+    fun parseVersion(raw: String): Int {
+        return try {
+            val dto = json.decodeFromString(ModelCatalogDto.serializer(), raw)
+            dto.version
+        } catch (e: Exception) {
+            0
+        }
+    }
 }
 
 private fun CatalogModelDto.toCard(): ModelCard {

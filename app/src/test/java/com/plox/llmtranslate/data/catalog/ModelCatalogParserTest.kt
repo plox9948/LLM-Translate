@@ -180,4 +180,20 @@ class ModelCatalogParserTest {
     fun `throws on invalid json`() {
         parser.parse("{ invalid json")
     }
+
+    @Test
+    fun `parses catalog version`() {
+        val json = """
+            {
+              "version": 5,
+              "models": []
+            }
+        """.trimIndent()
+        assertEquals(5, parser.parseVersion(json))
+    }
+
+    @Test
+    fun `returns 0 for invalid version json`() {
+        assertEquals(0, parser.parseVersion("{ invalid"))
+    }
 }
