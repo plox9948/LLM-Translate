@@ -70,6 +70,7 @@ class ModelManagerTest {
         quality = 4,
         speed = 4,
         url = "",
+        urls = emptyList(),
         sha256 = null,
         license = "Apache-2.0",
         minAndroidSdk = 26,
@@ -108,10 +109,25 @@ class ModelManagerTest {
     }
 
     @Test
-    fun `delete resets active id when deleting active model`() = runTest {
+    fun `delete switches to first ready model when deleting active model`() = runTest {
+        val deleted = readyModel("m1", ModelCategory.STT)
+        val fallback = readyModel("m2", ModelCategory.STT)
+        coEvery { repository.getById("m1") } returns deleted
+        coEvery { preferences.getActiveModelId(ModelCategory.STT) } returns "m1"
+        coEvery { repository.getFirstReady(ModelCategory.STT) } returns fallback
+
+        manager.delete("m1")
+
+        coVerify { repository.deleteById("m1") }
+        coVerify { preferences.setActiveModelId(ModelCategory.STT, "m2") }
+    }
+
+    @Test
+    fun `delete resets active id when no fallback model exists`() = runTest {
         val model = readyModel("m1", ModelCategory.STT)
         coEvery { repository.getById("m1") } returns model
         coEvery { preferences.getActiveModelId(ModelCategory.STT) } returns "m1"
+        coEvery { repository.getFirstReady(ModelCategory.STT) } returns null
 
         manager.delete("m1")
 

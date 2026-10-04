@@ -33,6 +33,7 @@ class InstallCheckLogicTest {
         quality = 4,
         speed = 4,
         url = "",
+        urls = emptyList(),
         sha256 = null,
         license = "Apache-2.0",
         minAndroidSdk = minAndroidSdk,
