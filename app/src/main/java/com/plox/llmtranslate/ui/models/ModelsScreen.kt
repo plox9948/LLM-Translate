@@ -87,6 +87,9 @@ fun ModelsScreen(
         }
     }
 
+    // Предупреждение о нехватке ОЗУ при одновременной активации LLM и STT.
+    val ramWarning = viewModel.checkRamWarning()
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)
@@ -98,6 +101,23 @@ fun ModelsScreen(
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(8.dp))
+
+            // Баннер предупреждения об ОЗУ.
+            if (ramWarning != null) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = ramWarning,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
             OutlinedButton(
                 onClick = {
                     importLauncher.launch(

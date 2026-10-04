@@ -87,11 +87,22 @@ fun TranslateScreen(
                 selected = state.sourceLang,
                 onSelect = viewModel::onSourceLangChange
             )
-            IconButton(onClick = {
-                viewModel.onSourceLangChange(state.targetLang)
-                viewModel.onTargetLangChange(state.sourceLang)
-            }) {
-                Icon(Icons.Filled.SwapHoriz, contentDescription = "Поменять языки")
+            IconButton(
+                onClick = {
+                    viewModel.onSourceLangChange(state.targetLang)
+                    viewModel.onTargetLangChange(state.sourceLang)
+                },
+                enabled = state.sourceLang != TranslateLanguage.AUTO
+            ) {
+                Icon(
+                    Icons.Filled.SwapHoriz,
+                    contentDescription = "Поменять языки",
+                    tint = if (state.sourceLang != TranslateLanguage.AUTO) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
             }
             LanguageChip(
                 selected = state.targetLang,

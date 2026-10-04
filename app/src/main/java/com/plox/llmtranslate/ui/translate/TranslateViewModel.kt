@@ -3,6 +3,7 @@ package com.plox.llmtranslate.ui.translate
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.domain.ModelManager
+import com.plox.llmtranslate.domain.model.LanguageDetector
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
@@ -20,6 +21,7 @@ import javax.inject.Inject
  * Поддерживаемые языки перевода.
  */
 enum class TranslateLanguage(val code: String, val title: String) {
+    AUTO("auto", "Авто"),
     RU("ru", "Русский"),
     EN("en", "English"),
     NE("ne", "नेपाली")
@@ -92,7 +94,14 @@ class TranslateViewModel @Inject constructor(
     fun translate() {
         val state = _uiState.value
         if (state.inputText.isBlank() || state.isTranslating) return
-        if (state.sourceLang == state.targetLang) {
+
+        // Определяем исходный язык (авто или явный).
+        val sourceLang = resolveSourceLanguage(state)
+        if (sourceLang == null) {
+            update { it.copy(error = "Не удалось определить язык. Выберите его вручную.") }
+            return
+        }
+        if (sourceLang == state.targetLang) {
             update { it.copy(error = "Выберите разные языки") }
             return
         }
@@ -120,7 +129,7 @@ class TranslateViewModel @Inject constructor(
 
             llmRuntime.translate(
                 text = state.inputText,
-                from = state.sourceLang.title,
+                from = sourceLang.title,
                 to = state.targetLang.title
             ).fold(
                 onSuccess = { translation ->
@@ -239,6 +248,18 @@ class TranslateViewModel @Inject constructor(
 
     fun clearError() {
         update { it.copy(error = null) }
+    }
+
+    /**
+     * Определить исходный язык: автоопределение или явный выбор.
+     * @return язык или null, если автоопределение не удалось.
+     */
+    private fun resolveSourceLanguage(state: TranslateUiState): TranslateLanguage? {
+        if (state.sourceLang != TranslateLanguage.AUTO) {
+            return state.sourceLang
+        }
+        val detected = LanguageDetector.detect(state.inputText)
+        return TranslateLanguage.entries.firstOrNull { it.code == detected }
     }
 
     private fun update(transform: (TranslateUiState) -> TranslateUiState) {
