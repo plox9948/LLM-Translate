@@ -61,8 +61,6 @@ fun TranslateScreen(
         if (granted) {
             viewModel.startRecording()
         } else {
-            viewModel.clearError()
-            // Отображаем ошибку через состояние.
             viewModel.onPermissionDenied()
         }
     }
