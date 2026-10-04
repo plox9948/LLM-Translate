@@ -10,11 +10,8 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.domain.model.InstalledModel
-import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -34,7 +31,7 @@ class ModelDownloadWorker @Inject constructor(
 
     override suspend fun doWork(): Result {
         val modelId = inputData.getString(KEY_MODEL_ID) ?: return Result.failure()
-        val url = inputData.getString(KEY_URL) ?: return Result.failure()
+        val urlsCsv = inputData.getString(KEY_URLS) ?: return Result.failure()
         val sha256 = inputData.getString(KEY_SHA256)
         val runtimeName = inputData.getString(KEY_RUNTIME) ?: return Result.failure()
         val sizeBytes = inputData.getLong(KEY_SIZE_BYTES, 0L)
@@ -46,10 +43,11 @@ class ModelDownloadWorker @Inject constructor(
 
         val modelsDir = File(applicationContext.getExternalFilesDir("models"), runtime.name)
         val model = repository.getById(modelId)
+        val urls = urlsCsv.split(',').filter { it.isNotBlank() }
 
-        Timber.d("Запуск скачивания $modelId из $url")
+        Timber.d("Запуск скачивания $modelId из ${urls.size} URL")
 
-        val result = installer.install(url, sha256, modelsDir, modelId) { progress ->
+        val result = installer.install(urls, sha256, modelsDir, modelId) { progress ->
             setProgress(workDataOf(KEY_PROGRESS to progress))
             repository.upsert(
                 model?.copy(status = ModelStatus.DOWNLOADING, progress = progress)
@@ -87,7 +85,7 @@ class ModelDownloadWorker @Inject constructor(
 
     companion object {
         const val KEY_MODEL_ID = "key_model_id"
-        const val KEY_URL = "key_url"
+        const val KEY_URLS = "key_urls"
         const val KEY_SHA256 = "key_sha256"
         const val KEY_RUNTIME = "key_runtime"
         const val KEY_SIZE_BYTES = "key_size_bytes"
@@ -106,7 +104,7 @@ class ModelDownloadWorker @Inject constructor(
                 .setInputData(
                     workDataOf(
                         KEY_MODEL_ID to model.id,
-                        KEY_URL to model.url,
+                        KEY_URLS to model.downloadUrls().joinToString(","),
                         KEY_SHA256 to (model.sha256 ?: ""),
                         KEY_RUNTIME to model.runtime.name,
                         KEY_SIZE_BYTES to model.sizeBytes

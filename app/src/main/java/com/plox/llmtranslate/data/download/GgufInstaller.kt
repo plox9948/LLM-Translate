@@ -6,20 +6,23 @@ import java.io.File
 
 /**
  * Инсталлятор GGUF-моделей (llama.cpp, whisper.cpp).
- * Скачивание с докачкой + проверка SHA-256.
+ * Один файл, скачивание с докачкой + проверка SHA-256.
  */
 class GgufInstaller : ModelInstaller, BaseDownloader() {
 
     override fun supports(runtime: RuntimeType): Boolean =
-        runtime == RuntimeType.GGUF || runtime == RuntimeType.ONNX
+        runtime == RuntimeType.GGUF
 
     override suspend fun install(
-        url: String,
+        urls: List<String>,
         sha256: String?,
         targetDir: File,
         modelId: String,
         onProgress: (Int) -> Unit
     ): InstallResult {
+        val url = urls.firstOrNull()
+            ?: return InstallResult.Failure("Нет URL для скачивания")
+
         val file = downloadFile(url, targetDir, "$modelId.gguf", onProgress)
             ?: return InstallResult.Failure("Не удалось скачать файл")
 

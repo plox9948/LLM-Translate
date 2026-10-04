@@ -92,6 +92,34 @@ abstract class BaseDownloader {
     }
 
     /**
+     * Скачать несколько файлов в каталог модели (прогресс суммируется).
+     * @return путь к каталогу или null при ошибке.
+     */
+    protected suspend fun downloadFiles(
+        urls: List<String>,
+        targetDir: File,
+        modelId: String,
+        onProgress: (Int) -> Unit
+    ): File? = withContext(Dispatchers.IO) {
+        val modelDir = File(targetDir, modelId)
+        modelDir.mkdirs()
+
+        urls.forEachIndexed { index, url ->
+            val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
+            val file = downloadFile(url, modelDir, fileName) { fileProgress ->
+                // Прогресс по всем файлам: вес каждого файла одинаков.
+                val total = ((index * 100 + fileProgress) / urls.size).toInt()
+                onProgress(total.coerceIn(0, 100))
+            }
+            if (file == null) {
+                return@withContext null
+            }
+        }
+        onProgress(100)
+        modelDir
+    }
+
+    /**
      * Проверить SHA-256 файла. Длительная операция — только в IO-потоке.
      */
     protected suspend fun verifySha256(file: File, expected: String): Boolean =

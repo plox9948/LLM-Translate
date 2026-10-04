@@ -25,6 +25,12 @@ interface ModelDao {
     @Query("SELECT * FROM models WHERE id = :id")
     suspend fun getById(id: String): ModelEntity?
 
+    @Query(
+        "SELECT * FROM models WHERE category = :category AND status = 'READY' " +
+            "AND file_path IS NOT NULL AND file_path != '' ORDER BY created_at ASC LIMIT 1"
+    )
+    suspend fun getFirstReady(category: String): ModelEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: ModelEntity)
 

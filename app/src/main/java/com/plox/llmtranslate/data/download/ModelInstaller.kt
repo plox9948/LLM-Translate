@@ -22,15 +22,16 @@ interface ModelInstaller {
 
     /**
      * Установить модель: скачать (с докачкой) и проверить целостность.
-     * @param url адрес файла
-     * @param sha256 контрольная сумма (null — проверка пропускается)
+     * @param urls адреса файлов (один для GGUF/Vosk, несколько для ONNX encoder+decoder)
+     * @param sha256 контрольная сумма первого файла (null — проверка пропускается;
+     *               для мультифайловых моделей не проверяется)
      * @param targetDir каталог для моделей
-     * @param modelId id модели (имя файла)
+     * @param modelId id модели (имя файла/каталога)
      * @param onProgress прогресс в процентах 0..100
-     * @return результат установки
+     * @return результат установки (путь к файлу или каталогу)
      */
     suspend fun install(
-        url: String,
+        urls: List<String>,
         sha256: String?,
         targetDir: java.io.File,
         modelId: String,

@@ -45,6 +45,7 @@ data class ModelCard(
     val quality: Int,
     val speed: Int,
     val url: String,
+    val urls: List<String>,
     val sha256: String?,
     val license: String,
     val minAndroidSdk: Int,
@@ -54,6 +55,10 @@ data class ModelCard(
     val requiresLicenseConfirmation: Boolean
         get() = license.uppercase().contains("NC") ||
             license.uppercase().contains("NON-COMMERCIAL")
+
+    /** Все URL для скачивания: urls (мультифайл) или url (один файл). */
+    fun downloadUrls(): List<String> =
+        if (urls.isNotEmpty()) urls else url.takeIf { it.isNotBlank() }?.let { listOf(it) } ?: emptyList()
 }
 
 /**
@@ -71,6 +76,7 @@ data class InstalledModel(
     val quality: Int,
     val speed: Int,
     val url: String,
+    val urls: List<String>,
     val sha256: String?,
     val license: String,
     val minAndroidSdk: Int,
@@ -83,6 +89,10 @@ data class InstalledModel(
 ) {
     val isReady: Boolean
         get() = status == ModelStatus.READY && !filePath.isNullOrBlank()
+
+    /** Все URL для скачивания: urls (мультифайл) или url (один файл). */
+    fun downloadUrls(): List<String> =
+        if (urls.isNotEmpty()) urls else url.takeIf { it.isNotBlank() }?.let { listOf(it) } ?: emptyList()
 }
 
 /**

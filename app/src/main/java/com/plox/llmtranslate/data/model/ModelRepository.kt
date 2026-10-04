@@ -30,6 +30,12 @@ class ModelRepository @Inject constructor(
         dao.getById(id)?.toDomain()
 
     /**
+     * Первая готовая модель категории (для автопереключения при удалении активной).
+     */
+    suspend fun getFirstReady(category: ModelCategory): InstalledModel? =
+        dao.getFirstReady(category.name)?.toDomain()
+
+    /**
      * Сохранить модель. Timestamp'ы createdAt/updatedAt поддерживаются автоматически.
      */
     suspend fun upsert(model: InstalledModel) {
@@ -59,12 +65,13 @@ private fun ModelEntity.toDomain(): InstalledModel = InstalledModel(
     languages = languages.split(',').filter { it.isNotBlank() },
     quality = quality,
     speed = speed,
-    url = url,
-    sha256 = sha256,
-    license = license,
-    minAndroidSdk = minAndroidSdk,
-    recommendedRamMb = recommendedRamMb,
-    status = ModelStatus.valueOf(status),
+        url = url,
+        urls = urls.split(',').filter { it.isNotBlank() },
+        sha256 = sha256,
+        license = license,
+        minAndroidSdk = minAndroidSdk,
+        recommendedRamMb = recommendedRamMb,
+        status = ModelStatus.valueOf(status),
     progress = progress,
     filePath = filePath,
     bytesDone = bytesDone,
@@ -84,6 +91,7 @@ private fun InstalledModel.toEntity(createdAt: Long, updatedAt: Long): ModelEnti
         quality = quality,
         speed = speed,
         url = url,
+        urls = urls.joinToString(","),
         sha256 = sha256,
         license = license,
         minAndroidSdk = minAndroidSdk,

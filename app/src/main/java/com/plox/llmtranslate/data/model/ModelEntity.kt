@@ -20,6 +20,7 @@ data class ModelEntity(
     @ColumnInfo(name = "quality") val quality: Int,
     @ColumnInfo(name = "speed") val speed: Int,
     @ColumnInfo(name = "url") val url: String,
+    @ColumnInfo(name = "urls") val urls: String,
     @ColumnInfo(name = "sha256") val sha256: String?,
     @ColumnInfo(name = "license") val license: String,
     @ColumnInfo(name = "min_android_sdk") val minAndroidSdk: Int,

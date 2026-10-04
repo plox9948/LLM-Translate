@@ -54,6 +54,38 @@ class ModelCatalogParserTest {
         assertEquals(5, card.speed)
         assertEquals("abc123", card.sha256)
         assertFalse(card.requiresLicenseConfirmation)
+        assertEquals(listOf("https://example.com/model.gguf"), card.downloadUrls())
+    }
+
+    @Test
+    fun `parses multi-file urls`() {
+        val json = """
+            {
+              "version": 2,
+              "models": [
+                {
+                  "id": "nllb",
+                  "category": "TRANSLATION",
+                  "displayName": "NLLB",
+                  "runtime": "ONNX",
+                  "sizeBytes": 100,
+                  "url": "",
+                  "urls": [
+                    "https://example.com/encoder.onnx",
+                    "https://example.com/decoder.onnx"
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val cards = parser.parse(json)
+        val card = cards[0]
+        assertEquals(2, card.urls.size)
+        assertEquals(
+            listOf("https://example.com/encoder.onnx", "https://example.com/decoder.onnx"),
+            card.downloadUrls()
+        )
     }
 
     @Test
