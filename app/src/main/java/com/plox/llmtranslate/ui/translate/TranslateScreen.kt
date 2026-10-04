@@ -1,5 +1,8 @@
 package com.plox.llmtranslate.ui.translate
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -51,6 +54,29 @@ fun TranslateScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
 
+    // Разрешение на запись с микрофона.
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.startRecording()
+        } else {
+            viewModel.clearError()
+            // Отображаем ошибку через состояние.
+            viewModel.onPermissionDenied()
+        }
+    }
+
+    fun onMicClick() {
+        if (state.isRecording) {
+            viewModel.stopRecordingAndTranscribe()
+        } else if (!state.hasSttModel) {
+            viewModel.onPermissionDenied()
+        } else {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -87,13 +113,8 @@ fun TranslateScreen(
                     Spacer(modifier = Modifier.weight(1f))
                     // Кнопка записи аудио (STT).
                     IconButton(
-                        onClick = {
-                            if (state.hasSttModel) {
-                                // Запись аудио подключается в аудио-режиме (whisper.cpp).
-                                viewModel.onRecordingChange(!state.isRecording)
-                            }
-                        },
-                        enabled = state.hasSttModel && !state.isTranslating
+                        onClick = { onMicClick() },
+                        enabled = !state.isTranslating
                     ) {
                         Icon(
                             imageVector = if (state.isRecording) Icons.Filled.MicOff
@@ -173,6 +194,15 @@ fun TranslateScreen(
                     }
                 }
             }
+        }
+
+        // Индикатор записи.
+        if (state.isRecording) {
+            Text(
+                text = "● Идёт запись… Нажмите на микрофон, чтобы остановить",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error
+            )
         }
 
         // Ошибка.

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
+import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import com.plox.llmtranslate.domain.runtime.LlmRuntime
 import com.plox.llmtranslate.domain.runtime.SttRuntime
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
@@ -48,7 +49,8 @@ class TranslateViewModel @Inject constructor(
     private val modelManager: ModelManager,
     private val llmRuntime: LlmRuntime,
     private val sttRuntime: SttRuntime,
-    private val ttsRuntime: TtsRuntime
+    private val ttsRuntime: TtsRuntime,
+    private val audioRecorder: AudioRecorder
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TranslateUiState())
@@ -200,8 +202,39 @@ class TranslateViewModel @Inject constructor(
         update { it.copy(isSpeaking = false) }
     }
 
-    fun onRecordingChange(recording: Boolean) {
-        update { it.copy(isRecording = recording) }
+    /**
+     * Начать запись с микрофона.
+     * @return true при успешном старте.
+     */
+    fun startRecording(): Boolean {
+        if (!audioRecorder.startRecording()) {
+            update { it.copy(error = "Не удалось запустить запись с микрофона") }
+            return false
+        }
+        update { it.copy(isRecording = true, error = null) }
+        return true
+    }
+
+    /**
+     * Остановить запись и сразу распознать речь.
+     */
+    fun stopRecordingAndTranscribe() {
+        val wavPath = audioRecorder.stopRecording()
+        update { it.copy(isRecording = false) }
+        if (wavPath == null) {
+            update { it.copy(error = "Запись пуста или не удалась") }
+            return
+        }
+        transcribeAudio(wavPath)
+    }
+
+    /** Показывает ошибку при отсутствии разрешения на микрофон или STT-модели. */
+    fun onPermissionDenied() {
+        update {
+            it.copy(
+                error = "Нужно разрешение на микрофон и активная модель распознавания"
+            )
+        }
     }
 
     fun clearError() {
