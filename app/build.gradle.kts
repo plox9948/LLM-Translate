@@ -21,6 +21,13 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
 
+        // Нативные библиотеки (llama/whisper) собираем только для целевых ABI:
+        // arm64-v8a — устройство, x86_64 — эмулятор; остальные ABI
+        // лишь удлиняют сборку натива без пользы.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+
         // Путь к CMake-конфигу нативных мостов (llama.cpp, whisper.cpp).
         externalNativeBuild {
             cmake {
