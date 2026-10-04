@@ -16,10 +16,16 @@ import javax.inject.Singleton
  * Рантайм LLM на ONNX Runtime: NLLB-200 (encoder-decoder).
  *
  * Модель состоит из двух сессий: encoder и decoder.
- * Токенизация NLLB использует SentencePiece — словарь подгружается из assets.
+ * Токенизация — NllbTokenizer (SentencePiece BPE).
  */
 @Singleton
-class OnnxLlmRuntime @Inject constructor() : TranslationEngine {
+class OnnxLlmRuntime @Inject constructor(
+    private val tokenizer: NllbTokenizer
+) : TranslationEngine {
+
+    companion object {
+        const val MAX_LENGTH = 256
+    }
 
     private var env: OrtEnvironment? = null
     private var encoderSession: OrtSession? = null
@@ -31,7 +37,6 @@ class OnnxLlmRuntime @Inject constructor() : TranslationEngine {
 
     /**
      * Загрузить ONNX-модель (encoder + decoder).
-     * @return null при успехе или [RuntimeError] при ошибке.
      */
     override suspend fun ensureLoaded(modelInfo: InstalledModel): RuntimeError? =
         withContext(Dispatchers.IO) {
@@ -66,7 +71,7 @@ class OnnxLlmRuntime @Inject constructor() : TranslationEngine {
                 encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
                 decoderSession = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
                 loadedModelId = modelInfo.id
-                Timber.d("ONNX-модель загружена: $path")
+                Timber.d("ONNX-модель NLLB загружена: $path")
                 null
             } catch (e: Exception) {
                 Timber.e(e, "Не удалось загрузить ONNX-модель $path")
@@ -76,14 +81,7 @@ class OnnxLlmRuntime @Inject constructor() : TranslationEngine {
         }
 
     /**
-     * Перевести текст.
-     *
-     * Полная реализация NLLB требует:
-     * 1. Токенизации SentencePiece (словарь из assets)
-     * 2. Инференса encoder
-     * 3. Петли генерации decoder с cross-attention
-     *
-     * @return текст перевода или [RuntimeError].
+     * Перевести текст (NLLB encoder-decoder).
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(Dispatchers.IO) {
@@ -94,22 +92,49 @@ class OnnxLlmRuntime @Inject constructor() : TranslationEngine {
             }
 
             try {
-                // TODO: Реализовать полный конвейер NLLB:
-                // 1. Токенизация входного текста (SentencePiece)
-                // 2. Инференс encoder -> attention key/value
-                // 3. Петля генерации decoder (greedy/beam search)
-                // 4. Детокенизация результата
-                //
-                // Пока возвращаем заглушку, чтобы не ломать интерфейс.
-                Timber.w("NLLB ONNX: конвейер генерации ещё не реализован")
-                Result.failure(
-                    RuntimeError.InferenceFailed(
-                        "onnx",
-                        "Конвейер NLLB ещё не реализован"
+                tokenizer.ensureLoaded()
+
+                val fromLangId = tokenizer.langTokenId(from)
+                val toLangId = tokenizer.langTokenId(to)
+                val eosId = tokenizer.eosId()
+                if (fromLangId == null || toLangId == null || eosId == null) {
+                    return@withContext Result.failure(
+                        RuntimeError.InferenceFailed("onnx", "Не найдены языковые токены")
                     )
+                }
+
+                // 1. Токенизация: [from_lang_id, ...tokens, eos]
+                val srcTokens = mutableListOf(fromLangId)
+                srcTokens.addAll(tokenizer.encode(text))
+                srcTokens.add(eosId)
+
+                // 2. Инференс encoder.
+                val encoderOutput = runEncoder(encoder, srcTokens)
+                    ?: return@withContext Result.failure(
+                        RuntimeError.InferenceFailed("onnx", "Ошибка encoder")
+                    )
+
+                // 3. Генерация decoder.
+                val generated = generateDecoder(
+                    decoder, toLangId, eosId, encoderOutput, srcTokens.size
                 )
+                if (generated.isEmpty()) {
+                    return@withContext Result.failure(
+                        RuntimeError.InferenceFailed("onnx", "Пустой результат")
+                    )
+                }
+
+                // 4. Детокенизация.
+                val result = tokenizer.decode(generated)
+                if (result.isBlank()) {
+                    Result.failure(
+                        RuntimeError.InferenceFailed("onnx", "Пустой перевод")
+                    )
+                } else {
+                    Result.success(result)
+                }
             } catch (e: Exception) {
-                Timber.e(e, "Ошибка инференса ONNX")
+                Timber.e(e, "Ошибка инференса NLLB")
                 Result.failure(
                     RuntimeError.InferenceFailed("onnx", e.message ?: "Неизвестная ошибка")
                 )
@@ -117,7 +142,7 @@ class OnnxLlmRuntime @Inject constructor() : TranslationEngine {
         }
 
     /**
-     * Разгрузить модель.
+     * Загрузить модель.
      */
     fun release() {
         try {
@@ -132,25 +157,125 @@ class OnnxLlmRuntime @Inject constructor() : TranslationEngine {
     }
 
     /**
-     * Найти файл модели по части имени.
+     * Инференс encoder.
+     * @return hidden states [seqLen, hiddenSize]
      */
+    private fun runEncoder(
+        session: OrtSession,
+        inputIds: List<Int>
+    ): Array<FloatArray>? {
+        val ortEnv = env ?: return null
+        val seqLen = inputIds.size
+        val inputArray = inputIds.toLongArray()
+
+        val inputTensor = OnnxTensor.createTensor(
+            ortEnv, inputArray, longArrayOf(1L, seqLen.toLong())
+        )
+        val attentionMask = OnnxTensor.createTensor(
+            ortEnv, LongArray(seqLen) { 1L }, longArrayOf(1L, seqLen.toLong())
+        )
+
+        val inputs = mapOf(
+            "input_ids" to inputTensor,
+            "attention_mask" to attentionMask
+        )
+
+        val output = session.run(inputs)
+        val hiddenStates = output.get(0) as OnnxTensor
+
+        val data = hiddenStates.getValue() as Array<LongArray>
+        val hiddenSize = data[0].size
+        val result = Array(seqLen) { FloatArray(hiddenSize) }
+        for (i in 0 until seqLen) {
+            for (j in 0 until hiddenSize) {
+                result[i][j] = data[i][j].toFloat()
+            }
+        }
+
+        inputTensor.close()
+        attentionMask.close()
+        hiddenStates.close()
+        output.close()
+        return result
+    }
+
+    /**
+     * Генерация decoder (greedy search).
+     */
+    private fun generateDecoder(
+        session: OrtSession,
+        toLangId: Int,
+        eosId: Int,
+        encoderOutput: Array<FloatArray>,
+        srcLen: Int
+    ): List<Int> {
+        val ortEnv = env ?: return emptyList()
+        val hiddenSize = encoderOutput[0].size
+
+        val generated = mutableListOf(toLangId)
+
+        for (step in 0 until MAX_LENGTH) {
+            val decLen = generated.size
+            val inputIds = generated.toLongArray()
+
+            val inputTensor = OnnxTensor.createTensor(
+                ortEnv, inputIds, longArrayOf(1L, decLen.toLong())
+            )
+            val attentionMask = OnnxTensor.createTensor(
+                ortEnv, LongArray(decLen) { 1L }, longArrayOf(1L, decLen.toLong())
+            )
+            val encHidden = OnnxTensor.createTensor(
+                ortEnv,
+                encoderOutput.flatten().toFloatArray(),
+                longArrayOf(1L, srcLen.toLong(), hiddenSize.toLong())
+            )
+            val encMask = OnnxTensor.createTensor(
+                ortEnv, LongArray(srcLen) { 1L }, longArrayOf(1L, srcLen.toLong())
+            )
+
+            val inputs = mapOf(
+                "input_ids" to inputTensor,
+                "attention_mask" to attentionMask,
+                "encoder_hidden_states" to encHidden,
+                "encoder_attention_mask" to encMask
+            )
+
+            val output = session.run(inputs)
+
+            // logits — последний элемент.
+            val logitsTensor = output.get(output.size() - 1) as OnnxTensor
+            val logits = logitsTensor.getValue() as Array<Array<FloatArray>>
+
+            // Берём токен с максимальным логитом.
+            val lastLogits = logits[0][decLen - 1]
+            var maxToken = 0
+            var maxVal = Float.NEGATIVE_INFINITY
+            for (i in lastLogits.indices) {
+                if (lastLogits[i] > maxVal) {
+                    maxVal = lastLogits[i]
+                    maxToken = i
+                }
+            }
+
+            inputTensor.close()
+            attentionMask.close()
+            encHidden.close()
+            encMask.close()
+            logitsTensor.close()
+            output.close()
+
+            if (maxToken == eosId) break
+            generated.add(maxToken)
+        }
+
+        return generated
+    }
+
     private fun findModelFile(dir: File, namePart: String): File? {
         if (!dir.exists()) return null
         return dir.listFiles()?.firstOrNull {
             it.isFile && it.name.lowercase().contains(namePart) &&
                 it.name.endsWith(".onnx")
-        }
-    }
-
-    /**
-     * Утилита для создания тензора из float-массива.
-     */
-    private fun floatTensor(data: FloatArray, shape: LongArray): OnnxTensor? {
-        return try {
-            OnnxTensor.createTensor(env, data, shape)
-        } catch (e: Exception) {
-            Timber.e(e, "Ошибка создания тензора")
-            null
         }
     }
 }

@@ -120,3 +120,18 @@ app/src/main/assets/         # models_catalog.json
 
 Некоторые модели распространяются по некоммерческим лицензиям (CC-BY-NC и др.).
 При скачивании таких моделей приложение запрашивает подтверждение условий лицензии.
+
+## NLLB (ONNX) — настройка токенизатора
+
+Модель NLLB-200 использует токенизатор SentencePiece BPE. Для работы нужно
+поместить в `app/src/main/assets/` два файла:
+
+- `nllb_vocab.txt` — словарь, строки вида `id piece`
+- `nllb_merges.txt` — правила слияния, строки вида `rank piece1 piece2`
+
+Их можно получить из репозитория [Xenova/nllb-200-distilled-600M](https://huggingface.co/Xenova/nllb-200-distilled-600M)
+или сгенерировать из `sentencepiece.bpe.model`.
+
+> ⚠️ Имена входных/выходных тензоров ONNX-сессий (`input_ids`, `attention_mask`,
+> `encoder_hidden_states` и т.д.) заданы в `OnnxLlmRuntime.kt`. При использовании
+> другого экспорта ONNX проверьте и скорректируйте их под фактические имена модели.
