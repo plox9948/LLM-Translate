@@ -1,0 +1,286 @@
+package com.plox.llmtranslate.domain
+
+import android.content.Context
+import android.net.Uri
+import android.os.Environment
+import android.os.StatFs
+import androidx.core.content.FileProvider
+import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
+import com.plox.llmtranslate.data.download.ModelDownloadWorker
+import com.plox.llmtranslate.data.model.ModelRepository
+import com.plox.llmtranslate.data.prefs.ModelPreferences
+import com.plox.llmtranslate.domain.model.DeviceInfo
+import com.plox.llmtranslate.domain.model.InstallCheck
+import com.plox.llmtranslate.domain.model.InstalledModel
+import com.plox.llmtranslate.domain.model.ModelCard
+import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.ModelStatus
+import com.plox.llmtranslate.domain.model.RuntimeType
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import timber.log.Timber
+import java.io.File
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/**
+ * Реализация [ModelManager]: каталог, установка, выбор, память.
+ */
+@Singleton
+class ModelManagerImpl @Inject constructor(
+    private val context: Context,
+    private val catalogProvider: ModelCatalogProvider,
+    private val repository: ModelRepository,
+    private val preferences: ModelPreferences,
+    private val deviceInfoProvider: DeviceInfoProvider,
+    private val llmRuntime: com.plox.llmtranslate.domain.runtime.LlmRuntime,
+    private val sttRuntime: com.plox.llmtranslate.domain.runtime.SttRuntime,
+    appScope: CoroutineScope
+) : ModelManager {
+
+    private val scope = appScope
+
+    private val modelsDir: File
+        get() = context.getExternalFilesDir("models")!!
+
+    override val catalog: Flow<List<ModelCard>> = catalogProvider.catalog
+
+    override fun installedModels(category: ModelCategory?): Flow<List<InstalledModel>> =
+        if (category == null) {
+            repository.observeAll()
+        } else {
+            repository.observeByCategory(category)
+        }
+
+    override fun activeModelId(category: ModelCategory): Flow<String?> =
+        preferences.activeModelId(category)
+
+    override fun activeModel(category: ModelCategory): Flow<InstalledModel?> =
+        combine(activeModelId(category), repository.observeAll()) { id, models ->
+            models.firstOrNull { it.id == id && it.isReady }
+        }
+
+    override val diskUsage: Flow<DiskUsage> = flow {
+        val usage = withContext(Dispatchers.IO) {
+            DiskUsage(
+                totalBytes = modelsDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
+                modelsDir = modelsDir.absolutePath
+            )
+        }
+        emit(usage)
+    }
+
+    override suspend fun setActive(category: ModelCategory, modelId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val model = repository.getById(modelId)
+            if (model == null || model.category != category) {
+                Timber.w("Модель $modelId не найдена или не из категории $category")
+                return@withContext false
+            }
+            if (!model.isReady) {
+                Timber.w("Модель $modelId не готова к активации")
+                return@withContext false
+            }
+            preferences.setActiveModelId(category, modelId)
+            true
+        }
+
+    override fun checkInstall(card: ModelCard, device: DeviceInfo): InstallCheck =
+        InstallCheckLogic.evaluate(card, device)
+
+    override fun startDownload(card: ModelCard) {
+        val model = InstalledModel(
+            id = card.id,
+            category = card.category,
+            displayName = card.displayName,
+            description = card.description,
+            runtime = card.runtime,
+            sizeBytes = card.sizeBytes,
+            ramRequiredMb = card.ramRequiredMb,
+            languages = card.languages,
+            quality = card.quality,
+            speed = card.speed,
+            url = card.url,
+            sha256 = card.sha256,
+            license = card.license,
+            minAndroidSdk = card.minAndroidSdk,
+            recommendedRamMb = card.recommendedRamMb,
+            status = ModelStatus.DOWNLOADING,
+            progress = 0,
+            filePath = null,
+            bytesDone = 0,
+            isBuiltin = true
+        )
+        scope.launch {
+            repository.upsert(model)
+            ModelDownloadWorker.schedule(context, model)
+        }
+    }
+
+    override fun cancelDownload(modelId: String) {
+        ModelDownloadWorker.cancel(context, modelId)
+    }
+
+    override suspend fun importFromUri(uri: Uri): String? =
+        withContext(Dispatchers.IO) {
+        try {
+            val fileName = queryFileName(uri) ?: return@withContext null
+            val targetFile = copyFromUri(uri) ?: return@withContext null
+
+            val modelId = fileName.removeSuffix(".gguf").removeSuffix(".onnx").removeSuffix(".zip")
+            val model = InstalledModel(
+                id = modelId,
+                category = guessCategory(fileName),
+                displayName = fileName,
+                description = "Импортированная модель",
+                runtime = guessRuntime(fileName),
+                sizeBytes = targetFile.length(),
+                ramRequiredMb = 0,
+                languages = emptyList(),
+                quality = 3,
+                speed = 3,
+                url = "",
+                sha256 = null,
+                license = "Неизвестна",
+                minAndroidSdk = 26,
+                recommendedRamMb = 0,
+                status = ModelStatus.READY,
+                progress = 100,
+                filePath = targetFile.absolutePath,
+                bytesDone = targetFile.length(),
+                isBuiltin = false
+            )
+            repository.upsert(model)
+            Timber.d("Импортирована модель $modelId из $uri")
+            modelId
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка импорта модели из $uri")
+            null
+        }
+    }
+
+    override suspend fun exportUri(modelId: String): Uri? {
+        val model = repository.getById(modelId) ?: return null
+        val file = model.filePath?.let(::File) ?: return null
+        if (!file.exists()) return null
+        return try {
+            FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка формирования Uri экспорта")
+            null
+        }
+    }
+
+    override fun delete(modelId: String) {
+        scope.launch {
+            val model = repository.getById(modelId) ?: return@launch
+            val path = model.filePath
+            if (!path.isNullOrBlank()) {
+                val file = File(path)
+                if (file.isDirectory) file.deleteRecursively() else file.delete()
+            }
+            repository.deleteById(modelId)
+            // Если удалена активная модель — сбрасываем выбор.
+            if (preferences.getActiveModelId(model.category) == modelId) {
+                preferences.setActiveModelId(model.category, null)
+            }
+            Timber.d("Модель $modelId удалена")
+        }
+    }
+
+    override fun releaseInactiveRuntimes() {
+        llmRuntime.release()
+        sttRuntime.release()
+        Timber.d("Рантаймы разгружены (ON_STOP)")
+    }
+
+    override suspend fun activeRamRequiredMb(): Long {
+        val llmId = preferences.getActiveModelId(ModelCategory.TRANSLATION)
+        val sttId = preferences.getActiveModelId(ModelCategory.STT)
+        var total = 0L
+        llmId?.let { repository.getById(it)?.ramRequiredMb?.let { mb -> total += mb } }
+        sttId?.let { repository.getById(it)?.ramRequiredMb?.let { mb -> total += mb } }
+        return total
+    }
+
+    private suspend fun copyFromUri(uri: Uri): File? {
+        val targetFile = File(modelsDir, "imported_${System.currentTimeMillis()}")
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            targetFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        } ?: return null
+        return targetFile
+    }
+
+    private fun queryFileName(uri: Uri): String? {
+        uri.queryParameter("name")?.let { return it }
+        val last = uri.lastPathSegment
+        if (!last.isNullOrBlank()) return Uri.decode(last)
+        return null
+    }
+
+    private fun guessCategory(fileName: String): ModelCategory {
+        val lower = fileName.lowercase()
+        return when {
+            lower.contains("whisper") || lower.contains("vosk") -> ModelCategory.STT
+            else -> ModelCategory.TRANSLATION
+        }
+    }
+
+    private fun guessRuntime(fileName: String): RuntimeType {
+        val lower = fileName.lowercase()
+        return when {
+            lower.endsWith(".gguf") -> RuntimeType.GGUF
+            lower.endsWith(".onnx") -> RuntimeType.ONNX
+            lower.contains("vosk") || lower.endsWith(".zip") -> RuntimeType.VOSK
+            else -> RuntimeType.GGUF
+        }
+    }
+
+    override fun deviceInfo(): DeviceInfo = deviceInfoProvider.get()
+}
+
+/**
+ * Провайдер информации об устройстве (ОЗУ, диск, SDK).
+ */
+interface DeviceInfoProvider {
+    fun get(): DeviceInfo
+}
+
+/**
+ * Реализация на ActivityManager + StatFs.
+ */
+@Singleton
+class AndroidDeviceInfoProvider @Inject constructor(
+    private val context: Context
+) : DeviceInfoProvider {
+
+    override fun get(): DeviceInfo {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val memInfo = android.app.ActivityManager.MemoryInfo()
+        am.getMemoryInfo(memInfo)
+
+        val modelsDir = context.getExternalFilesDir("models")
+            ?: context.filesDir
+        val stat = StatFs(modelsDir.absolutePath)
+        val freeBytes = stat.availableBlocksLong * stat.blockSizeLong
+
+        return DeviceInfo(
+            sdkInt = android.os.Build.VERSION.SDK_INT,
+            totalRamMb = memInfo.totalMem / 1024 / 1024,
+            availableRamMb = memInfo.availMem / 1024 / 1024,
+            freeDiskBytes = freeBytes
+        )
+    }
+}
