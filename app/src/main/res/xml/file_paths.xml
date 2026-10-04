@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <external-files-path name="models" path="models/" />
+    <external-files-path name="audio" path="audio/" />
+    <cache-path name="cache" path="/" />
+</paths>
