@@ -7,8 +7,7 @@ import com.plox.llmtranslate.domain.model.LanguageDetector
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
-import com.plox.llmtranslate.domain.runtime.LlmRuntime
-import com.plox.llmtranslate.domain.runtime.SttRuntime
+import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,8 +48,7 @@ data class TranslateUiState(
 @HiltViewModel
 class TranslateViewModel @Inject constructor(
     private val modelManager: ModelManager,
-    private val llmRuntime: LlmRuntime,
-    private val sttRuntime: SttRuntime,
+    private val runtimeRouter: RuntimeRouter,
     private val ttsRuntime: TtsRuntime,
     private val audioRecorder: AudioRecorder
 ) : ViewModel() {
@@ -121,16 +119,17 @@ class TranslateViewModel @Inject constructor(
                 return@launch
             }
 
-            val loadError = llmRuntime.ensureLoaded(model)
+            val engine = runtimeRouter.translationEngine(model.runtime)
+            val loadError = engine.ensureLoaded(model)
             if (loadError != null) {
                 update { it.copy(isTranslating = false, error = loadError.message()) }
                 return@launch
             }
 
-            llmRuntime.translate(
+            engine.translate(
                 text = state.inputText,
-                from = sourceLang.title,
-                to = state.targetLang.title
+                from = sourceLang.code,
+                to = state.targetLang.code
             ).fold(
                 onSuccess = { translation ->
                     update { it.copy(isTranslating = false, resultText = translation) }
@@ -170,13 +169,14 @@ class TranslateViewModel @Inject constructor(
                 return@launch
             }
 
-            val loadError = sttRuntime.ensureLoaded(model)
+            val engine = runtimeRouter.sttEngine(model.runtime)
+            val loadError = engine.ensureLoaded(model)
             if (loadError != null) {
                 update { it.copy(isTranslating = false, error = loadError.message()) }
                 return@launch
             }
 
-            sttRuntime.transcribe(wavPath, state.sourceLang.code).fold(
+            engine.transcribe(wavPath).fold(
                 onSuccess = { text ->
                     update { it.copy(isTranslating = false, inputText = text) }
                 },

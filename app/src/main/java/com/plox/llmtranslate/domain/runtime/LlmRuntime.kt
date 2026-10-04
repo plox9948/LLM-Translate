@@ -13,7 +13,7 @@ import javax.inject.Singleton
  * В ОЗУ держится только одна модель; повторный [ensureLoaded] разгружает предыдущую.
  */
 @Singleton
-class LlmRuntime @Inject constructor() {
+class LlmRuntime @Inject constructor() : TranslationEngine {
 
     /** Идентификатор загруженной модели. */
     var loadedModelId: String? = null
@@ -51,15 +51,15 @@ class LlmRuntime @Inject constructor() {
         }
 
     /**
-     * Перевести текст с языка [from] на язык [to].
+     * Перевести текст с языка [from] на язык [to] (коды: ru, en, ne).
      * @return текст перевода или [RuntimeError].
      */
-    suspend fun translate(text: String, from: String, to: String): Result<String> =
+    override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(Dispatchers.IO) {
             if (!NativeBridge.llamaIsLoaded() || loadedModelId == null) {
                 return@withContext Result.failure(RuntimeError.ModelNotSelected)
             }
-            val prompt = buildPrompt(text, from, to)
+            val prompt = buildPrompt(text, langTitle(from), langTitle(to))
             val output = NativeBridge.llamaGenerate(prompt, maxTokens = 1024)
                 ?: return@withContext Result.failure(
                     RuntimeError.InferenceFailed("llm", "Генерация не выполнена")
@@ -92,4 +92,14 @@ class LlmRuntime @Inject constructor() {
     private fun buildPrompt(text: String, from: String, to: String): String =
         "Translate the following text from $from to $to. " +
             "Output only the translation, no explanations:\n$text"
+
+    /**
+     * Название языка для промпта по коду.
+     */
+    private fun langTitle(code: String): String = when (code) {
+        "ru" -> "Russian"
+        "en" -> "English"
+        "ne" -> "Nepali"
+        else -> code
+    }
 }

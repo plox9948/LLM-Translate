@@ -12,7 +12,7 @@ import javax.inject.Singleton
  * Рантайм STT на whisper.cpp: загрузка модели и транскрипция WAV.
  */
 @Singleton
-class SttRuntime @Inject constructor() {
+class SttRuntime @Inject constructor() : SttEngine {
 
     /** Идентификатор загруженной модели. */
     var loadedModelId: String? = null
@@ -25,7 +25,7 @@ class SttRuntime @Inject constructor() {
      * Убедиться, что загружена модель [model].
      * @return null при успехе или [RuntimeError] при ошибке.
      */
-    suspend fun ensureLoaded(model: InstalledModel): RuntimeError? =
+    override suspend fun ensureLoaded(model: InstalledModel): RuntimeError? =
         withContext(Dispatchers.IO) {
             val path = model.filePath
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
@@ -53,12 +53,12 @@ class SttRuntime @Inject constructor() {
      * Распознать речь в WAV-файле [wavPath].
      * @return текст или [RuntimeError].
      */
-    suspend fun transcribe(wavPath: String, language: String): Result<String> =
+    override suspend fun transcribe(wavPath: String): Result<String> =
         withContext(Dispatchers.IO) {
             if (!NativeBridge.whisperIsLoaded() || loadedModelId == null) {
                 return@withContext Result.failure(RuntimeError.ModelNotSelected)
             }
-            val text = NativeBridge.whisperTranscribe(wavPath, language)
+            val text = NativeBridge.whisperTranscribe(wavPath, "")
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
             if (text == null) {

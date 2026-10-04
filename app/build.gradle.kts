@@ -103,6 +103,10 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
 
+    // Рантаймы инференса: ONNX (NLLB) и Vosk (STT).
+    implementation(libs.onnxruntime.android)
+    implementation(libs.vosk.android)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)

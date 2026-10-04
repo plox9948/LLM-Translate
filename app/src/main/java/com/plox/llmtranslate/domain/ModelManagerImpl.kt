@@ -8,6 +8,7 @@ import com.plox.llmtranslate.data.download.ModelDownloadWorker
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.model.DeviceInfo
+import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import com.plox.llmtranslate.domain.model.InstallCheck
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
@@ -37,8 +38,7 @@ class ModelManagerImpl @Inject constructor(
     private val repository: ModelRepository,
     private val preferences: ModelPreferences,
     private val deviceInfoProvider: DeviceInfoProvider,
-    private val llmRuntime: com.plox.llmtranslate.domain.runtime.LlmRuntime,
-    private val sttRuntime: com.plox.llmtranslate.domain.runtime.SttRuntime,
+    private val runtimeRouter: RuntimeRouter,
     appScope: CoroutineScope
 ) : ModelManager {
 
@@ -223,8 +223,7 @@ class ModelManagerImpl @Inject constructor(
     }
 
     override fun releaseInactiveRuntimes() {
-        llmRuntime.release()
-        sttRuntime.release()
+        runtimeRouter.releaseAll()
         Timber.d("Рантаймы разгружены (ON_STOP)")
     }
 

@@ -9,8 +9,7 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
-import com.plox.llmtranslate.domain.runtime.LlmRuntime
-import com.plox.llmtranslate.domain.runtime.SttRuntime
+import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -37,8 +36,7 @@ class ModelManagerTest {
     private val repository = mockk<ModelRepository>(relaxed = true)
     private val preferences = mockk<ModelPreferences>(relaxed = true)
     private val deviceInfoProvider = mockk<DeviceInfoProvider>(relaxed = true)
-    private val llmRuntime = mockk<LlmRuntime>(relaxed = true)
-    private val sttRuntime = mockk<SttRuntime>(relaxed = true)
+    private val runtimeRouter = mockk<RuntimeRouter>(relaxed = true)
 
     private lateinit var manager: ModelManagerImpl
 
@@ -52,8 +50,7 @@ class ModelManagerTest {
             repository,
             preferences,
             deviceInfoProvider,
-            llmRuntime,
-            sttRuntime,
+            runtimeRouter,
             CoroutineScope(UnconfinedTestDispatcher())
         )
     }
