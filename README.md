@@ -121,6 +121,100 @@ app/src/main/assets/         # models_catalog.json
 Некоторые модели распространяются по некоммерческим лицензиям (CC-BY-NC и др.).
 При скачивании таких моделей приложение запрашивает подтверждение условий лицензии.
 
+## Резервное копирование и перенос на другое устройство
+
+Приложение умеет экспортировать все модели и настройки в ZIP-архив и восстанавливать их.
+
+### Экспорт на телефоне
+
+1. Откройте экран «Модели».
+2. Нажмите **«Бэкап»** — выберите место сохранения.
+3. Получите файл вида `llm_translate_backup_<timestamp>.zip`.
+
+### Импорт на телефоне
+
+1. Скопируйте архив на телефон (по USB, облаку, Bluetooth и т.д.).
+2. Откройте экран «Модели» → **«Восстановить»**.
+3. Выберите архив. Модели и настройки будут восстановлены.
+
+### Подготовка архива на ПК
+
+Если нужно передать модели с ПК на телефон (или наоборот), создайте архив вручную.
+
+**Структура архива:**
+
+```
+llm_translate_backup.zip
+├── manifest.json          # метаданные моделей (обязательно)
+├── settings.json          # настройки (опционально)
+└── models/                # файлы моделей
+    ├── GGUF/
+    │   └── hy-mt2-1.8b-q4_k_m.gguf
+    ├── VOSK/
+    │   └── vosk-ru-small/
+    │       └── ...
+    └── ONNX/
+        └── nllb-200-600m-q4f16/
+            ├── encoder_model_q4f16.onnx
+            └── decoder_model_merged_q4f16.onnx
+```
+
+**manifest.json** — список моделей с путями:
+
+```json
+{
+  "version": 1,
+  "exportedAt": 1700000000000,
+  "models": [
+    {
+      "id": "hy-mt2-1.8b-q4_k_m",
+      "category": "TRANSLATION",
+      "displayName": "Hy-MT2 1.8B (Q4_K_M)",
+      "description": "Tencent Hy-MT2",
+      "runtime": "GGUF",
+      "sizeBytes": 1214378880,
+      "ramRequiredMb": 3000,
+      "languages": ["ru", "en", "ne"],
+      "quality": 4,
+      "speed": 5,
+      "url": "",
+      "urls": [],
+      "sha256": null,
+      "license": "Apache-2.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 6144,
+      "relativePath": "models/GGUF/hy-mt2-1.8b-q4_k_m.gguf",
+      "isBuiltin": true
+    }
+  ]
+}
+```
+
+**settings.json** — активные модели и настройки:
+
+```json
+{
+  "activeTranslation": "hy-mt2-1.8b-q4_k_m",
+  "activeStt": "whisper-base-multilingual",
+  "activeTts": "tts-system",
+  "ttsEngine": "system",
+  "uiLanguage": "ru",
+  "theme": "dark"
+}
+```
+
+**Пошагово:**
+
+1. Скачайте нужные модели (GGUF, ONNX, Vosk).
+2. Создайте папку `models/` с подкаталогами `GGUF`, `VOSK`, `ONNX`.
+3. Разместите файлы моделей.
+4. Создайте `manifest.json` с записью на каждую модель (поле `relativePath` — путь к файлу внутри архива).
+5. При желании создайте `settings.json`.
+6. Заархивируйте всё в ZIP.
+7. На телефоне: «Модели» → «Восстановить» → выберите архив.
+
+> 💡 Проще всего: сделать «Бэкап» на одном телефоне и восстановить на другом.
+
 ## NLLB (ONNX) — настройка токенизатора
 
 Модель NLLB-200 использует токенизатор SentencePiece BPE. Для работы нужно

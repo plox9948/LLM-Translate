@@ -2,6 +2,7 @@ package com.plox.llmtranslate.ui.models
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.plox.llmtranslate.data.backup.ModelBackupManager
 import com.plox.llmtranslate.domain.DiskUsage
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.DeviceInfo
@@ -26,6 +27,13 @@ data class ExportRequest(
 )
 
 /**
+ * Запрос экспорта резервной копии (все модели + настройки).
+ */
+data class BackupExportRequest(
+    val fileName: String
+)
+
+/**
  * Состояние UI экрана «Модели».
  */
 data class ModelsUiState(
@@ -35,7 +43,10 @@ data class ModelsUiState(
     val diskUsage: DiskUsage? = null,
     val deviceInfo: DeviceInfo? = null,
     val licenseConfirmModel: ModelCard? = null,
-    val exportRequest: ExportRequest? = null
+    val exportRequest: ExportRequest? = null,
+    val backupExportRequest: BackupExportRequest? = null,
+    val isBusy: Boolean = false,
+    val statusMessage: String? = null
 )
 
 /**
@@ -43,7 +54,8 @@ data class ModelsUiState(
  */
 @HiltViewModel
 class ModelsViewModel @Inject constructor(
-    private val modelManager: ModelManager
+    private val modelManager: ModelManager,
+    private val backupManager: ModelBackupManager
 ) : ViewModel() {
 
     private val _deviceInfo = MutableStateFlow<DeviceInfo?>(null)
@@ -160,6 +172,54 @@ class ModelsViewModel @Inject constructor(
         viewModelScope.launch {
             modelManager.exportToUri(request.modelId, uri)
         }
+    }
+
+    /**
+     * Запросить экспорт резервной копии (все модели + настройки).
+     */
+    fun onBackupExportClick() {
+        uiState.value = uiState.value.copy(
+            backupExportRequest = BackupExportRequest(
+                "llm_translate_backup_${System.currentTimeMillis()}.zip"
+            )
+        )
+    }
+
+    /**
+     * Завершить экспорт бэкапа: записать ZIP в выбранный SAF-uri.
+     */
+    fun onBackupExportResult(uri: android.net.Uri?) {
+        uiState.value = uiState.value.copy(backupExportRequest = null)
+        if (uri == null) return
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(isBusy = true, statusMessage = "Экспорт…")
+            val ok = backupManager.exportToUri(uri)
+            uiState.value = uiState.value.copy(
+                isBusy = false,
+                statusMessage = if (ok) "Бэкап сохранён" else "Ошибка экспорта бэкапа"
+            )
+        }
+    }
+
+    /**
+     * Импортировать резервную копию из SAF-uri.
+     */
+    fun onBackupImportResult(uri: android.net.Uri?) {
+        if (uri == null) return
+        viewModelScope.launch {
+            uiState.value = uiState.value.copy(isBusy = true, statusMessage = "Импорт…")
+            val result = backupManager.importFromUri(uri)
+            val msg = when {
+                result.error != null -> "Ошибка: ${result.error}"
+                else -> "Импортировано: ${result.importedCount}, пропущено: ${result.skippedCount}" +
+                    (if (result.settingsRestored) ", настройки восстановлены" else "")
+            }
+            uiState.value = uiState.value.copy(isBusy = false, statusMessage = msg)
+        }
+    }
+
+    fun clearStatusMessage() {
+        uiState.value = uiState.value.copy(statusMessage = null)
     }
 
     /**

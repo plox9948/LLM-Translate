@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileExport
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -70,6 +71,29 @@ fun ModelsScreen(
     ) { uri ->
         if (uri != null) {
             viewModel.onImportResult(uri)
+        }
+    }
+
+    // SAF: импорт резервной копии (ZIP с моделями и настройками).
+    val backupImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.onBackupImportResult(uri)
+        }
+    }
+
+    // SAF: экспорт резервной копии.
+    val backupExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        viewModel.onBackupExportResult(uri)
+    }
+
+    // Запуск экспорта бэкапа при появлении запроса.
+    LaunchedEffect(uiState.backupExportRequest) {
+        uiState.backupExportRequest?.let { request ->
+            backupExportLauncher.launch(request.fileName)
         }
     }
 
@@ -131,6 +155,50 @@ fun ModelsScreen(
                 Text("+ Импортировать свою модель")
             }
             Spacer(modifier = Modifier.height(8.dp))
+
+            Row(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { viewModel.onBackupExportClick() },
+                    modifier = Modifier.weight(1f),
+                    enabled = !uiState.isBusy
+                ) {
+                    Icon(Icons.Filled.FileExport, contentDescription = null)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Бэкап")
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        backupImportLauncher.launch(
+                            arrayOf("application/zip", "application/x-zip-compressed", "*/*")
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                    enabled = !uiState.isBusy
+                ) {
+                    Icon(Icons.Filled.FileDownload, contentDescription = null)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Восстановить")
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Статусное сообщение.
+            if (uiState.statusMessage != null || uiState.isBusy) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = uiState.statusMessage ?: "…",
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
         }
 
         ModelCategory.entries.forEach { category ->
