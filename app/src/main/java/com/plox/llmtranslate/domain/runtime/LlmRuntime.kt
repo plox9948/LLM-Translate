@@ -26,7 +26,7 @@ class LlmRuntime @Inject constructor() : TranslationEngine {
      * Убедиться, что загружена модель [model].
      * @return null при успехе или [RuntimeError] при ошибке.
      */
-    suspend fun ensureLoaded(model: InstalledModel): RuntimeError? =
+    override suspend fun ensureLoaded(model: InstalledModel): RuntimeError? =
         withContext(Dispatchers.IO) {
             val path = model.filePath
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
@@ -81,7 +81,7 @@ class LlmRuntime @Inject constructor() : TranslationEngine {
      * Разгрузить модель и освободить память.
      * Вызывается при смене модели и ON_STOP процесса.
      */
-    fun release() {
+    override fun release() {
         if (NativeBridge.llamaIsLoaded()) {
             NativeBridge.llamaUnloadModel()
             loadedModelId = null

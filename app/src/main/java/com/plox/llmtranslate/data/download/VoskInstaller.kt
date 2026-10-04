@@ -17,7 +17,7 @@ class VoskInstaller : ModelInstaller, BaseDownloader() {
         sha256: String?,
         targetDir: File,
         modelId: String,
-        onProgress: (Int) -> Unit
+        onProgress: suspend (Int) -> Unit
     ): InstallResult {
         val url = urls.firstOrNull()
             ?: return InstallResult.Failure("Нет URL для скачивания")

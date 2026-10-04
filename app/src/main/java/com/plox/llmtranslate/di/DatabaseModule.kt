@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.room.Room
 import com.plox.llmtranslate.data.model.AppDatabase
 import com.plox.llmtranslate.data.model.ModelDao
-import com.plox.llmtranslate.data.model.ModelRepository
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -29,8 +28,4 @@ object DatabaseModule {
 
     @Provides
     fun provideModelDao(db: AppDatabase): ModelDao = db.modelDao()
-
-    @Provides
-    @Singleton
-    fun provideModelRepository(dao: ModelDao): ModelRepository = ModelRepository(dao)
 }

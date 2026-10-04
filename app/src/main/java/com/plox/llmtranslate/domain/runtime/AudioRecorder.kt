@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -110,7 +111,7 @@ object WavWriter {
  */
 @Singleton
 class AudioRecorder @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val scope: CoroutineScope
 ) {
 
@@ -180,7 +181,7 @@ class AudioRecorder @Inject constructor(
      * Остановить запись и сохранить WAV-файл.
      * @return путь к WAV-файлу или null при ошибке.
      */
-    fun stopRecording(): String? {
+    suspend fun stopRecording(): String? {
         if (!isRecording) return null
         isRecording = false
         readJob?.join()
@@ -214,7 +215,7 @@ class AudioRecorder @Inject constructor(
     /**
      * Остановить запись без сохранения (отмена).
      */
-    fun cancelRecording() {
+    suspend fun cancelRecording() {
         isRecording = false
         readJob?.join()
         readJob = null

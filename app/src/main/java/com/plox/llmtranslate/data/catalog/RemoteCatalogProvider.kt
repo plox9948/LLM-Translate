@@ -3,6 +3,7 @@ package com.plox.llmtranslate.data.catalog
 import android.content.Context
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.model.ModelCard
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -24,7 +25,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class RemoteCatalogProvider @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val assetsProvider: AssetsModelCatalogProvider,
     private val parser: ModelCatalogParser,
     private val preferences: ModelPreferences

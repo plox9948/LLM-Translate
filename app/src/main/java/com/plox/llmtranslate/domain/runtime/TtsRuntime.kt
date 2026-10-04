@@ -4,6 +4,7 @@ import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.plox.llmtranslate.domain.model.RuntimeError
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import timber.log.Timber
 import java.util.Locale
@@ -19,7 +20,7 @@ import kotlin.coroutines.resume
  */
 @Singleton
 class TtsRuntime @Inject constructor(
-    private val context: Context
+    @ApplicationContext private val context: Context
 ) {
 
     private var tts: TextToSpeech? = null

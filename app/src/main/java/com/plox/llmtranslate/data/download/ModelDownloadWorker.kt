@@ -49,35 +49,33 @@ class ModelDownloadWorker @Inject constructor(
 
         val result = installer.install(urls, sha256, modelsDir, modelId) { progress ->
             setProgress(workDataOf(KEY_PROGRESS to progress))
-            repository.upsert(
-                model?.copy(status = ModelStatus.DOWNLOADING, progress = progress)
-            )
+            model?.let {
+                repository.upsert(it.copy(status = ModelStatus.DOWNLOADING, progress = progress))
+            }
         }
 
         return when (result) {
             is InstallResult.Success -> {
-                repository.upsert(
-                    model?.copy(
-                        status = ModelStatus.READY,
-                        progress = 100,
-                        filePath = result.path,
-                        bytesDone = sizeBytes
+                model?.let {
+                    repository.upsert(
+                        it.copy(
+                            status = ModelStatus.READY,
+                            progress = 100,
+                            filePath = result.path,
+                            bytesDone = sizeBytes
+                        )
                     )
-                )
+                }
                 Result.success()
             }
             is InstallResult.Failure -> {
                 if (result.message.contains("SHA-256")) {
                     // Повторная попытка не поможет — файл повреждён на сервере.
-                    repository.upsert(
-                        model?.copy(status = ModelStatus.ERROR)
-                    )
+                    model?.let { repository.upsert(it.copy(status = ModelStatus.ERROR)) }
                     Result.failure(workDataOf(KEY_ERROR to result.message))
                 }
                 // Сетевая ошибка — повторяем (докачка продолжит с места обрыва).
-                repository.upsert(
-                    model?.copy(status = ModelStatus.DOWNLOADING)
-                )
+                model?.let { repository.upsert(it.copy(status = ModelStatus.DOWNLOADING)) }
                 Result.retry()
             }
         }

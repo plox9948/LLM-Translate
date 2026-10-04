@@ -71,7 +71,7 @@ class SttRuntime @Inject constructor() : SttEngine {
     /**
      * Разгрузить модель и освободить память.
      */
-    fun release() {
+    override fun release() {
         if (NativeBridge.whisperIsLoaded()) {
             NativeBridge.whisperUnloadModel()
             loadedModelId = null

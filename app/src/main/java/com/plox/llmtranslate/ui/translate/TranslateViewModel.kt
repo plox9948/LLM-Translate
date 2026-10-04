@@ -228,13 +228,15 @@ class TranslateViewModel @Inject constructor(
      * Остановить запись и сразу распознать речь.
      */
     fun stopRecordingAndTranscribe() {
-        val wavPath = audioRecorder.stopRecording()
-        update { it.copy(isRecording = false) }
-        if (wavPath == null) {
-            update { it.copy(error = "Запись пуста или не удалась") }
-            return
+        viewModelScope.launch {
+            val wavPath = audioRecorder.stopRecording()
+            update { it.copy(isRecording = false) }
+            if (wavPath == null) {
+                update { it.copy(error = "Запись пуста или не удалась") }
+                return@launch
+            }
+            transcribeAudio(wavPath)
         }
-        transcribeAudio(wavPath)
     }
 
     /** Показывает ошибку при отсутствии разрешения на микрофон или STT-модели. */

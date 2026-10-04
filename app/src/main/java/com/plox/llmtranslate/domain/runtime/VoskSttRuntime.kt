@@ -111,7 +111,7 @@ class VoskSttRuntime @Inject constructor() : SttEngine {
     /**
      * Разгрузить модель.
      */
-    fun release() {
+    override fun release() {
         model?.close()
         model = null
         loadedModelId = null

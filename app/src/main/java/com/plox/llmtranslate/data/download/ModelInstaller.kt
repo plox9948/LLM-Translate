@@ -35,6 +35,6 @@ interface ModelInstaller {
         sha256: String?,
         targetDir: java.io.File,
         modelId: String,
-        onProgress: (Int) -> Unit
+        onProgress: suspend (Int) -> Unit
     ): InstallResult
 }

@@ -19,7 +19,7 @@ class OnnxInstaller : ModelInstaller, BaseDownloader() {
         sha256: String?,
         targetDir: File,
         modelId: String,
-        onProgress: (Int) -> Unit
+        onProgress: suspend (Int) -> Unit
     ): InstallResult {
         if (urls.isEmpty()) {
             return InstallResult.Failure("Нет URL для скачивания")

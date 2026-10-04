@@ -3,7 +3,6 @@ package com.plox.llmtranslate
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
-import com.plox.llmtranslate.data.download.ModelWorkerFactory
 import dagger.hilt.android.HiltAndroidApp
 import timber.log.Timber
 import javax.inject.Inject

@@ -8,6 +8,7 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -30,10 +31,10 @@ import javax.inject.Singleton
  */
 @Singleton
 class ModelBackupManager @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val repository: ModelRepository,
     private val preferences: ModelPreferences,
-    private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true }
+    private val json: Json
 ) {
 
     companion object {

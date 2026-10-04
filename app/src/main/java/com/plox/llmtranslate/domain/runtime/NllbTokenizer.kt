@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.domain.runtime
 
 import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
 import java.io.BufferedReader
 import javax.inject.Inject
@@ -18,7 +19,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class NllbTokenizer @Inject constructor(
-    private val context: Context
+    @ApplicationContext private val context: Context
 ) {
 
     private var vocab: Map<String, Int> = emptyMap()

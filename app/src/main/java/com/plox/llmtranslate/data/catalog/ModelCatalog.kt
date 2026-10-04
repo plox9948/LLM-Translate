@@ -52,11 +52,19 @@ class ModelCatalogParser(
 ) {
     /**
      * Разобрать JSON-каталог в карточки.
-     * @throws IllegalStateException при некорректном JSON или неизвестных значениях полей.
+     * Модели с неизвестными category/runtime отбрасываются с предупреждением.
+     * @throws IllegalStateException при некорректном JSON.
      */
     fun parse(raw: String): List<ModelCard> {
         val dto = json.decodeFromString(ModelCatalogDto.serializer(), raw)
-        return dto.models.map { it.toCard() }
+        return dto.models.mapNotNull { modelDto ->
+            try {
+                modelDto.toCard()
+            } catch (e: IllegalStateException) {
+                Timber.w("Модель ${modelDto.id} пропущена: ${e.message}")
+                null
+            }
+        }
     }
 
     /**
@@ -74,16 +82,16 @@ class ModelCatalogParser(
 }
 
 private fun CatalogModelDto.toCard(): ModelCard {
-    val category = ModelCategory.entries.firstOrNull { it.name == category.uppercase() }
-        ?: throw IllegalStateException("Неизвестная категория: $category")
-    val runtime = RuntimeType.entries.firstOrNull { it.name == runtime.uppercase() }
-        ?: throw IllegalStateException("Неизвестный рантайм: $runtime")
+    val categoryValue = ModelCategory.entries.firstOrNull { it.name == category.uppercase() }
+        ?: throw IllegalStateException("Неизвестная категория: ${this.category}")
+    val runtimeValue = RuntimeType.entries.firstOrNull { it.name == runtime.uppercase() }
+        ?: throw IllegalStateException("Неизвестный рантайм: ${this.runtime}")
     return ModelCard(
         id = id,
-        category = category,
+        category = categoryValue,
         displayName = displayName,
         description = description,
-        runtime = runtime,
+        runtime = runtimeValue,
         sizeBytes = sizeBytes,
         ramRequiredMb = ramRequiredMb,
         languages = languages,

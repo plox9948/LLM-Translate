@@ -22,7 +22,7 @@ abstract class BaseDownloader {
         url: String,
         targetDir: File,
         fileName: String,
-        onProgress: (Int) -> Unit
+        onProgress: suspend (Int) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         val partFile = File(targetDir, "$fileName.part")
         val doneFile = File(targetDir, fileName)
@@ -99,7 +99,7 @@ abstract class BaseDownloader {
         urls: List<String>,
         targetDir: File,
         modelId: String,
-        onProgress: (Int) -> Unit
+        onProgress: suspend (Int) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         val modelDir = File(targetDir, modelId)
         modelDir.mkdirs()
@@ -122,9 +122,9 @@ abstract class BaseDownloader {
     /**
      * Проверить SHA-256 файла. Длительная операция — только в IO-потоке.
      */
-    protected suspend fun verifySha256(file: File, expected: String): Boolean =
+    protected suspend fun verifySha256(file: File, expected: String?): Boolean =
         withContext(Dispatchers.IO) {
-            if (expected.isBlank()) return@withContext true
+            if (expected.isNullOrBlank()) return@withContext true
             val digest = java.security.MessageDigest.getInstance("SHA-256")
             file.inputStream().buffered().use { input ->
                 val buffer = ByteArray(64 * 1024)

@@ -144,7 +144,7 @@ class OnnxLlmRuntime @Inject constructor(
     /**
      * Загрузить модель.
      */
-    fun release() {
+    override fun release() {
         try {
             encoderSession?.close()
             decoderSession?.close()

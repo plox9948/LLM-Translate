@@ -15,6 +15,7 @@ import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -33,7 +34,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class ModelManagerImpl @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val catalogProvider: ModelCatalogProvider,
     private val repository: ModelRepository,
     private val preferences: ModelPreferences,
@@ -145,6 +146,7 @@ class ModelManagerImpl @Inject constructor(
                 quality = 3,
                 speed = 3,
                 url = "",
+                urls = emptyList(),
                 sha256 = null,
                 license = "Неизвестна",
                 minAndroidSdk = 26,
@@ -286,7 +288,7 @@ interface DeviceInfoProvider {
  */
 @Singleton
 class AndroidDeviceInfoProvider @Inject constructor(
-    private val context: Context
+    @ApplicationContext private val context: Context
 ) : DeviceInfoProvider {
 
     override fun get(): DeviceInfo {

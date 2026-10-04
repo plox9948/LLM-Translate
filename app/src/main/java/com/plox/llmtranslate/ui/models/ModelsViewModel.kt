@@ -74,20 +74,30 @@ class ModelsViewModel @Inject constructor(
             )
         }
 
-    val uiState: StateFlow<ModelsUiState> = kotlinx.coroutines.flow.combine(
-        modelManager.catalog,
-        modelManager.installedModels(null),
-        activeIdsFlow,
-        modelManager.diskUsage
-    ) { catalog, installed, activeIds, disk ->
-        ModelsUiState(
-            catalog = catalog,
-            installed = installed,
-            activeIds = activeIds,
-            diskUsage = disk
-        )
+    // Наружные обновления (statusMessage, exportRequest) пишутся в _uiState напрямую;
+    // обновления из потоков моделей перезаписывают их — как при stateIn.
+    private val _uiState = MutableStateFlow(ModelsUiState())
+    val uiState: StateFlow<ModelsUiState> = _uiState
+
+    init {
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.combine(
+                modelManager.catalog,
+                modelManager.installedModels(null),
+                activeIdsFlow,
+                modelManager.diskUsage
+            ) { catalog, installed, activeIds, disk ->
+                ModelsUiState(
+                    catalog = catalog,
+                    installed = installed,
+                    activeIds = activeIds,
+                    diskUsage = disk
+                )
+            }.collect { derived ->
+                _uiState.value = derived
+            }
+        }
     }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ModelsUiState())
 
     val licenseConfirmModel = MutableStateFlow<ModelCard?>(null)
 
@@ -97,6 +107,10 @@ class ModelsViewModel @Inject constructor(
             _deviceInfo.value = modelManager.deviceInfo()
         }
     }
+
+    /** Проверка возможности установки. */
+    fun checkInstall(card: ModelCard, deviceInfo: DeviceInfo): InstallCheck =
+        modelManager.checkInstall(card, deviceInfo)
 
     /** Проверить, можно ли установить, и при необходимости попросить подтверждение лицензии. */
     fun onDownloadClick(card: ModelCard) {
