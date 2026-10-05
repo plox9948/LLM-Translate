@@ -13,7 +13,6 @@ import com.plox.llmtranslate.data.prefs.ModelPreferences
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
-import dagger.multibindings.IntoList
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
@@ -45,14 +44,7 @@ object CatalogModule {
         RemoteCatalogProvider(context, assetsProvider, parser, preferences)
 
     @Provides
-    @IntoList
-    fun provideGgufInstaller(): ModelInstaller = GgufInstaller()
-
-    @Provides
-    @IntoList
-    fun provideOnnxInstaller(): ModelInstaller = OnnxInstaller()
-
-    @Provides
-    @IntoList
-    fun provideVoskInstaller(): ModelInstaller = VoskInstaller()
+    @Singleton
+    fun provideInstallers(): List<ModelInstaller> =
+        listOf(GgufInstaller(), OnnxInstaller(), VoskInstaller())
 }
