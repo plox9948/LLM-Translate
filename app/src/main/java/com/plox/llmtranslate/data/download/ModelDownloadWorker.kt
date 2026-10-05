@@ -12,19 +12,20 @@ import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedInject
 import timber.log.Timber
 import java.io.File
 import java.util.concurrent.TimeUnit
-import javax.inject.Inject
 
 /**
  * Воркер скачивания модели: докачка, SHA-256, обновление Room.
  * SHA-256 для больших файлов занимает 10–20 с, поэтому только здесь, не в UI.
  */
 @HiltWorker
-class ModelDownloadWorker @Inject constructor(
-    appContext: Context,
-    workerParams: WorkerParameters,
+class ModelDownloadWorker @AssistedInject constructor(
+    @Assisted appContext: Context,
+    @Assisted workerParams: WorkerParameters,
     private val repository: ModelRepository,
     private val installers: List<ModelInstaller>
 ) : CoroutineWorker(appContext, workerParams) {
