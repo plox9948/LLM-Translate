@@ -1,8 +1,8 @@
 package com.plox.llmtranslate.domain
 
 import android.content.Context
+import androidx.work.WorkManager
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
-import com.plox.llmtranslate.data.download.ModelDownloadWorker
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.model.DeviceInfo
@@ -14,7 +14,6 @@ import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
-import io.mockk.justRun
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import kotlinx.coroutines.CoroutineScope
@@ -45,9 +44,9 @@ class ModelManagerTest {
 
     @Before
     fun setup() {
-        // Статический cancel() воркера ходит в WorkManager — в юнит-тесте его глушим.
-        mockkStatic(ModelDownloadWorker::class)
-        justRun { ModelDownloadWorker.cancel(any(), any()) }
+        // WorkManager в юнит-тесте не инициализирован — мокаем getInstance().
+        mockkStatic(WorkManager::class)
+        every { WorkManager.getInstance(any()) } returns mockk(relaxed = true)
         every { catalogProvider.catalog } returns flowOf(emptyList())
         every { deviceInfoProvider.get() } returns DeviceInfo(34, 8192, 6000, 10_000_000_000L)
         manager = ModelManagerImpl(
