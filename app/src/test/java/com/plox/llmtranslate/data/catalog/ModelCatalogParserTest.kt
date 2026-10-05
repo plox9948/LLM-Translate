@@ -132,7 +132,7 @@ class ModelCatalogParserTest {
         assertEquals(ModelCategory.STT, card.category)
         assertEquals(RuntimeType.VOSK, card.runtime)
         assertEquals(0, card.ramRequiredMb)
-        assertEquals(emptyList(), card.languages)
+        assertEquals(emptyList<String>(), card.languages)
         assertEquals(3, card.quality)
         assertEquals("Apache-2.0", card.license)
         assertEquals(26, card.minAndroidSdk)
