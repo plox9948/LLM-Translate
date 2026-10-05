@@ -124,8 +124,8 @@ sealed class ModelError {
  * Ошибки рантаймов (LLM/STT/TTS).
  */
 sealed class RuntimeError : Exception() {
-    data class LoadFailed(val runtime: String, val message: String) : RuntimeError()
-    data class InferenceFailed(val runtime: String, val message: String) : RuntimeError()
+    data class LoadFailed(val runtime: String, val reason: String) : RuntimeError()
+    data class InferenceFailed(val runtime: String, val reason: String) : RuntimeError()
     object ModelNotSelected : RuntimeError()
     object ModelNotReady : RuntimeError()
 }

@@ -83,7 +83,7 @@ class TtsRuntime @Inject constructor(
         return try {
             val pm = context.packageManager
             val infos = pm.queryIntentServices(
-                android.content.Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_ENGINE), 0
+                android.content.Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE), 0
             )
             val match = infos.firstOrNull { ri ->
                 val pkg = ri.serviceInfo?.packageName ?: return@firstOrNull false

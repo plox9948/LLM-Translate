@@ -274,8 +274,8 @@ class TranslateViewModel @Inject constructor(
     }
 
     private fun RuntimeError.message(): String = when (this) {
-        is RuntimeError.LoadFailed -> "Не удалось загрузить модель: $message"
-        is RuntimeError.InferenceFailed -> "Ошибка: $message"
+        is RuntimeError.LoadFailed -> "Не удалось загрузить модель: $reason"
+        is RuntimeError.InferenceFailed -> "Ошибка: $reason"
         RuntimeError.ModelNotSelected -> "Модель не выбрана"
         RuntimeError.ModelNotReady -> "Модель не готова"
     }

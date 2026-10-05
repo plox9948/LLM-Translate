@@ -168,7 +168,7 @@ class OnnxLlmRuntime @Inject constructor(
     ): Array<FloatArray>? {
         val ortEnv = env ?: return null
         val seqLen = inputIds.size
-        val inputArray = inputIds.toLongArray()
+        val inputArray = inputIds.map { it.toLong() }.toLongArray()
 
         val inputTensor = OnnxTensor.createTensor(
             ortEnv, LongBuffer.wrap(inputArray), longArrayOf(1L, seqLen.toLong())
@@ -218,7 +218,7 @@ class OnnxLlmRuntime @Inject constructor(
 
         for (step in 0 until MAX_LENGTH) {
             val decLen = generated.size
-            val inputIds = generated.toLongArray()
+            val inputIds = generated.map { it.toLong() }.toLongArray()
 
             val inputTensor = OnnxTensor.createTensor(
                 ortEnv, LongBuffer.wrap(inputIds), longArrayOf(1L, decLen.toLong())
@@ -228,7 +228,7 @@ class OnnxLlmRuntime @Inject constructor(
             )
             val encHidden = OnnxTensor.createTensor(
                 ortEnv,
-                FloatBuffer.wrap(encoderOutput.flatten().toFloatArray()),
+                FloatBuffer.wrap(encoderOutput.flatMap { it.toList() }.toFloatArray()),
                 longArrayOf(1L, srcLen.toLong(), hiddenSize.toLong())
             )
             val encMask = OnnxTensor.createTensor(
