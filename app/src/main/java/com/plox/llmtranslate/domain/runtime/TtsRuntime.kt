@@ -87,7 +87,7 @@ class TtsRuntime @Inject constructor(
             )
             val match = infos.firstOrNull { ri ->
                 val pkg = ri.serviceInfo?.packageName ?: return@firstOrNull false
-                val label = ri.loadLabel(pm)?.lowercase().orEmpty()
+                val label = ri.loadLabel(pm)?.toString()?.lowercase().orEmpty()
                 pkg.lowercase().contains(needle) || label.contains(needle)
             }
             if (match == null) {
