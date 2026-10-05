@@ -27,7 +27,7 @@ class ModelDownloadWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParams: WorkerParameters,
     private val repository: ModelRepository,
-    private val installers: List<ModelInstaller>
+    private val installerRegistry: InstallerRegistry
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -39,7 +39,7 @@ class ModelDownloadWorker @AssistedInject constructor(
 
         val runtime = RuntimeType.entries.firstOrNull { it.name == runtimeName }
             ?: return Result.failure()
-        val installer = installers.firstOrNull { it.supports(runtime) }
+        val installer = installerRegistry.forRuntime(runtime)
             ?: return Result.failure()
 
         val modelsDir = File(applicationContext.getExternalFilesDir("models"), runtime.name)

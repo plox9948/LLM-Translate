@@ -6,7 +6,7 @@ import com.plox.llmtranslate.data.catalog.ModelCatalogParser
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
 import com.plox.llmtranslate.data.catalog.RemoteCatalogProvider
 import com.plox.llmtranslate.data.download.GgufInstaller
-import com.plox.llmtranslate.data.download.ModelInstaller
+import com.plox.llmtranslate.data.download.InstallerRegistry
 import com.plox.llmtranslate.data.download.OnnxInstaller
 import com.plox.llmtranslate.data.download.VoskInstaller
 import com.plox.llmtranslate.data.prefs.ModelPreferences
@@ -45,6 +45,6 @@ object CatalogModule {
 
     @Provides
     @Singleton
-    fun provideInstallers(): List<ModelInstaller> =
-        listOf(GgufInstaller(), OnnxInstaller(), VoskInstaller())
+    fun provideInstallerRegistry(): InstallerRegistry =
+        InstallerRegistry(listOf(GgufInstaller(), OnnxInstaller(), VoskInstaller()))
 }
