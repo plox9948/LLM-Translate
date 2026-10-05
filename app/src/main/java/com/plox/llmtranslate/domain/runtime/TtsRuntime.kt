@@ -42,23 +42,24 @@ class TtsRuntime @Inject constructor(
         val enginePackage = resolveEnginePackage(engine)
         return suspendCancellableCoroutine { cont ->
             try {
-                tts = TextToSpeech(
-                    context.applicationContext,
-                    { status ->
-                        if (status == TextToSpeech.SUCCESS) {
-                            ready = true
-                            if (cont.isActive) cont.resume(null)
-                        } else {
-                            Timber.e("TTS инициализация: статус $status")
-                            if (cont.isActive) {
-                                cont.resume(
-                                    RuntimeError.LoadFailed("tts", "Системный TTS недоступен")
-                                )
-                            }
+                val listener = TextToSpeech.OnInitListener { status ->
+                    if (status == TextToSpeech.SUCCESS) {
+                        ready = true
+                        if (cont.isActive) cont.resume(null)
+                    } else {
+                        Timber.e("TTS инициализация: статус $status")
+                        if (cont.isActive) {
+                            cont.resume(
+                                RuntimeError.LoadFailed("tts", "Системный TTS недоступен")
+                            )
                         }
-                    },
-                    enginePackage ?: TextToSpeech.ENGINE_DEFAULT
-                )
+                    }
+                }
+                tts = if (enginePackage != null) {
+                    TextToSpeech(context.applicationContext, listener, enginePackage)
+                } else {
+                    TextToSpeech(context.applicationContext, listener)
+                }
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка инициализации TTS")
                 if (cont.isActive) {
@@ -80,17 +81,22 @@ class TtsRuntime @Inject constructor(
         }
         val needle = engine.lowercase() // "rhvoice"/"espeak" матчатся по пакету и метке.
         return try {
-            val match = TextToSpeech.getInstalledEngines(context.applicationContext)
-                .firstOrNull { info ->
-                    info.name.lowercase().contains(needle) ||
-                        info.label?.lowercase().orEmpty().contains(needle)
-                }
+            val pm = context.packageManager
+            val infos = pm.queryIntentServices(
+                android.content.Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_ENGINE), 0
+            )
+            val match = infos.firstOrNull { ri ->
+                val pkg = ri.serviceInfo?.packageName ?: return@firstOrNull false
+                val label = ri.loadLabel(pm)?.lowercase().orEmpty()
+                pkg.lowercase().contains(needle) || label.contains(needle)
+            }
             if (match == null) {
                 Timber.w("TTS-движок '$engine' не найден, откат на движок по умолчанию")
                 null
             } else {
-                Timber.d("TTS-движок '$engine': пакет ${match.name}")
-                match.name
+                val pkg = match.serviceInfo?.packageName
+                Timber.d("TTS-движок '$engine': пакет $pkg")
+                pkg
             }
         } catch (e: Exception) {
             Timber.w(e, "Не удалось получить список TTS-движков, откат на движок по умолчанию")

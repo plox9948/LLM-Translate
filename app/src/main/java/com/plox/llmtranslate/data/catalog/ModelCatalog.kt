@@ -124,8 +124,8 @@ class AssetsModelCatalogProvider @JvmOverloads constructor(
 
     override val catalog: Flow<List<ModelCard>> = flow {
         val models = withContext(Dispatchers.IO) {
-            context.assets.open(assetName).buffered().use { input ->
-                parser.parse(input.readText())
+            context.assets.open(assetName).use { input ->
+                parser.parse(input.readBytes().decodeToString())
             }
         }
         Timber.d("Каталог из assets: ${models.size} моделей")

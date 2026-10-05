@@ -91,7 +91,7 @@ class RemoteCatalogProvider @Inject constructor(
             urlConn.requestMethod = "GET"
 
             if (urlConn.responseCode == 200) {
-                val json = urlConn.inputStream.buffered().use { it.readText() }
+                val json = urlConn.inputStream.use { it.readBytes().decodeToString() }
                 val fetchedVersion = parser.parseVersion(json)
 
                 if (fetchedVersion > appliedVersion) {

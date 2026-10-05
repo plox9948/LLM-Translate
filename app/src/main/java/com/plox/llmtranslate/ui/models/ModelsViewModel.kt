@@ -176,7 +176,7 @@ class ModelsViewModel @Inject constructor(
         if (!model.isReady || model.filePath.isNullOrBlank()) return
         val ext = model.filePath!!.substringAfterLast('.', "").lowercase()
         val finalExt = if (ext in listOf("gguf", "onnx", "zip")) ext else "gguf"
-        uiState.value = uiState.value.copy(
+        _uiState.value = _uiState.value.copy(
             exportRequest = ExportRequest(model.id, "${model.displayName}.$finalExt")
         )
     }
@@ -186,7 +186,7 @@ class ModelsViewModel @Inject constructor(
      */
     fun onExportResult(uri: android.net.Uri?) {
         val request = uiState.value.exportRequest
-        uiState.value = uiState.value.copy(exportRequest = null)
+        _uiState.value = _uiState.value.copy(exportRequest = null)
         if (uri == null || request == null) return
         viewModelScope.launch {
             modelManager.exportToUri(request.modelId, uri)
@@ -197,7 +197,7 @@ class ModelsViewModel @Inject constructor(
      * Запросить экспорт резервной копии (все модели + настройки).
      */
     fun onBackupExportClick() {
-        uiState.value = uiState.value.copy(
+        _uiState.value = _uiState.value.copy(
             backupExportRequest = BackupExportRequest(
                 "llm_translate_backup_${System.currentTimeMillis()}.zip"
             )
@@ -208,12 +208,12 @@ class ModelsViewModel @Inject constructor(
      * Завершить экспорт бэкапа: записать ZIP в выбранный SAF-uri.
      */
     fun onBackupExportResult(uri: android.net.Uri?) {
-        uiState.value = uiState.value.copy(backupExportRequest = null)
+        _uiState.value = _uiState.value.copy(backupExportRequest = null)
         if (uri == null) return
         viewModelScope.launch {
-            uiState.value = uiState.value.copy(isBusy = true, statusMessage = "Экспорт…")
+            _uiState.value = _uiState.value.copy(isBusy = true, statusMessage = "Экспорт…")
             val ok = backupManager.exportToUri(uri)
-            uiState.value = uiState.value.copy(
+            _uiState.value = _uiState.value.copy(
                 isBusy = false,
                 statusMessage = if (ok) "Бэкап сохранён" else "Ошибка экспорта бэкапа"
             )
@@ -226,19 +226,19 @@ class ModelsViewModel @Inject constructor(
     fun onBackupImportResult(uri: android.net.Uri?) {
         if (uri == null) return
         viewModelScope.launch {
-            uiState.value = uiState.value.copy(isBusy = true, statusMessage = "Импорт…")
+            _uiState.value = _uiState.value.copy(isBusy = true, statusMessage = "Импорт…")
             val result = backupManager.importFromUri(uri)
             val msg = when {
                 result.error != null -> "Ошибка: ${result.error}"
                 else -> "Импортировано: ${result.importedCount}, пропущено: ${result.skippedCount}" +
                     (if (result.settingsRestored) ", настройки восстановлены" else "")
             }
-            uiState.value = uiState.value.copy(isBusy = false, statusMessage = msg)
+            _uiState.value = _uiState.value.copy(isBusy = false, statusMessage = msg)
         }
     }
 
     fun clearStatusMessage() {
-        uiState.value = uiState.value.copy(statusMessage = null)
+        _uiState.value = _uiState.value.copy(statusMessage = null)
     }
 
     /** Скрыть баннер причины блокировки установки. */

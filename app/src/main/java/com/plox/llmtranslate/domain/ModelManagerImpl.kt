@@ -10,6 +10,7 @@ import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.model.DeviceInfo
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import com.plox.llmtranslate.domain.model.InstallCheck
+import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
@@ -260,7 +261,7 @@ class ModelManagerImpl @Inject constructor(
     }
 
     private fun queryFileName(uri: Uri): String? {
-        uri.queryParameter("name")?.let { return it }
+        uri.getQueryParameter("name")?.let { return it }
         val last = uri.lastPathSegment
         if (!last.isNullOrBlank()) return Uri.decode(last)
         return null

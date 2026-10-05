@@ -9,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
+import java.nio.FloatBuffer
+import java.nio.LongBuffer
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -169,10 +171,10 @@ class OnnxLlmRuntime @Inject constructor(
         val inputArray = inputIds.toLongArray()
 
         val inputTensor = OnnxTensor.createTensor(
-            ortEnv, inputArray, longArrayOf(1L, seqLen.toLong())
+            ortEnv, LongBuffer.wrap(inputArray), longArrayOf(1L, seqLen.toLong())
         )
         val attentionMask = OnnxTensor.createTensor(
-            ortEnv, LongArray(seqLen) { 1L }, longArrayOf(1L, seqLen.toLong())
+            ortEnv, LongBuffer.wrap(LongArray(seqLen) { 1L }), longArrayOf(1L, seqLen.toLong())
         )
 
         val inputs = mapOf(
@@ -219,18 +221,18 @@ class OnnxLlmRuntime @Inject constructor(
             val inputIds = generated.toLongArray()
 
             val inputTensor = OnnxTensor.createTensor(
-                ortEnv, inputIds, longArrayOf(1L, decLen.toLong())
+                ortEnv, LongBuffer.wrap(inputIds), longArrayOf(1L, decLen.toLong())
             )
             val attentionMask = OnnxTensor.createTensor(
-                ortEnv, LongArray(decLen) { 1L }, longArrayOf(1L, decLen.toLong())
+                ortEnv, LongBuffer.wrap(LongArray(decLen) { 1L }), longArrayOf(1L, decLen.toLong())
             )
             val encHidden = OnnxTensor.createTensor(
                 ortEnv,
-                encoderOutput.flatten().toFloatArray(),
+                FloatBuffer.wrap(encoderOutput.flatten().toFloatArray()),
                 longArrayOf(1L, srcLen.toLong(), hiddenSize.toLong())
             )
             val encMask = OnnxTensor.createTensor(
-                ortEnv, LongArray(srcLen) { 1L }, longArrayOf(1L, srcLen.toLong())
+                ortEnv, LongBuffer.wrap(LongArray(srcLen) { 1L }), longArrayOf(1L, srcLen.toLong())
             )
 
             val inputs = mapOf(

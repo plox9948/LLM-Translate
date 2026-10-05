@@ -123,7 +123,7 @@ sealed class ModelError {
 /**
  * Ошибки рантаймов (LLM/STT/TTS).
  */
-sealed class RuntimeError {
+sealed class RuntimeError : Exception() {
     data class LoadFailed(val runtime: String, val message: String) : RuntimeError()
     data class InferenceFailed(val runtime: String, val message: String) : RuntimeError()
     object ModelNotSelected : RuntimeError()

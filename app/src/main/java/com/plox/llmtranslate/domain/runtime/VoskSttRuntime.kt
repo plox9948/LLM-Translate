@@ -1,7 +1,7 @@
 package com.plox.llmtranslate.domain.runtime
 
-import com.alphacephei.vosk.KaldiRecognizer
-import com.alphacephei.vosk.Model
+import org.vosk.Model
+import org.vosk.Recognizer
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.RuntimeError
 import kotlinx.coroutines.Dispatchers
@@ -78,7 +78,7 @@ class VoskSttRuntime @Inject constructor() : SttEngine {
                     )
                 }
 
-                val recognizer = KaldiRecognizer(loadedModel, SAMPLE_RATE)
+                val recognizer = Recognizer(loadedModel, SAMPLE_RATE.toFloat())
                 try {
                     recognizer.setWords(true)
 
@@ -87,11 +87,12 @@ class VoskSttRuntime @Inject constructor() : SttEngine {
                     var offset = 0
                     while (offset < pcm.size) {
                         val len = minOf(chunkSize, pcm.size - offset)
-                        recognizer.WaveForm(pcm, offset, len)
+                        val chunk = pcm.copyOfRange(offset, offset + len)
+                        recognizer.acceptWaveForm(chunk, chunk.size)
                         offset += len
                     }
 
-                    val resultJson = recognizer.FinalResult()
+                    val resultJson = recognizer.getFinalResult()
                     val text = JSONObject(resultJson).optString("text", "").trim()
 
                     if (text.isEmpty()) {

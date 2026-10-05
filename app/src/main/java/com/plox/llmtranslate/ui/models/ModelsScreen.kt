@@ -21,7 +21,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FileDownload
-import androidx.compose.material.icons.filled.FileExport
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Star
@@ -181,7 +181,7 @@ fun ModelsScreen(
                     modifier = Modifier.weight(1f),
                     enabled = !uiState.isBusy
                 ) {
-                    Icon(Icons.Filled.FileExport, contentDescription = null)
+                            Icon(Icons.Filled.FileUpload, contentDescription = null)
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Бэкап")
                 }
@@ -444,7 +444,7 @@ private fun ModelCardItem(
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                         OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Filled.FileExport, contentDescription = null)
+                    Icon(Icons.Filled.FileUpload, contentDescription = null)
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Экспорт")
                         }
