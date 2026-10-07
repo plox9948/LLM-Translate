@@ -1,9 +1,12 @@
 package com.plox.llmtranslate.domain.runtime
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -121,6 +124,7 @@ class AudioRecorder @Inject constructor(
         const val BITS_PER_SAMPLE = 16
     }
 
+    @Volatile
     var isRecording: Boolean = false
         private set
 
@@ -135,6 +139,14 @@ class AudioRecorder @Inject constructor(
     fun startRecording(): Boolean {
         if (isRecording) return true
 
+        if (ContextCompat.checkSelfPermission(
+                context, Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Timber.w("Нет разрешения RECORD_AUDIO — запись невозможна")
+            return false
+        }
+
         val minBuffer = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
@@ -145,13 +157,18 @@ class AudioRecorder @Inject constructor(
             return false
         }
 
-        val record = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            minBuffer * 2
-        )
+        val record = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                minBuffer * 2
+            )
+        } catch (e: SecurityException) {
+            Timber.e(e, "SecurityException при создании AudioRecord")
+            return false
+        }
         if (record.state != AudioRecord.STATE_INITIALIZED) {
             Timber.e("AudioRecord не инициализирован")
             record.release()

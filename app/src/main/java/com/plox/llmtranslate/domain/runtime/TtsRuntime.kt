@@ -82,9 +82,16 @@ class TtsRuntime @Inject constructor(
         val needle = engine.lowercase() // "rhvoice"/"espeak" матчатся по пакету и метке.
         return try {
             val pm = context.packageManager
-            val infos = pm.queryIntentServices(
-                android.content.Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE), 0
-            )
+            val intent = android.content.Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE)
+            val infos = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                pm.queryIntentServices(
+                    intent,
+                    android.content.pm.PackageManager.ResolveInfoFlags.of(0)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                pm.queryIntentServices(intent, 0)
+            }
             val match = infos.firstOrNull { ri ->
                 val pkg = ri.serviceInfo?.packageName ?: return@firstOrNull false
                 val label = ri.loadLabel(pm)?.toString()?.lowercase().orEmpty()
@@ -116,9 +123,10 @@ class TtsRuntime @Inject constructor(
 
     /**
      * Озвучить текст на языке [lang].
+     * @param onDone колбэк завершения озвучивания (вызывается на главном потоке).
      * @return null при успехе или [RuntimeError].
      */
-    suspend fun speak(text: String, lang: String): RuntimeError? {
+    suspend fun speak(text: String, lang: String, onDone: (() -> Unit)? = null): RuntimeError? {
         val engine = tts
             ?: return RuntimeError.LoadFailed("tts", "TTS не инициализирован")
         if (!ready) return RuntimeError.LoadFailed("tts", "TTS не готов")
@@ -136,6 +144,7 @@ class TtsRuntime @Inject constructor(
             override fun onStart(utteranceId: String?) {}
             override fun onDone(utteranceId: String?) {
                 Timber.d("TTS завершён: $utteranceId")
+                onDone?.invoke()
             }
 
             @Deprecated("Deprecated in Java")

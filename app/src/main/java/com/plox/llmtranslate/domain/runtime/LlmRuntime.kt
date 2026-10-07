@@ -15,6 +15,12 @@ import javax.inject.Singleton
 @Singleton
 class LlmRuntime @Inject constructor() : TranslationEngine {
 
+    companion object {
+        private const val DEFAULT_N_THREADS = 4
+        private const val DEFAULT_N_CTX = 4096
+        private const val DEFAULT_MAX_TOKENS = 1024
+    }
+
     /** Идентификатор загруженной модели. */
     var loadedModelId: String? = null
         private set
@@ -41,7 +47,9 @@ class LlmRuntime @Inject constructor() : TranslationEngine {
                 loadedModelId = null
             }
 
-            val code = NativeBridge.llamaLoadModel(path, nThreads = 4, nCtx = 4096)
+            val code = NativeBridge.llamaLoadModel(
+                path, nThreads = DEFAULT_N_THREADS, nCtx = DEFAULT_N_CTX
+            )
             if (code != 0) {
                 Timber.e("Не удалось загрузить LLM-модель $path (код $code)")
                 return@withContext RuntimeError.LoadFailed("llm", "Код ошибки: $code")
@@ -60,7 +68,7 @@ class LlmRuntime @Inject constructor() : TranslationEngine {
                 return@withContext Result.failure(RuntimeError.ModelNotSelected)
             }
             val prompt = buildPrompt(text, langTitle(from), langTitle(to))
-            val output = NativeBridge.llamaGenerate(prompt, maxTokens = 1024)
+            val output = NativeBridge.llamaGenerate(prompt, maxTokens = DEFAULT_MAX_TOKENS)
                 ?: return@withContext Result.failure(
                     RuntimeError.InferenceFailed("llm", "Генерация не выполнена")
                 )

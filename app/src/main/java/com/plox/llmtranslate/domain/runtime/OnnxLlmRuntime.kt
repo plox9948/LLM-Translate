@@ -27,6 +27,8 @@ class OnnxLlmRuntime @Inject constructor(
 
     companion object {
         const val MAX_LENGTH = 256
+        private const val INTRA_OP_THREADS = 4
+        private const val INTER_OP_THREADS = 1
     }
 
     private var env: OrtEnvironment? = null
@@ -66,8 +68,8 @@ class OnnxLlmRuntime @Inject constructor(
                 }
 
                 val sessionOpts = OrtSession.SessionOptions().apply {
-                    setIntraOpNumThreads(4)
-                    setInterOpNumThreads(1)
+                    setIntraOpNumThreads(INTRA_OP_THREADS)
+                    setInterOpNumThreads(INTER_OP_THREADS)
                 }
 
                 encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
@@ -185,14 +187,9 @@ class OnnxLlmRuntime @Inject constructor(
         val output = session.run(inputs)
         val hiddenStates = output.get(0) as OnnxTensor
 
-        val data = hiddenStates.getValue() as Array<LongArray>
+        val data = hiddenStates.getValue() as Array<FloatArray>
         val hiddenSize = data[0].size
-        val result = Array(seqLen) { FloatArray(hiddenSize) }
-        for (i in 0 until seqLen) {
-            for (j in 0 until hiddenSize) {
-                result[i][j] = data[i][j].toFloat()
-            }
-        }
+        val result = Array(seqLen) { i -> data[i].copyOf() }
 
         inputTensor.close()
         attentionMask.close()
