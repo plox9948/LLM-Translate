@@ -42,7 +42,6 @@ data class ModelsUiState(
     val activeIds: Map<ModelCategory, String?> = emptyMap(),
     val diskUsage: DiskUsage? = null,
     val deviceInfo: DeviceInfo? = null,
-    val licenseConfirmModel: ModelCard? = null,
     val exportRequest: ExportRequest? = null,
     val backupExportRequest: BackupExportRequest? = null,
     val isBusy: Boolean = false,
@@ -98,7 +97,6 @@ class ModelsViewModel @Inject constructor(
                 // чтобы они не терялись при обновлении Room/DataStore.
                 val current = _uiState.value
                 _uiState.value = derived.copy(
-                    licenseConfirmModel = current.licenseConfirmModel,
                     exportRequest = current.exportRequest,
                     backupExportRequest = current.backupExportRequest,
                     isBusy = current.isBusy,

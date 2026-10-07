@@ -21,7 +21,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -190,7 +190,7 @@ fun TranslateScreen(
                         }) {
                             Icon(
                                 imageVector = if (state.isSpeaking) Icons.Filled.Stop
-                                else Icons.Filled.VolumeUp,
+                                else Icons.AutoMirrored.Filled.VolumeUp,
                                 contentDescription = "Озвучить"
                             )
                         }

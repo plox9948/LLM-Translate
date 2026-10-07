@@ -25,7 +25,7 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarHalf
+import androidx.compose.material.icons.automirrored.filled.StarHalf
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -468,7 +468,7 @@ private fun Stars(count: Int) {
         repeat(5) { i ->
             Icon(
                 imageVector = if (i < count) Icons.Filled.Star
-                else Icons.Filled.StarHalf,
+                else Icons.AutoMirrored.Filled.StarHalf,
                 contentDescription = null,
                 modifier = Modifier.size(14.dp),
                 tint = if (i < count) {

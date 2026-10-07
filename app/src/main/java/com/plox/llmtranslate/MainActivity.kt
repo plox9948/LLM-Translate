@@ -88,6 +88,10 @@ class MainActivity : ComponentActivity() {
         }
         val config = Configuration(resources.configuration)
         config.setLocale(locale)
+        // updateConfiguration устарел, но остаётся надёжным способом применить
+        // локаль к активности без пересоздания и без AppCompat. Современный
+        // createConfigurationContext не меняет ресурсы самой активности.
+        @Suppress("DEPRECATION")
         resources.updateConfiguration(config, resources.displayMetrics)
     }
 }

@@ -187,6 +187,9 @@ class OnnxLlmRuntime @Inject constructor(
         val output = session.run(inputs)
         val hiddenStates = output.get(0) as OnnxTensor
 
+        // Каст корректен: ONNX-тензор encoder — 2D [seqLen, hiddenSize],
+        // getValue() возвращает его как Array<FloatArray>.
+        @Suppress("UNCHECKED_CAST")
         val data = hiddenStates.getValue() as Array<FloatArray>
         val hiddenSize = data[0].size
         val result = Array(seqLen) { i -> data[i].copyOf() }
@@ -243,6 +246,9 @@ class OnnxLlmRuntime @Inject constructor(
 
             // logits — последний элемент.
             val logitsTensor = output.get(output.size() - 1) as OnnxTensor
+            // Каст корректен: ONNX-тензор logits decoder — 3D [1, decLen, vocab],
+            // getValue() возвращает его как Array<Array<FloatArray>>.
+            @Suppress("UNCHECKED_CAST")
             val logits = logitsTensor.getValue() as Array<Array<FloatArray>>
 
             // Берём токен с максимальным логитом.
