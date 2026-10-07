@@ -35,6 +35,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var preferences: ModelPreferences
 
+    /** Последний применённый язык, чтобы не повторять updateConfiguration при рекомпозиции. */
+    private var appliedUiLanguage: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -76,6 +79,8 @@ class MainActivity : ComponentActivity() {
      * Применить язык интерфейса к конфигурации активности.
      */
     private fun applyUiLanguage(lang: String) {
+        if (lang == appliedUiLanguage) return
+        appliedUiLanguage = lang
         val locale = when (lang) {
             "ru" -> Locale("ru")
             "en" -> Locale("en")

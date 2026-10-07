@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
         INTERNET и ACCESS_NETWORK_STATE нужны ТОЛЬКО для загрузки моделей
@@ -9,7 +10,6 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Видимость TTS-движков (RHVoice/eSpeak) для TextToSpeech.getInstalledEngines на Android 11+. -->
     <queries>
@@ -37,16 +37,15 @@
             </intent-filter>
         </activity>
 
-        <!-- FileProvider для экспорта моделей и записи аудио. -->
+        <!--
+            Отключаем дефолтный WorkManagerInitializer (androidx.startup),
+            т.к. Application реализует Configuration.Provider — иначе
+            WorkManager инициализируется дважды.
+        -->
         <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            tools:node="remove" />
     </application>
 
 </manifest>

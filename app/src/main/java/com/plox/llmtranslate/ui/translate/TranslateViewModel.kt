@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 
 /**
@@ -74,7 +75,10 @@ class TranslateViewModel @Inject constructor(
         viewModelScope.launch {
             // Инициализация TTS текущим движком и переконфигурация при смене настройки.
             preferences.ttsEngine.collect { engine ->
-                ttsRuntime.init(engine)
+                val error = ttsRuntime.init(engine)
+                if (error != null) {
+                    Timber.w("TTS недоступен: ${error.message()}")
+                }
             }
         }
     }
@@ -202,7 +206,9 @@ class TranslateViewModel @Inject constructor(
         val state = _uiState.value
         if (state.resultText.isBlank()) return
         viewModelScope.launch {
-            val error = ttsRuntime.speak(state.resultText, state.targetLang.code)
+            val error = ttsRuntime.speak(state.resultText, state.targetLang.code) {
+                update { it.copy(isSpeaking = false) }
+            }
             if (error != null) {
                 update { it.copy(error = error.message()) }
             } else {

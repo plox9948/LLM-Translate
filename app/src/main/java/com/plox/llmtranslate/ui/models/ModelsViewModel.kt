@@ -94,7 +94,16 @@ class ModelsViewModel @Inject constructor(
                     diskUsage = disk
                 )
             }.collect { derived ->
-                _uiState.value = derived
+                // Сохраняем транзиентные поля (статус, экспорт, busy),
+                // чтобы они не терялись при обновлении Room/DataStore.
+                val current = _uiState.value
+                _uiState.value = derived.copy(
+                    licenseConfirmModel = current.licenseConfirmModel,
+                    exportRequest = current.exportRequest,
+                    backupExportRequest = current.backupExportRequest,
+                    isBusy = current.isBusy,
+                    statusMessage = current.statusMessage
+                )
             }
         }
     }

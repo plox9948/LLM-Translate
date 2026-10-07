@@ -52,6 +52,7 @@ import com.plox.llmtranslate.domain.model.InstallCheck
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
+import java.util.Locale
 import javax.inject.Inject
 
 /**
@@ -487,7 +488,7 @@ private fun categoryTitle(category: ModelCategory): String = when (category) {
 }
 
 private fun formatBytes(bytes: Long): String = when {
-    bytes >= 1_073_741_824 -> String.format("%.1f ГБ", bytes / 1_073_741_824.0)
-    bytes >= 1_048_576 -> String.format("%.0f МБ", bytes / 1_048_576.0)
-    else -> String.format("%.0f КБ", bytes / 1024.0)
+    bytes >= 1_073_741_824 -> String.format(Locale.US, "%.1f ГБ", bytes / 1_073_741_824.0)
+    bytes >= 1_048_576 -> String.format(Locale.US, "%.0f МБ", bytes / 1_048_576.0)
+    else -> String.format(Locale.US, "%.0f КБ", bytes / 1024.0)
 }

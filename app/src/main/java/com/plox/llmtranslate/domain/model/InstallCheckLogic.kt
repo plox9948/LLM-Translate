@@ -1,5 +1,7 @@
 package com.plox.llmtranslate.domain.model
 
+import java.util.Locale
+
 /**
  * Чистая логика проверки установки модели. Вынесена для unit-тестов.
  */
@@ -51,8 +53,8 @@ object InstallCheckLogic {
     }
 
     private fun formatSize(bytes: Long): String = when {
-        bytes >= 1_073_741_824 -> String.format("%.1f ГБ", bytes / 1_073_741_824.0)
-        bytes >= 1_048_576 -> String.format("%.0f МБ", bytes / 1_048_576.0)
-        else -> String.format("%.0f КБ", bytes / 1024.0)
+        bytes >= 1_073_741_824 -> String.format(Locale.US, "%.1f ГБ", bytes / 1_073_741_824.0)
+        bytes >= 1_048_576 -> String.format(Locale.US, "%.0f МБ", bytes / 1_048_576.0)
+        else -> String.format(Locale.US, "%.0f КБ", bytes / 1024.0)
     }
 }
