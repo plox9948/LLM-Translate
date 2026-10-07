@@ -45,7 +45,7 @@ class VoskInstaller : ModelInstaller, BaseDownloader() {
                         outFile.mkdirs()
                     } else {
                         outFile.parentFile?.mkdirs()
-                        outFile.outputStream().use { zip.transferTo(it) }
+                        outFile.outputStream().use { zip.copyTo(it) }
                     }
                     zip.closeEntry()
                     entry = zip.nextEntry

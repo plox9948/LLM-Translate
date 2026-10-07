@@ -154,7 +154,7 @@ class ModelBackupManager @Inject constructor(
                                     Timber.w("ZIP-запись вне каталога, пропущена: $name")
                                 } else {
                                     outFile.parentFile?.mkdirs()
-                                    outFile.outputStream().use { zip.transferTo(it) }
+                                    outFile.outputStream().use { zip.copyTo(it) }
                                 }
                             }
                         }
@@ -310,7 +310,8 @@ class ModelBackupManager @Inject constructor(
         return if (modelsRoot != null && file.absolutePath.startsWith(modelsRoot.absolutePath)) {
             MODELS_PREFIX + file.absolutePath.removePrefix(modelsRoot.absolutePath).removePrefix(File.separator)
         } else {
-            MODELS_PREFIX + model.id
+            // Используем имя файла (с расширением), чтобы путь не менялся после импорта.
+            MODELS_PREFIX + file.name
         }
     }
 
@@ -384,7 +385,7 @@ class ModelBackupManager @Inject constructor(
             if (read < 0) break
             outputStream.write(buffer, 0, read)
         }
-        return outputStream.toString(Charsets.UTF_8)
+        return String(outputStream.toByteArray(), Charsets.UTF_8)
     }
 }
 

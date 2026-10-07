@@ -42,7 +42,9 @@ class ModelDownloadWorker @AssistedInject constructor(
         val installer = installerRegistry.forRuntime(runtime)
             ?: return Result.failure()
 
-        val modelsDir = File(applicationContext.getExternalFilesDir("models"), runtime.name)
+        val modelsRoot = applicationContext.getExternalFilesDir("models")
+            ?: applicationContext.filesDir
+        val modelsDir = File(modelsRoot, runtime.name)
         val model = repository.getById(modelId)
         val urls = urlsCsv.split(',').filter { it.isNotBlank() }
 

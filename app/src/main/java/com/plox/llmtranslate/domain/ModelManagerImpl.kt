@@ -47,7 +47,7 @@ class ModelManagerImpl @Inject constructor(
     private val scope = appScope
 
     private val modelsDir: File
-        get() = context.getExternalFilesDir("models")!!
+        get() = context.getExternalFilesDir("models") ?: context.filesDir
 
     override val catalog: Flow<List<ModelCard>> = catalogProvider.catalog
 
