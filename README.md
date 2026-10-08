@@ -59,21 +59,15 @@ app/src/main/assets/         # models_catalog.json
    git submodule update --init --recursive
    ```
 
-   Субмодули (llama.cpp, whisper.cpp) подключаются в `app/src/main/cpp/external/`.
-   **llama.cpp фиксируется на ветке PR #22836** (ядро STQ1_0 для модели
-   Hy-MT1.5 1.25-bit) — подробные команды в `app/src/main/cpp/README.md`:
+    Субмодули (llama.cpp, whisper.cpp) подключаются в `app/src/main/cpp/external/`:
 
-   ```bash
-   cd app/src/main/cpp/external
-   git submodule add https://github.com/ggml-org/llama.cpp llama.cpp
-   cd llama.cpp
-   git fetch origin pull/22836/head:pr-22836-stq_0
-   git checkout pr-22836-stq_0
-   cd ..
-   git submodule add https://github.com/ggml-org/whisper.cpp whisper.cpp
-   cd ../..
-   git add app/src/main/cpp/external
-   ```
+    ```bash
+    cd app/src/main/cpp/external
+    git submodule add https://github.com/ggml-org/llama.cpp llama.cpp
+    git submodule add https://github.com/ggml-org/whisper.cpp whisper.cpp
+    cd ../..
+    git add app/src/main/cpp/external
+    ```
 
 2. Создать `local.properties` с указанием пути к Android SDK:
 
@@ -106,13 +100,9 @@ app/src/main/assets/         # models_catalog.json
 
 | Модель | Категория | Размер | Описание |
 |--------|-----------|--------|----------|
-| Hy-MT1.5 1.8B 1.25-bit (STQ) | Перевод | ~462 МБ | 33 языка, рекомендуемая (нужен llama.cpp PR #22836) |
 | Hy-MT1.5 1.8B 2-bit (SEQ) | Перевод | ~601 МБ | максимальное качество (kernel Q2_0c, SME2) |
 | Hy-MT2 1.8B Q4_K_M | Перевод | ~1.13 ГБ | стандартный GGUF, 33 языка |
-| Hy-MT2 1.8B Q8_0 | Перевод | ~1.91 ГБ | максимальное качество Hy-MT2 |
 | NLLB-200 600M Q4F16 | Перевод | ~880 МБ | 200 языков (ONNX, encoder+decoder) |
-| Tiny Aya Global 3.35B | Перевод | ~2.14 ГБ | 67 языков, высокое качество (CC-BY-NC) |
-| Vosk RU Small | STT | ~45 МБ | русский |
 | Whisper Tiny (Nepali) | STT | ~51 МБ | непальский |
 | Whisper Base (Multi) | STT | ~143 МБ | ru+en+ne |
 | Системный TTS / RHVoice / eSpeak NG | TTS | — | без установки |
@@ -151,9 +141,6 @@ llm_translate_backup.zip
 └── models/                # файлы моделей
     ├── GGUF/
     │   └── hy-mt2-1.8b-q4_k_m.gguf
-    ├── VOSK/
-    │   └── vosk-ru-small/
-    │       └── ...
     └── ONNX/
         └── nllb-200-600m-q4f16/
             ├── encoder_model_q4f16.onnx
@@ -206,8 +193,8 @@ llm_translate_backup.zip
 
 **Пошагово:**
 
-1. Скачайте нужные модели (GGUF, ONNX, Vosk).
-2. Создайте папку `models/` с подкаталогами `GGUF`, `VOSK`, `ONNX`.
+1. Скачайте нужные модели (GGUF, ONNX).
+2. Создайте папку `models/` с подкаталогами `GGUF`, `ONNX`.
 3. Разместите файлы моделей.
 4. Создайте `manifest.json` с записью на каждую модель (поле `relativePath` — путь к файлу внутри архива).
 5. При желании создайте `settings.json`.

@@ -34,7 +34,7 @@ abstract class BaseDownloader {
             val urlConn = URL(url).openConnection() as HttpURLConnection
             connection = urlConn
             urlConn.connectTimeout = 30_000
-            urlConn.readTimeout = 60_000
+            urlConn.readTimeout = 120_000
             if (bytesDone > 0) {
                 urlConn.setRequestProperty("Range", "bytes=$bytesDone-")
             }

@@ -66,14 +66,13 @@ class ModelManagerImpl @Inject constructor(
             models.firstOrNull { it.id == id && it.isReady }
         }
 
-    override val diskUsage: Flow<DiskUsage> = flow {
-        val usage = withContext(Dispatchers.IO) {
+    override val diskUsage: Flow<DiskUsage> = repository.observeAll().map { _ ->
+        withContext(Dispatchers.IO) {
             DiskUsage(
                 totalBytes = modelsDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
                 modelsDir = modelsDir.absolutePath
             )
         }
-        emit(usage)
     }
 
     override suspend fun setActive(category: ModelCategory, modelId: String): Boolean =

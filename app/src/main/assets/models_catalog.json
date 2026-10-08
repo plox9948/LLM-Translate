@@ -2,23 +2,6 @@
   "version": 3,
   "models": [
     {
-      "id": "hy-mt1.5-1.8b-stq1_0",
-      "category": "TRANSLATION",
-      "displayName": "Hy-MT1.5 1.8B (1.25-bit STQ)",
-      "description": "Tencent Hy-MT1.5, Sherry 1.25-bit, 33 языка, рекомендуемая",
-      "runtime": "GGUF",
-      "sizeBytes": 484623872,
-      "ramRequiredMb": 1500,
-      "languages": ["ru", "en", "ne", "zh", "ja", "ko", "de", "fr", "es", "it", "pt", "hi", "ar", "fa", "id", "vi", "th", "tr", "pl", "nl", "sv", "da", "fi", "no", "cs", "sk", "ro", "hu", "el", "he", "uk", "ms", "tl"],
-      "quality": 4,
-      "speed": 5,
-      "url": "https://huggingface.co/AngelSlim/Hy-MT1.5-1.8B-1.25bit-GGUF/resolve/main/Hy-MT1.5-1.8B-1.25bit.gguf",
-      "sha256": null,
-      "license": "Apache-2.0",
-      "minAndroidSdk": 26,
-      "recommendedRamMb": 3072
-    },
-    {
       "id": "hy-mt1.5-1.8b-2bit",
       "category": "TRANSLATION",
       "displayName": "Hy-MT1.5 1.8B (2-bit SEQ)",
@@ -53,23 +36,6 @@
       "recommendedRamMb": 6144
     },
     {
-      "id": "hy-mt2-1.8b-q8_0",
-      "category": "TRANSLATION",
-      "displayName": "Hy-MT2 1.8B (Q8_0)",
-      "description": "Tencent Hy-MT2, максимальное качество",
-      "runtime": "GGUF",
-      "sizeBytes": 2050397696,
-      "ramRequiredMb": 4000,
-      "languages": ["ru", "en", "ne", "zh", "ja", "ko", "de", "fr", "es", "it", "pt", "hi", "ar", "fa", "id", "vi", "th", "tr", "pl", "nl", "sv", "da", "fi", "no", "cs", "sk", "ro", "hu", "el", "he", "uk", "ms", "tl"],
-      "quality": 5,
-      "speed": 4,
-      "url": "https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q8_0.gguf",
-      "sha256": null,
-      "license": "Apache-2.0",
-      "minAndroidSdk": 26,
-      "recommendedRamMb": 8192
-    },
-    {
       "id": "nllb-200-600m-q4f16",
       "category": "TRANSLATION",
       "displayName": "NLLB-200 600M (Q4F16)",
@@ -89,40 +55,6 @@
       "license": "CC-BY-NC-4.0",
       "minAndroidSdk": 26,
       "recommendedRamMb": 4096
-    },
-    {
-      "id": "tiny-aya-3.35b",
-      "category": "TRANSLATION",
-      "displayName": "Tiny Aya Global 3.35B",
-      "description": "Cohere Tiny Aya, 67 языков, высокое качество",
-      "runtime": "GGUF",
-      "sizeBytes": 2297656832,
-      "ramRequiredMb": 5000,
-      "languages": ["ru", "en", "ne"],
-      "quality": 5,
-      "speed": 3,
-      "url": "https://huggingface.co/CohereLabs/tiny-aya-global-GGUF/resolve/main/tiny-aya-global-q4_k_m.gguf",
-      "sha256": null,
-      "license": "CC-BY-NC-4.0",
-      "minAndroidSdk": 26,
-      "recommendedRamMb": 8192
-    },
-    {
-      "id": "vosk-ru-small",
-      "category": "STT",
-      "displayName": "Vosk RU Small",
-      "description": "Распознавание русского языка, лёгкая модель",
-      "runtime": "VOSK",
-      "sizeBytes": 47185920,
-      "ramRequiredMb": 250,
-      "languages": ["ru"],
-      "quality": 3,
-      "speed": 5,
-      "url": "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip",
-      "sha256": null,
-      "license": "Apache-2.0",
-      "minAndroidSdk": 26,
-      "recommendedRamMb": 2048
     },
     {
       "id": "whisper-tiny-nepali",

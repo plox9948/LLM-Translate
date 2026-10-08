@@ -427,6 +427,12 @@ private fun ModelCardItem(
 
             Row {
                 when {
+                    installedModel == null && card.sizeBytes == 0L -> {
+                        // Встроенные модели (TTS) — не требуют скачивания.
+                        Button(onClick = onActive, modifier = Modifier.weight(1f)) {
+                            Text("Выбрать")
+                        }
+                    }
                     installedModel == null -> {
                         Button(onClick = onDownload, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Filled.Download, contentDescription = null)
@@ -443,17 +449,19 @@ private fun ModelCardItem(
                         Button(onClick = onActive, modifier = Modifier.weight(1f)) {
                             Text("Выбрать")
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Filled.FileUpload, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Экспорт")
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        OutlinedButton(onClick = onDelete, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Filled.Delete, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Удалить")
+                        if (card.sizeBytes > 0L) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Filled.FileUpload, contentDescription = null)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Экспорт")
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            OutlinedButton(onClick = onDelete, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Filled.Delete, contentDescription = null)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Удалить")
+                            }
                         }
                     }
                 }
