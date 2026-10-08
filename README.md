@@ -98,14 +98,16 @@ app/src/main/assets/         # models_catalog.json
 
 Стартовый набор в `app/src/main/assets/models_catalog.json`:
 
-| Модель | Категория | Размер | Описание |
-|--------|-----------|--------|----------|
-| Hy-MT1.5 1.8B 2-bit (SEQ) | Перевод | ~601 МБ | максимальное качество (kernel Q2_0c, SME2) |
-| Hy-MT2 1.8B Q4_K_M | Перевод | ~1.13 ГБ | стандартный GGUF, 33 языка |
-| NLLB-200 600M Q4F16 | Перевод | ~880 МБ | 200 языков (ONNX, encoder+decoder) |
-| Whisper Tiny (Nepali) | STT | ~51 МБ | непальский |
-| Whisper Base (Multi) | STT | ~143 МБ | ru+en+ne |
-| Системный TTS / RHVoice / eSpeak NG | TTS | — | без установки |
+| Модель | Категория | Размер | RAM | Описание |
+|--------|-----------|--------|-----|----------|
+| Hy-MT1.5 1.8B 2-bit (SEQ) | Перевод | ~601 МБ | ~2 ГБ | максимальное качество (kernel Q2_0c, SME2) |
+| Hy-MT2 1.8B Q4_K_M | Перевод | ~1.13 ГБ | ~3 ГБ | стандартный GGUF, 33 языка |
+| NLLB-200 600M Q4F16 | Перевод | ~880 МБ | ~2 ГБ | 200 языков (ONNX, encoder+decoder) |
+| Whisper Tiny (Nepali) | STT | ~51 МБ | ~500 МБ | непальский |
+| Whisper Base (Multi) | STT | ~143 МБ | ~800 МБ | ru+en+ne |
+| Системный TTS / RHVoice / eSpeak NG | TTS | — | — | без установки |
+
+> 💡 **Рекомендуемая RAM устройства**: для перевода — 4–6 ГБ, для STT — 2–3 ГБ.
 
 ## Лицензии моделей
 
