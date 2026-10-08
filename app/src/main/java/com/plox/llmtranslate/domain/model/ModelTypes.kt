@@ -13,9 +13,10 @@ enum class ModelCategory {
  * Тип рантайма, определяющий формат модели и способ загрузки.
  */
 enum class RuntimeType {
-    GGUF,
-    ONNX,
-    VOSK,
+    // Инференс-слой: sherpa-onnx (STT) и ONNX-переводы (Marian/IndicTrans2).
+    SHERPA,
+    MARIAN_ONNX,
+    INDICTRANS_ONNX,
     SYSTEM_TTS,
     RHVOICE,
     ESPEAK

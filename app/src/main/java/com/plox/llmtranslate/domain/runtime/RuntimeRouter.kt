@@ -10,37 +10,32 @@ import javax.inject.Singleton
  */
 @Singleton
 class RuntimeRouter @Inject constructor(
-    private val llmRuntime: LlmRuntime,
-    private val onnxLlmRuntime: OnnxLlmRuntime,
-    private val sttRuntime: SttRuntime,
-    private val voskSttRuntime: VoskSttRuntime
+    private val marianOnnxRuntime: MarianOnnxRuntime,
+    private val indicTransOnnxRuntime: IndicTransOnnxRuntime,
+    private val sherpaSttEngine: SherpaSttEngine
 ) {
 
     /**
      * Движок перевода для типа модели.
+     * Marian — по умолчанию (fallback), IndicTrans — для ne.
      */
     fun translationEngine(runtime: RuntimeType): TranslationEngine = when (runtime) {
-        RuntimeType.GGUF -> llmRuntime
-        RuntimeType.ONNX -> onnxLlmRuntime
-        else -> llmRuntime // fallback
+        RuntimeType.MARIAN_ONNX -> marianOnnxRuntime
+        RuntimeType.INDICTRANS_ONNX -> indicTransOnnxRuntime
+        else -> marianOnnxRuntime // fallback
     }
 
     /**
-     * Движок распознавания речи для типа модели.
+     * Движок распознавания речи: sherpa-onnx — единственный STT-рантайм.
      */
-    fun sttEngine(runtime: RuntimeType): SttEngine = when (runtime) {
-        RuntimeType.GGUF -> sttRuntime
-        RuntimeType.VOSK -> voskSttRuntime
-        else -> sttRuntime // fallback
-    }
+    fun sttEngine(runtime: RuntimeType): SttEngine = sherpaSttEngine
 
     /**
      * Разгрузить все рантаймы (при ON_STOP).
      */
     fun releaseAll() {
-        llmRuntime.release()
-        onnxLlmRuntime.release()
-        sttRuntime.release()
-        voskSttRuntime.release()
+        marianOnnxRuntime.release()
+        indicTransOnnxRuntime.release()
+        sherpaSttEngine.release()
     }
 }

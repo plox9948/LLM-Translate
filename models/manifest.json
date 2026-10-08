@@ -1,0 +1,367 @@
+{
+  "version": 4,
+  "comment": "Единственный источник правды о моделях. Из него генерируются scripts/download_models.* и assets/models_catalog.json. SHA-256 заполняются после первичного скачивания (скрипт печатает их).",
+  "models": [
+    {
+      "id": "opus-mt-tiny-ru-en-int8",
+      "category": "TRANSLATION",
+      "runtime": "MARIAN_ONNX",
+      "displayName": "Opus-MT Tiny (RU→EN, int8)",
+      "description": "Marian MT (Teradata), 97 МБ, высокое качество, ru→en",
+      "sizeBytes": 101868748,
+      "ramRequiredMb": 1500,
+      "languages": ["ru", "en"],
+      "quality": 4,
+      "speed": 5,
+      "license": "Apache-2.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 3072,
+      "files": [
+        {
+          "name": "model-int8.onnx",
+          "url": "https://huggingface.co/Teradata/opus-mt_tiny_rus-eng/resolve/main/onnx/model-int8.onnx",
+          "sha256": null
+        },
+        {
+          "name": "tokenizer.json",
+          "url": "https://huggingface.co/Teradata/opus-mt_tiny_rus-eng/resolve/main/tokenizer.json",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "opus-mt-tiny-en-ru-int8",
+      "category": "TRANSLATION",
+      "runtime": "MARIAN_ONNX",
+      "displayName": "Opus-MT Tiny (EN→RU, int8)",
+      "description": "Marian MT (Teradata), 97 МБ, высокое качество, en→ru",
+      "sizeBytes": 101868748,
+      "ramRequiredMb": 1500,
+      "languages": ["ru", "en"],
+      "quality": 4,
+      "speed": 5,
+      "license": "Apache-2.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 3072,
+      "files": [
+        {
+          "name": "model-int8.onnx",
+          "url": "https://huggingface.co/Teradata/opus-mt_tiny_eng-rus/resolve/main/onnx/model-int8.onnx",
+          "sha256": null
+        },
+        {
+          "name": "tokenizer.json",
+          "url": "https://huggingface.co/Teradata/opus-mt_tiny_eng-rus/resolve/main/tokenizer.json",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "indictrans2-indic-en-int8",
+      "category": "TRANSLATION",
+      "runtime": "INDICTRANS_ONNX",
+      "displayName": "IndicTrans2 (Indic→EN, int8)",
+      "description": "IndicTrans2 200M (22 языка, вкл. ne), ~320 МБ, ne→en",
+      "sizeBytes": 335544320,
+      "ramRequiredMb": 2500,
+      "languages": ["ne", "en"],
+      "quality": 5,
+      "speed": 4,
+      "license": "MIT",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 4096,
+      "files": [
+        {
+          "name": "encoder_model.onnx",
+          "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/encoder_model.onnx",
+          "sha256": null
+        },
+        {
+          "name": "encoder_model.onnx.data",
+          "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/encoder_model.onnx.data",
+          "sha256": null
+        },
+        {
+          "name": "decoder_model.onnx",
+          "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/decoder_model.onnx",
+          "sha256": null
+        },
+        {
+          "name": "decoder_with_past_model.onnx",
+          "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/decoder_with_past_model.onnx",
+          "sha256": null
+        },
+        {
+          "name": "decoder_shared.onnx.data",
+          "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/decoder_shared.onnx.data",
+          "sha256": null
+        },
+        {
+          "name": "tokenizer_src.json",
+          "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/tokenizer_src.json",
+          "sha256": null
+        },
+        {
+          "name": "tokenizer_tgt.json",
+          "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/tokenizer_tgt.json",
+          "sha256": null
+        },
+        {
+          "name": "tokenizer_meta.json",
+          "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/tokenizer_meta.json",
+          "sha256": null
+        },
+        {
+          "name": "generation_config.json",
+          "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/generation_config.json",
+          "sha256": null
+        },
+        {
+          "name": "config.json",
+          "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/config.json",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "indictrans2-en-indic-int8",
+      "category": "TRANSLATION",
+      "runtime": "INDICTRANS_ONNX",
+      "displayName": "IndicTrans2 (EN→Indic, int8)",
+      "description": "IndicTrans2 200M (22 языка, вкл. ne), ~320 МБ, en→ne",
+      "sizeBytes": 335544320,
+      "ramRequiredMb": 2500,
+      "languages": ["ne", "en"],
+      "quality": 5,
+      "speed": 4,
+      "license": "MIT",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 4096,
+      "files": [
+        {
+          "name": "encoder_model.onnx",
+          "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/encoder_model.onnx",
+          "sha256": null
+        },
+        {
+          "name": "encoder_model.onnx.data",
+          "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/encoder_model.onnx.data",
+          "sha256": null
+        },
+        {
+          "name": "decoder_model.onnx",
+          "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/decoder_model.onnx",
+          "sha256": null
+        },
+        {
+          "name": "decoder_with_past_model.onnx",
+          "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/decoder_with_past_model.onnx",
+          "sha256": null
+        },
+        {
+          "name": "decoder_shared.onnx.data",
+          "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/decoder_shared.onnx.data",
+          "sha256": null
+        },
+        {
+          "name": "tokenizer_src.json",
+          "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/tokenizer_src.json",
+          "sha256": null
+        },
+        {
+          "name": "tokenizer_tgt.json",
+          "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/tokenizer_tgt.json",
+          "sha256": null
+        },
+        {
+          "name": "tokenizer_meta.json",
+          "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/tokenizer_meta.json",
+          "sha256": null
+        },
+        {
+          "name": "generation_config.json",
+          "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/generation_config.json",
+          "sha256": null
+        },
+        {
+          "name": "config.json",
+          "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/config.json",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "stt-ru-zipformer-2024-09-18",
+      "category": "STT",
+      "runtime": "SHERPA",
+      "displayName": "Zipformer RU (sherpa-onnx)",
+      "description": "Transducer, русский, ~90 МБ (int8)",
+      "sizeBytes": 94371840,
+      "ramRequiredMb": 600,
+      "languages": ["ru"],
+      "quality": 4,
+      "speed": 5,
+      "license": "Apache-2.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 2048,
+      "files": [
+        {
+          "name": "sherpa-onnx-zipformer-ru-2024-09-18.tar.bz2",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ru-2024-09-18.tar.bz2",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "stt-ru-gigaam-v2-ctc",
+      "category": "STT",
+      "runtime": "SHERPA",
+      "displayName": "GigaAM v2 RU (sherpa-onnx)",
+      "description": "NeMo CTC, русский, ~230 МБ",
+      "sizeBytes": 241172480,
+      "ramRequiredMb": 1200,
+      "languages": ["ru"],
+      "quality": 5,
+      "speed": 4,
+      "license": "Apache-2.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 3072,
+      "files": [
+        {
+          "name": "sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19.tar.bz2",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19.tar.bz2",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "stt-en-parakeet-110m",
+      "category": "STT",
+      "runtime": "SHERPA",
+      "displayName": "Parakeet 110M EN (sherpa-onnx)",
+      "description": "NeMo CTC, английский, ~110 МБ (int8)",
+      "sizeBytes": 115343360,
+      "ramRequiredMb": 700,
+      "languages": ["en"],
+      "quality": 5,
+      "speed": 5,
+      "license": "Apache-2.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 2048,
+      "files": [
+        {
+          "name": "sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8.tar.bz2",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8.tar.bz2",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "stt-ne-indicconformer",
+      "category": "STT",
+      "runtime": "SHERPA",
+      "displayName": "IndicConformer NE (sherpa-onnx)",
+      "description": "NeMo CTC, непальский, ~190 МБ (int8)",
+      "sizeBytes": 199229440,
+      "ramRequiredMb": 1000,
+      "languages": ["ne"],
+      "quality": 4,
+      "speed": 4,
+      "license": "Apache-2.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 3072,
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/ne/model.int8.onnx",
+          "sha256": null
+        },
+        {
+          "name": "tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "stt-whisper-small-multilingual",
+      "category": "STT",
+      "runtime": "SHERPA",
+      "displayName": "Whisper Small Multilingual (sherpa-onnx)",
+      "description": "Whisper, ru/en/ne и другие, ~360 МБ (int8)",
+      "sizeBytes": 377487360,
+      "ramRequiredMb": 1500,
+      "languages": ["ru", "en", "ne"],
+      "quality": 5,
+      "speed": 3,
+      "license": "Apache-2.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 4096,
+      "files": [
+        {
+          "name": "encoder.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/whisper-multilingual-swift/encoder.int8.onnx",
+          "sha256": null
+        },
+        {
+          "name": "decoder.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/whisper-multilingual-swift/decoder.int8.onnx",
+          "sha256": null
+        },
+        {
+          "name": "tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/whisper-multilingual-swift/tokens.txt",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "tts-system",
+      "category": "TTS",
+      "runtime": "SYSTEM_TTS",
+      "displayName": "Системный Android TTS",
+      "description": "Встроенный синтез речи Android",
+      "sizeBytes": 0,
+      "ramRequiredMb": 0,
+      "languages": ["ru", "en", "ne"],
+      "quality": 3,
+      "speed": 5,
+      "license": "Встроенный",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 0,
+      "files": []
+    },
+    {
+      "id": "tts-rhvoice",
+      "category": "TTS",
+      "runtime": "RHVOICE",
+      "displayName": "RHVoice",
+      "description": "Синтез речи ru, ne (устанавливается отдельно)",
+      "sizeBytes": 0,
+      "ramRequiredMb": 0,
+      "languages": ["ru", "ne"],
+      "quality": 4,
+      "speed": 4,
+      "license": "GPL-3.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 0,
+      "files": []
+    },
+    {
+      "id": "tts-espeak",
+      "category": "TTS",
+      "runtime": "ESPEAK",
+      "displayName": "eSpeak NG",
+      "description": "100+ языков, включая ne",
+      "sizeBytes": 0,
+      "ramRequiredMb": 0,
+      "languages": ["ru", "en", "ne"],
+      "quality": 2,
+      "speed": 5,
+      "license": "GPL-3.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 0,
+      "files": []
+    }
+  ]
+}

@@ -5,14 +5,14 @@ import timber.log.Timber
 import java.io.File
 
 /**
- * Инсталлятор ONNX-моделей (onnx-runtime).
- * Поддерживает мультифайловые модели (encoder + decoder):
- * все файлы скачиваются в каталог модели.
+ * Инсталлятор ONNX-моделей перевода (onnx-runtime).
+ * Поддерживает Marian MT и IndicTrans2: мультифайловые модели
+ * (encoder + decoder + токенизаторы) скачиваются в каталог модели.
  */
 class OnnxInstaller : ModelInstaller, BaseDownloader() {
 
     override fun supports(runtime: RuntimeType): Boolean =
-        runtime == RuntimeType.ONNX
+        runtime == RuntimeType.MARIAN_ONNX || runtime == RuntimeType.INDICTRANS_ONNX
 
     override suspend fun install(
         urls: List<String>,

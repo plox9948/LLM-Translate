@@ -1,6 +1,0 @@
-[submodule "app/src/main/cpp/external/llama.cpp"]
-	path = app/src/main/cpp/external/llama.cpp
-	url = https://github.com/ggml-org/llama.cpp
-[submodule "app/src/main/cpp/external/whisper.cpp"]
-	path = app/src/main/cpp/external/whisper.cpp
-	url = https://github.com/ggml-org/whisper.cpp

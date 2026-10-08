@@ -11,3 +11,6 @@ captures/
 *.jks
 .env
 .DS_Store
+# Скачанные модели (только скрипт и манифест в git).
+/models/*
+!models/manifest.json

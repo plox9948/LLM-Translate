@@ -185,7 +185,14 @@ class TranslateViewModel @Inject constructor(
                 return@launch
             }
 
-            engine.transcribe(wavPath).fold(
+            // Подсказка языка для STT: явный выбор или null (whisper определит сам).
+            val langHint = if (state.sourceLang != TranslateLanguage.AUTO) {
+                state.sourceLang.code
+            } else {
+                null
+            }
+
+            engine.transcribe(wavPath, language = langHint).fold(
                 onSuccess = { text ->
                     update { it.copy(isTranslating = false, inputText = text) }
                 },

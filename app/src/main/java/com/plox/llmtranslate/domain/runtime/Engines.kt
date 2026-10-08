@@ -4,8 +4,8 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.RuntimeError
 
 /**
- * Общий интерфейс рантаймов перевода (LLM).
- * Реализации: LlmRuntime (GGUF/llama.cpp), OnnxLlmRuntime (ONNX/NLLB).
+ * Общий интерфейс рантаймов перевода.
+ * Реализации: MarianOnnxRuntime (Marian MT), IndicTransOnnxRuntime (IndicTrans2).
  */
 interface TranslationEngine {
     /** Убедиться, что загружена модель [model]. */
@@ -24,14 +24,19 @@ interface TranslationEngine {
 
 /**
  * Общий интерфейс рантаймов распознавания речи (STT).
- * Реализации: SttRuntime (whisper.cpp), VoskSttRuntime (Vosk).
+ * Реализация: SherpaSttEngine (sherpa-onnx).
  */
 interface SttEngine {
     /** Убедиться, что загружена модель [model]. */
     suspend fun ensureLoaded(model: InstalledModel): RuntimeError?
 
-    /** Распознать речь в WAV-файле. */
-    suspend fun transcribe(wavPath: String): Result<String>
+    /**
+     * Распознать речь в WAV-файле.
+     * @param wavPath путь к WAV-файлу (16 kHz, mono, 16-bit).
+     * @param language подсказка языка (ru/en/ne); обязательна для whisper-моделей,
+     *                 для CTC/transducer-моделей игнорируется.
+     */
+    suspend fun transcribe(wavPath: String, language: String? = null): Result<String>
 
     /** Разгрузить модель. */
     fun release()

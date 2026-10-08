@@ -65,7 +65,7 @@ class ModelManagerTest {
         category = category,
         displayName = "Test",
         description = "",
-        runtime = RuntimeType.GGUF,
+        runtime = RuntimeType.MARIAN_ONNX,
         sizeBytes = 100,
         ramRequiredMb = 100,
         languages = listOf("ru"),

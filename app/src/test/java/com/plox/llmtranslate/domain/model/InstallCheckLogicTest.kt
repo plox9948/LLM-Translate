@@ -26,7 +26,7 @@ class InstallCheckLogicTest {
         category = ModelCategory.TRANSLATION,
         displayName = "Test",
         description = "",
-        runtime = RuntimeType.GGUF,
+        runtime = RuntimeType.MARIAN_ONNX,
         sizeBytes = sizeBytes,
         ramRequiredMb = ramRequiredMb,
         languages = listOf("ru"),

@@ -277,10 +277,9 @@ class ModelManagerImpl @Inject constructor(
     private fun guessRuntime(fileName: String): RuntimeType {
         val lower = fileName.lowercase()
         return when {
-            lower.endsWith(".gguf") -> RuntimeType.GGUF
-            lower.endsWith(".onnx") -> RuntimeType.ONNX
-            lower.contains("vosk") || lower.endsWith(".zip") -> RuntimeType.VOSK
-            else -> RuntimeType.GGUF
+            lower.contains("indictrans") -> RuntimeType.INDICTRANS_ONNX
+            lower.endsWith(".zip") || lower.contains("sherpa") -> RuntimeType.SHERPA
+            else -> RuntimeType.MARIAN_ONNX // .onnx и прочее — по умолчанию Marian
         }
     }
 

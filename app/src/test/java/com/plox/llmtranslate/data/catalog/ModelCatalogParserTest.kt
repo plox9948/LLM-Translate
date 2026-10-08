@@ -21,11 +21,11 @@ class ModelCatalogParserTest {
               "version": 1,
               "models": [
                 {
-                  "id": "hy-mt1.5-1.8b-q1_25",
-                  "category": "TRANSLATION",
-                  "displayName": "Hy-MT 1.8B",
-                  "description": "Tencent Hy-MT",
-                  "runtime": "GGUF",
+                   "id": "hy-mt1.5-1.8b-q1_25",
+                   "category": "TRANSLATION",
+                   "displayName": "Hy-MT 1.8B",
+                   "description": "Tencent Hy-MT",
+                   "runtime": "MARIAN_ONNX",
                   "sizeBytes": 461373440,
                   "ramRequiredMb": 2500,
                   "languages": ["ru", "en", "ne"],
@@ -47,7 +47,7 @@ class ModelCatalogParserTest {
         val card = cards[0]
         assertEquals("hy-mt1.5-1.8b-q1_25", card.id)
         assertEquals(ModelCategory.TRANSLATION, card.category)
-        assertEquals(RuntimeType.GGUF, card.runtime)
+        assertEquals(RuntimeType.MARIAN_ONNX, card.runtime)
         assertEquals(461373440L, card.sizeBytes)
         assertEquals(listOf("ru", "en", "ne"), card.languages)
         assertEquals(4, card.quality)
@@ -67,7 +67,7 @@ class ModelCatalogParserTest {
                   "id": "nllb",
                   "category": "TRANSLATION",
                   "displayName": "NLLB",
-                  "runtime": "ONNX",
+                   "runtime": "MARIAN_ONNX",
                   "sizeBytes": 100,
                   "url": "",
                   "urls": [
@@ -98,7 +98,7 @@ class ModelCatalogParserTest {
                   "id": "nllb",
                   "category": "TRANSLATION",
                   "displayName": "NLLB",
-                  "runtime": "ONNX",
+                   "runtime": "MARIAN_ONNX",
                   "sizeBytes": 100,
                   "license": "CC-BY-NC-4.0"
                 }
@@ -117,11 +117,11 @@ class ModelCatalogParserTest {
               "version": 1,
               "models": [
                 {
-                  "id": "minimal",
-                  "category": "STT",
-                  "displayName": "Minimal",
-                  "runtime": "VOSK",
-                  "sizeBytes": 42
+                   "id": "minimal",
+                   "category": "STT",
+                   "displayName": "Minimal",
+                   "runtime": "SHERPA",
+                   "sizeBytes": 42
                 }
               ]
             }
@@ -130,7 +130,7 @@ class ModelCatalogParserTest {
         val cards = parser.parse(json)
         val card = cards[0]
         assertEquals(ModelCategory.STT, card.category)
-        assertEquals(RuntimeType.VOSK, card.runtime)
+        assertEquals(RuntimeType.SHERPA, card.runtime)
         assertEquals(0, card.ramRequiredMb)
         assertEquals(emptyList<String>(), card.languages)
         assertEquals(3, card.quality)
@@ -148,14 +148,14 @@ class ModelCatalogParserTest {
                   "id": "x",
                   "category": "UNKNOWN",
                   "displayName": "X",
-                  "runtime": "GGUF",
+                   "runtime": "MARIAN_ONNX",
                   "sizeBytes": 1
                 },
                 {
                   "id": "ok",
                   "category": "TRANSLATION",
                   "displayName": "OK",
-                  "runtime": "GGUF",
+                   "runtime": "MARIAN_ONNX",
                   "sizeBytes": 2
                 }
               ]
@@ -180,11 +180,11 @@ class ModelCatalogParserTest {
                   "sizeBytes": 1
                 },
                 {
-                  "id": "ok",
-                  "category": "STT",
-                  "displayName": "OK",
-                  "runtime": "VOSK",
-                  "sizeBytes": 2
+                   "id": "ok",
+                   "category": "STT",
+                   "displayName": "OK",
+                   "runtime": "SHERPA",
+                   "sizeBytes": 2
                 }
               ]
             }

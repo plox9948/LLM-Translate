@@ -7,6 +7,13 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+// sherpa-onnx (KMP) тянет за собой sherpa-onnx-jvm с дублирующими классами —
+// исключаем JVM-артефакт глобально (по имени модуля, группа отличается),
+// оставляем только Android AAR.
+configurations.configureEach {
+    exclude(module = "sherpa-onnx-jvm")
+}
+
 android {
     namespace = "com.plox.llmtranslate"
     compileSdk = 34
@@ -21,19 +28,11 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
 
-        // Нативные библиотеки (llama/whisper) собираем только для целевых ABI:
-        // arm64-v8a — устройство, x86_64 — эмулятор; остальные ABI
-        // лишь удлиняют сборку натива без пользы.
+        // Целевые ABI: arm64-v8a — устройство, x86_64 — эмулятор.
+        // Нативный код (llama/whisper) больше не собирается; фильтры оставлены
+        // для корректной упаковки AAR-библиотек (sherpa-onnx, onnxruntime).
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
-        }
-
-        // Путь к CMake-конфигу нативных мостов (llama.cpp, whisper.cpp).
-        externalNativeBuild {
-            cmake {
-                cppFlags("")
-                arguments("-DANDROID_STL=c++_shared")
-            }
         }
     }
 
@@ -48,13 +47,6 @@ android {
         }
         debug {
             isMinifyEnabled = false
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
         }
     }
 
@@ -73,8 +65,15 @@ android {
     }
 
     packaging {
+        // Нативные библиотеки AAR (sherpa-onnx, onnxruntime) упаковываем по-старинке.
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // Конфликт libonnxruntime.so между onnxruntime-android и sherpa-onnx:
+            // берём первую найденную копию.
+            pickFirst("**/libonnxruntime.so")
         }
     }
 }
@@ -115,6 +114,11 @@ dependencies {
     // Рантаймы инференса: ONNX (NLLB) и Vosk (STT).
     implementation(libs.onnxruntime.android)
     implementation(libs.vosk.android)
+
+    // Новый инференс-слой: sherpa-onnx (STT) + распаковка архивов моделей.
+    implementation(libs.sherpa.onnx)
+    implementation(libs.commons.compress)
+    implementation(libs.xz)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

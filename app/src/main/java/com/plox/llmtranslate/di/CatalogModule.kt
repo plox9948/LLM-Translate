@@ -5,10 +5,9 @@ import com.plox.llmtranslate.data.catalog.AssetsModelCatalogProvider
 import com.plox.llmtranslate.data.catalog.ModelCatalogParser
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
 import com.plox.llmtranslate.data.catalog.RemoteCatalogProvider
-import com.plox.llmtranslate.data.download.GgufInstaller
+import com.plox.llmtranslate.data.download.ArchiveInstaller
 import com.plox.llmtranslate.data.download.InstallerRegistry
 import com.plox.llmtranslate.data.download.OnnxInstaller
-import com.plox.llmtranslate.data.download.VoskInstaller
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import dagger.Module
 import dagger.Provides
@@ -46,5 +45,5 @@ object CatalogModule {
     @Provides
     @Singleton
     fun provideInstallerRegistry(): InstallerRegistry =
-        InstallerRegistry(listOf(GgufInstaller(), OnnxInstaller(), VoskInstaller()))
+        InstallerRegistry(listOf(OnnxInstaller(), ArchiveInstaller()))
 }

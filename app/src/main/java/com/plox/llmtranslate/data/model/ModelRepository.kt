@@ -5,7 +5,9 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -51,6 +53,26 @@ class ModelRepository @Inject constructor(
 
     suspend fun deleteById(id: String) {
         dao.deleteById(id)
+    }
+
+    /**
+     * Очистка устаревших записей: модели с рантаймами, которых больше нет в [RuntimeType]
+     * (например, GGUF/ONNX/VOSK после миграции инференс-слоя).
+     *
+     * Читает сырые сущности [ModelEntity] (runtime как строка), чтобы не падать на
+     * [RuntimeType.valueOf] для неизвестных значений.
+     *
+     * @return список filePath удалённых моделей, чтобы удалить файлы с диска.
+     */
+    suspend fun cleanObsoleteRuntimes(): List<String> {
+        val all = dao.observeAll().first()
+        val obsolete = all.filter { entity ->
+            RuntimeType.entries.none { it.name == entity.runtime }
+        }
+        if (obsolete.isEmpty()) return emptyList()
+        obsolete.forEach { dao.deleteById(it.id) }
+        Timber.d("Удалено устаревших моделей из БД: ${obsolete.size}")
+        return obsolete.mapNotNull { it.filePath }
     }
 }
 

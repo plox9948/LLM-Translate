@@ -17,6 +17,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // sherpa-onnx (AAR) публикуется через JitPack.
+        maven("https://jitpack.io")
     }
 }
 
