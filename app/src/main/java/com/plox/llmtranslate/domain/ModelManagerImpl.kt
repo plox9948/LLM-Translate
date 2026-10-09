@@ -235,9 +235,13 @@ class ModelManagerImpl @Inject constructor(
         }
     }
 
-    override fun releaseInactiveRuntimes() {
-        runtimeRouter.releaseAll()
-        Timber.d("Рантаймы разгружены (ON_STOP)")
+    override fun releaseAllRuntimes() {
+        // release() внутри каждого движка ждёт окончания активного инференса
+        // (десятки секунд), поэтому уходим с главного потока в app-scope.
+        scope.launch(Dispatchers.IO) {
+            runtimeRouter.releaseAll()
+            Timber.d("Рантаймы разгружены (ON_STOP)")
+        }
     }
 
     override suspend fun activeRamRequiredMb(): Long {

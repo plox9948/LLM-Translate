@@ -41,9 +41,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.plox.llmtranslate.R
 
 /**
  * Экран «Перевод»: текст или аудио → перевод → озвучивание.
@@ -97,7 +99,7 @@ fun TranslateScreen(
             ) {
                 Icon(
                     Icons.Filled.SwapHoriz,
-                    contentDescription = "Поменять языки",
+                    contentDescription = stringResource(R.string.translate_swap_cd),
                     tint = if (state.sourceLang != TranslateLanguage.AUTO) {
                         MaterialTheme.colorScheme.primary
                     } else {
@@ -129,7 +131,7 @@ fun TranslateScreen(
                         Icon(
                             imageVector = if (state.isRecording) Icons.Filled.MicOff
                             else Icons.Filled.Mic,
-                            contentDescription = "Записать аудио",
+                            contentDescription = stringResource(R.string.translate_record_cd),
                             tint = if (state.hasSttModel) {
                                 MaterialTheme.colorScheme.primary
                             } else {
@@ -144,7 +146,7 @@ fun TranslateScreen(
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3,
                     maxLines = 6,
-                    placeholder = { Text("Введите текст для перевода…") }
+                    placeholder = { Text(stringResource(R.string.translate_input_placeholder)) }
                 )
             }
         }
@@ -157,12 +159,17 @@ fun TranslateScreen(
         ) {
             Icon(Icons.Filled.Translate, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
-            Text(if (state.isTranslating) "Перевод…" else "Перевести")
+            Text(
+                stringResource(
+                    if (state.isTranslating) R.string.translate_in_progress
+                    else R.string.translate_action
+                )
+            )
         }
 
         if (!state.hasTranslationModel) {
             Text(
-                text = "Скачайте модель перевода на экране «Модели»",
+                text = stringResource(R.string.translate_no_model),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error
             )
@@ -191,7 +198,7 @@ fun TranslateScreen(
                             Icon(
                                 imageVector = if (state.isSpeaking) Icons.Filled.Stop
                                 else Icons.AutoMirrored.Filled.VolumeUp,
-                                contentDescription = "Озвучить"
+                                contentDescription = stringResource(R.string.translate_speak_cd)
                             )
                         }
                     }
@@ -209,7 +216,7 @@ fun TranslateScreen(
         // Индикатор записи.
         if (state.isRecording) {
             Text(
-                text = "● Идёт запись… Нажмите на микрофон, чтобы остановить",
+                text = stringResource(R.string.translate_recording_hint),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.error
             )
@@ -219,10 +226,12 @@ fun TranslateScreen(
         state.error?.let { error ->
             AlertDialog(
                 onDismissRequest = viewModel::clearError,
-                title = { Text("Ошибка") },
+                title = { Text(stringResource(R.string.error_title)) },
                 text = { Text(error) },
                 confirmButton = {
-                    TextButton(onClick = viewModel::clearError) { Text("ОК") }
+                    TextButton(onClick = viewModel::clearError) {
+                        Text(stringResource(R.string.ok))
+                    }
                 }
             )
         }
@@ -250,7 +259,7 @@ private fun LanguageChip(
     if (expanded) {
         AlertDialog(
             onDismissRequest = { expanded = false },
-            title = { Text("Выберите язык") },
+            title = { Text(stringResource(R.string.translate_select_language)) },
             text = {
                 Column {
                     // Для целевого языка автоопределение недоступно.

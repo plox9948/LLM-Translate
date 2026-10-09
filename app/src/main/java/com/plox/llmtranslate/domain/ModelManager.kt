@@ -50,7 +50,7 @@ interface ModelManager {
 
     /**
      * Экспортировать модель в SAF-uri, выбранный пользователем.
-     * Файл копируется напрямую; каталог (Vosk, мультифайл ONNX) — в zip.
+      * Файл копируется напрямую; каталог (мультифайл ONNX/sherpa) — в zip.
      * @return true при успехе.
      */
     suspend fun exportToUri(modelId: String, targetUri: android.net.Uri): Boolean
@@ -59,10 +59,12 @@ interface ModelManager {
     fun delete(modelId: String)
 
     /**
-     * Освободить память: разгрузить рантаймы, кроме активных.
-     * Вызывается при ON_STOP процесса.
+     * Освободить память: разгрузить все рантаймы (включая активные —
+     * они будут заново загружены при следующем инференсе).
+     * Вызывается при ON_STOP процесса. Асинхронно: разгрузка каждого
+     * движка ожидает окончания активного инференса.
      */
-    fun releaseInactiveRuntimes()
+    fun releaseAllRuntimes()
 
     /** Суммарная ОЗУ, требуемая активными LLM+STT моделями. */
     suspend fun activeRamRequiredMb(): Long

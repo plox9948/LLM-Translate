@@ -17,11 +17,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -97,7 +99,7 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
-            text = "Настройки",
+            text = stringResource(R.string.nav_settings),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )
@@ -106,13 +108,28 @@ fun SettingsScreen(
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    text = "Движок синтеза речи",
+                    text = stringResource(R.string.settings_tts_engine),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
-                TtsOption("system", "Системный Android TTS", state.ttsEngine, viewModel::onTtsEngineChange)
-                TtsOption("rhvoice", "RHVoice (ru, ne)", state.ttsEngine, viewModel::onTtsEngineChange)
-                TtsOption("espeak", "eSpeak NG (100+ языков)", state.ttsEngine, viewModel::onTtsEngineChange)
+                TtsOption(
+                    "system",
+                    stringResource(R.string.settings_tts_system),
+                    state.ttsEngine,
+                    viewModel::onTtsEngineChange
+                )
+                TtsOption(
+                    "rhvoice",
+                    stringResource(R.string.settings_tts_rhvoice),
+                    state.ttsEngine,
+                    viewModel::onTtsEngineChange
+                )
+                TtsOption(
+                    "espeak",
+                    stringResource(R.string.settings_tts_espeak),
+                    state.ttsEngine,
+                    viewModel::onTtsEngineChange
+                )
             }
         }
 
@@ -120,13 +137,28 @@ fun SettingsScreen(
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    text = "Язык интерфейса",
+                    text = stringResource(R.string.settings_ui_language),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
-                LangOption("system", "По системе", state.uiLanguage, viewModel::onUiLanguageChange)
-                LangOption("ru", "Русский", state.uiLanguage, viewModel::onUiLanguageChange)
-                LangOption("en", "English", state.uiLanguage, viewModel::onUiLanguageChange)
+                LangOption(
+                    "system",
+                    stringResource(R.string.option_system),
+                    state.uiLanguage,
+                    viewModel::onUiLanguageChange
+                )
+                LangOption(
+                    "ru",
+                    stringResource(R.string.option_ru),
+                    state.uiLanguage,
+                    viewModel::onUiLanguageChange
+                )
+                LangOption(
+                    "en",
+                    stringResource(R.string.option_en),
+                    state.uiLanguage,
+                    viewModel::onUiLanguageChange
+                )
             }
         }
 
@@ -134,13 +166,28 @@ fun SettingsScreen(
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    text = "Тема",
+                    text = stringResource(R.string.settings_theme),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
-                ThemeOption("system", "По системе", state.theme, viewModel::onThemeChange)
-                ThemeOption("light", "Светлая", state.theme, viewModel::onThemeChange)
-                ThemeOption("dark", "Тёмная", state.theme, viewModel::onThemeChange)
+                ThemeOption(
+                    "system",
+                    stringResource(R.string.option_system),
+                    state.theme,
+                    viewModel::onThemeChange
+                )
+                ThemeOption(
+                    "light",
+                    stringResource(R.string.settings_theme_light),
+                    state.theme,
+                    viewModel::onThemeChange
+                )
+                ThemeOption(
+                    "dark",
+                    stringResource(R.string.settings_theme_dark),
+                    state.theme,
+                    viewModel::onThemeChange
+                )
             }
         }
     }

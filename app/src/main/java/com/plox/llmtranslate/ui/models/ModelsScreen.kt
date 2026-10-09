@@ -45,9 +45,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.InstallCheck
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
@@ -122,7 +124,7 @@ fun ModelsScreen(
     ) {
         item {
             Text(
-                text = "Модели",
+                text = stringResource(R.string.nav_models),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -172,7 +174,7 @@ fun ModelsScreen(
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("+ Импортировать свою модель")
+                Text(stringResource(R.string.models_import_custom))
             }
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -184,7 +186,7 @@ fun ModelsScreen(
                 ) {
                             Icon(Icons.Filled.FileUpload, contentDescription = null)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Бэкап")
+                    Text(stringResource(R.string.models_backup))
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 OutlinedButton(
@@ -198,7 +200,7 @@ fun ModelsScreen(
                 ) {
                     Icon(Icons.Filled.FileDownload, contentDescription = null)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Восстановить")
+                    Text(stringResource(R.string.models_restore))
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
@@ -264,7 +266,10 @@ fun ModelsScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Занято моделями: ${formatBytes(usage.totalBytes)}",
+                        text = stringResource(
+                            R.string.models_disk_used,
+                            formatBytes(usage.totalBytes)
+                        ),
                         modifier = Modifier.padding(16.dp),
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -277,22 +282,24 @@ fun ModelsScreen(
     if (licenseModel != null) {
         AlertDialog(
             onDismissRequest = { viewModel.cancelLicenseConfirm() },
-            title = { Text("Лицензия модели") },
+            title = { Text(stringResource(R.string.models_license_title)) },
             text = {
                 Text(
-                    "Модель «${licenseModel?.displayName}» распространяется по лицензии " +
-                        "${licenseModel?.license}. Подтвердите, что вы используете её " +
-                        "только в соответствии с условиями лицензии."
+                    stringResource(
+                        R.string.models_license_text,
+                        licenseModel?.displayName.orEmpty(),
+                        licenseModel?.license.orEmpty()
+                    )
                 )
             },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmLicenseAndDownload() }) {
-                    Text("Скачать")
+                    Text(stringResource(R.string.download))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.cancelLicenseConfirm() }) {
-                    Text("Отмена")
+                    Text(stringResource(R.string.cancel))
                 }
             }
         )
@@ -333,7 +340,7 @@ private fun ModelCardItem(
                     Icon(
                         imageVector = if (isActive) Icons.Filled.RadioButtonChecked
                         else Icons.Filled.RadioButtonUnchecked,
-                        contentDescription = "Активная",
+                        contentDescription = stringResource(R.string.models_active_cd),
                         modifier = Modifier.size(20.dp)
                     )
                 }
@@ -358,14 +365,14 @@ private fun ModelCardItem(
                 // Звёзды качества.
                 Stars(count = card.quality)
                 Text(
-                    text = "Качество",
+                    text = stringResource(R.string.models_quality),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Stars(count = card.speed)
                 Text(
-                    text = "Скорость",
+                    text = stringResource(R.string.models_speed),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -380,7 +387,7 @@ private fun ModelCardItem(
                 )
                 if (card.ramRequiredMb > 0) {
                     Text(
-                        text = " · ~${card.ramRequiredMb} МБ ОЗУ",
+                        text = stringResource(R.string.models_ram_mb, card.ramRequiredMb),
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
@@ -428,39 +435,43 @@ private fun ModelCardItem(
             Row {
                 when {
                     installedModel == null && card.sizeBytes == 0L -> {
-                        // Встроенные модели (TTS) — не требуют скачивания.
-                        Button(onClick = onActive, modifier = Modifier.weight(1f)) {
-                            Text("Выбрать")
-                        }
+                        // Встроенные модели (системный TTS) не скачиваются и не
+                        // выбираются здесь: выбор TTS живёт в настройках,
+                        // кнопка «Выбрать» была бы no-op.
+                        Text(
+                            text = stringResource(R.string.models_builtin),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                     installedModel == null -> {
                         Button(onClick = onDownload, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Filled.Download, contentDescription = null)
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Скачать")
+                            Text(stringResource(R.string.download))
                         }
                     }
                     installedModel.status == ModelStatus.DOWNLOADING -> {
                         OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
-                            Text("Отменить")
+                            Text(stringResource(R.string.models_cancel_download))
                         }
                     }
                     else -> {
                         Button(onClick = onActive, modifier = Modifier.weight(1f)) {
-                            Text("Выбрать")
+                            Text(stringResource(R.string.models_choose))
                         }
                         if (card.sizeBytes > 0L) {
                             Spacer(modifier = Modifier.width(8.dp))
                             OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
                                 Icon(Icons.Filled.FileUpload, contentDescription = null)
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Экспорт")
+                                Text(stringResource(R.string.models_export))
                             }
                             Spacer(modifier = Modifier.width(8.dp))
                             OutlinedButton(onClick = onDelete, modifier = Modifier.weight(1f)) {
                                 Icon(Icons.Filled.Delete, contentDescription = null)
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Удалить")
+                                Text(stringResource(R.string.models_delete))
                             }
                         }
                     }
@@ -489,14 +500,23 @@ private fun Stars(count: Int) {
     }
 }
 
-private fun categoryTitle(category: ModelCategory): String = when (category) {
-    ModelCategory.TRANSLATION -> "Перевод (LLM)"
-    ModelCategory.STT -> "Распознавание речи (STT)"
-    ModelCategory.TTS -> "Синтез речи (TTS)"
-}
+@Composable
+private fun categoryTitle(category: ModelCategory): String = stringResource(
+    when (category) {
+        ModelCategory.TRANSLATION -> R.string.models_category_translation
+        ModelCategory.STT -> R.string.models_category_stt
+        ModelCategory.TTS -> R.string.models_category_tts
+    }
+)
 
-private fun formatBytes(bytes: Long): String = when {
-    bytes >= 1_073_741_824 -> String.format(Locale.US, "%.1f ГБ", bytes / 1_073_741_824.0)
-    bytes >= 1_048_576 -> String.format(Locale.US, "%.0f МБ", bytes / 1_048_576.0)
-    else -> String.format(Locale.US, "%.0f КБ", bytes / 1024.0)
+@Composable
+private fun formatBytes(bytes: Long): String {
+    val unitGb = stringResource(R.string.unit_gb)
+    val unitMb = stringResource(R.string.unit_mb)
+    val unitKb = stringResource(R.string.unit_kb)
+    return when {
+        bytes >= 1_073_741_824 -> String.format(Locale.US, "%.1f %s", bytes / 1_073_741_824.0, unitGb)
+        bytes >= 1_048_576 -> String.format(Locale.US, "%.0f %s", bytes / 1_048_576.0, unitMb)
+        else -> String.format(Locale.US, "%.0f %s", bytes / 1024.0, unitKb)
+    }
 }

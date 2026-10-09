@@ -1,4 +1,64 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">LLM Translate</string>
+
+    <!-- Нижняя навигация -->
+    <string name="nav_translate">Перевод</string>
+    <string name="nav_models">Модели</string>
+    <string name="nav_settings">Настройки</string>
+
+    <!-- Общие -->
+    <string name="ok">ОК</string>
+    <string name="error_title">Ошибка</string>
+    <string name="download">Скачать</string>
+    <string name="cancel">Отмена</string>
+    <string name="option_system">По системе</string>
+    <string name="option_ru">Русский</string>
+    <string name="option_en">English</string>
+
+    <!-- Единицы измерения -->
+    <string name="unit_gb">ГБ</string>
+    <string name="unit_mb">МБ</string>
+    <string name="unit_kb">КБ</string>
+
+    <!-- Экран «Перевод» -->
+    <string name="translate_swap_cd">Поменять языки</string>
+    <string name="translate_record_cd">Записать аудио</string>
+    <string name="translate_input_placeholder">Введите текст для перевода…</string>
+    <string name="translate_action">Перевести</string>
+    <string name="translate_in_progress">Перевод…</string>
+    <string name="translate_no_model">Скачайте модель перевода на экране «Модели»</string>
+    <string name="translate_speak_cd">Озвучить</string>
+    <string name="translate_recording_hint">● Идёт запись… Нажмите на микрофон, чтобы остановить</string>
+    <string name="translate_select_language">Выберите язык</string>
+
+    <!-- Экран «Модели» -->
+    <string name="models_import_custom">+ Импортировать свою модель</string>
+    <string name="models_backup">Бэкап</string>
+    <string name="models_restore">Восстановить</string>
+    <string name="models_disk_used">Занято моделями: %1$s</string>
+    <string name="models_license_title">Лицензия модели</string>
+    <string name="models_license_text">Модель «%1$s» распространяется по лицензии %2$s. Подтвердите, что вы используете её только в соответствии с условиями лицензии.</string>
+    <string name="models_active_cd">Активная</string>
+    <string name="models_quality">Качество</string>
+    <string name="models_speed">Скорость</string>
+    <string name="models_ram_mb"> · ~%1$d МБ ОЗУ</string>
+    <string name="models_builtin">Встроенная модель — выбор в настройках</string>
+    <string name="models_cancel_download">Отменить</string>
+    <string name="models_choose">Выбрать</string>
+    <string name="models_export">Экспорт</string>
+    <string name="models_delete">Удалить</string>
+    <string name="models_category_translation">Перевод (LLM)</string>
+    <string name="models_category_stt">Распознавание речи (STT)</string>
+    <string name="models_category_tts">Синтез речи (TTS)</string>
+
+    <!-- Экран «Настройки» -->
+    <string name="settings_tts_engine">Движок синтеза речи</string>
+    <string name="settings_tts_system">Системный Android TTS</string>
+    <string name="settings_tts_rhvoice">RHVoice (ru, ne)</string>
+    <string name="settings_tts_espeak">eSpeak NG (100+ языков)</string>
+    <string name="settings_ui_language">Язык интерфейса</string>
+    <string name="settings_theme">Тема</string>
+    <string name="settings_theme_light">Светлая</string>
+    <string name="settings_theme_dark">Тёмная</string>
 </resources>
