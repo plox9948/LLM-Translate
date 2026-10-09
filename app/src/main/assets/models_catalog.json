@@ -1,21 +1,27 @@
 {
-  "version": 4,
+  "version": 5,
   "models": [
     {
-      "id": "opus-mt-tiny-ru-en-int8",
+      "id": "opus-mt-tiny-ru-en-int8-v2",
       "category": "TRANSLATION",
       "displayName": "Opus-MT Tiny (RU→EN, int8)",
-      "description": "Marian MT (Teradata), 97 МБ, высокое качество, ru→en",
+      "description": "Marian MT (Helsinki-NLP opus-mt_tiny), Optimum ONNX + int8 per-channel, 107 МБ, ru→en",
       "runtime": "MARIAN_ONNX",
-      "sizeBytes": 101868748,
+      "sizeBytes": 112367622,
       "ramRequiredMb": 1500,
-      "languages": ["ru", "en"],
+      "languages": [
+        "ru",
+        "en"
+      ],
       "quality": 4,
       "speed": 5,
       "url": "",
       "urls": [
-        "https://huggingface.co/Teradata/opus-mt_tiny_rus-eng/resolve/main/onnx/model-int8.onnx",
-        "https://huggingface.co/Teradata/opus-mt_tiny_rus-eng/resolve/main/tokenizer.json"
+        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/encoder_model.onnx",
+        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/decoder_model.onnx",
+        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/decoder_with_past_model.onnx",
+        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/tokenizer.json",
+        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/generation_config.json"
       ],
       "sha256": null,
       "license": "Apache-2.0",
@@ -23,20 +29,26 @@
       "recommendedRamMb": 3072
     },
     {
-      "id": "opus-mt-tiny-en-ru-int8",
+      "id": "opus-mt-tiny-en-ru-int8-v2",
       "category": "TRANSLATION",
       "displayName": "Opus-MT Tiny (EN→RU, int8)",
-      "description": "Marian MT (Teradata), 97 МБ, высокое качество, en→ru",
+      "description": "Marian MT (Helsinki-NLP opus-mt_tiny), Optimum ONNX + int8 per-channel, 107 МБ, en→ru",
       "runtime": "MARIAN_ONNX",
-      "sizeBytes": 101868748,
+      "sizeBytes": 112368070,
       "ramRequiredMb": 1500,
-      "languages": ["ru", "en"],
+      "languages": [
+        "ru",
+        "en"
+      ],
       "quality": 4,
       "speed": 5,
       "url": "",
       "urls": [
-        "https://huggingface.co/Teradata/opus-mt_tiny_eng-rus/resolve/main/onnx/model-int8.onnx",
-        "https://huggingface.co/Teradata/opus-mt_tiny_eng-rus/resolve/main/tokenizer.json"
+        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/encoder_model.onnx",
+        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/decoder_model.onnx",
+        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/decoder_with_past_model.onnx",
+        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/tokenizer.json",
+        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/generation_config.json"
       ],
       "sha256": null,
       "license": "Apache-2.0",
@@ -51,7 +63,10 @@
       "runtime": "INDICTRANS_ONNX",
       "sizeBytes": 335544320,
       "ramRequiredMb": 2500,
-      "languages": ["ne", "en"],
+      "languages": [
+        "ne",
+        "en"
+      ],
       "quality": 5,
       "speed": 4,
       "url": "",
@@ -80,7 +95,10 @@
       "runtime": "INDICTRANS_ONNX",
       "sizeBytes": 335544320,
       "ramRequiredMb": 2500,
-      "languages": ["ne", "en"],
+      "languages": [
+        "ne",
+        "en"
+      ],
       "quality": 5,
       "speed": 4,
       "url": "",
@@ -109,10 +127,15 @@
       "runtime": "SHERPA",
       "sizeBytes": 94371840,
       "ramRequiredMb": 600,
-      "languages": ["ru"],
+      "languages": [
+        "ru"
+      ],
       "quality": 4,
       "speed": 5,
-      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ru-2024-09-18.tar.bz2",
+      "url": "",
+      "urls": [
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ru-2024-09-18.tar.bz2"
+      ],
       "sha256": null,
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
@@ -126,10 +149,15 @@
       "runtime": "SHERPA",
       "sizeBytes": 241172480,
       "ramRequiredMb": 1200,
-      "languages": ["ru"],
+      "languages": [
+        "ru"
+      ],
       "quality": 5,
       "speed": 4,
-      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19.tar.bz2",
+      "url": "",
+      "urls": [
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19.tar.bz2"
+      ],
       "sha256": null,
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
@@ -143,10 +171,15 @@
       "runtime": "SHERPA",
       "sizeBytes": 115343360,
       "ramRequiredMb": 700,
-      "languages": ["en"],
+      "languages": [
+        "en"
+      ],
       "quality": 5,
       "speed": 5,
-      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8.tar.bz2",
+      "url": "",
+      "urls": [
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8.tar.bz2"
+      ],
       "sha256": null,
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
@@ -160,7 +193,9 @@
       "runtime": "SHERPA",
       "sizeBytes": 199229440,
       "ramRequiredMb": 1000,
-      "languages": ["ne"],
+      "languages": [
+        "ne"
+      ],
       "quality": 4,
       "speed": 4,
       "url": "",
@@ -181,7 +216,11 @@
       "runtime": "SHERPA",
       "sizeBytes": 377487360,
       "ramRequiredMb": 1500,
-      "languages": ["ru", "en", "ne"],
+      "languages": [
+        "ru",
+        "en",
+        "ne"
+      ],
       "quality": 5,
       "speed": 3,
       "url": "",
@@ -203,10 +242,15 @@
       "runtime": "SYSTEM_TTS",
       "sizeBytes": 0,
       "ramRequiredMb": 0,
-      "languages": ["ru", "en", "ne"],
+      "languages": [
+        "ru",
+        "en",
+        "ne"
+      ],
       "quality": 3,
       "speed": 5,
       "url": "",
+      "urls": [],
       "sha256": null,
       "license": "Встроенный",
       "minAndroidSdk": 26,
@@ -220,10 +264,14 @@
       "runtime": "RHVOICE",
       "sizeBytes": 0,
       "ramRequiredMb": 0,
-      "languages": ["ru", "ne"],
+      "languages": [
+        "ru",
+        "ne"
+      ],
       "quality": 4,
       "speed": 4,
       "url": "",
+      "urls": [],
       "sha256": null,
       "license": "GPL-3.0",
       "minAndroidSdk": 26,
@@ -237,10 +285,15 @@
       "runtime": "ESPEAK",
       "sizeBytes": 0,
       "ramRequiredMb": 0,
-      "languages": ["ru", "en", "ne"],
+      "languages": [
+        "ru",
+        "en",
+        "ne"
+      ],
       "quality": 2,
       "speed": 5,
       "url": "",
+      "urls": [],
       "sha256": null,
       "license": "GPL-3.0",
       "minAndroidSdk": 26,

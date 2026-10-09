@@ -178,7 +178,7 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                 val encOutput = enc.run(
                     mapOf("input_ids" to encInputIds, "attention_mask" to encAttnMask)
                 )
-                val encHiddenState = encOutput.get("last_hidden_state") as? OnnxTensor
+                val encHiddenState = ortTensor(encOutput, "last_hidden_state")
                     ?: run {
                         encOutput.close(); encInputIds.close(); encAttnMask.close()
                         return@withContext Result.failure(
@@ -233,7 +233,7 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                         inputs["encoder_attention_mask"] = encMaskTensor
                         for (i in 0 until numLayers) {
                             for (suffix in PAST_SUFFIXES) {
-                                val tensor = past.get("present.$i.$suffix") as? OnnxTensorLike
+                                val tensor = ortTensor(past, "present.$i.$suffix")
                                     ?: continue
                                 inputs["past_key_values.$i.$suffix"] = tensor
                             }
@@ -245,7 +245,7 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                     if (step == 0) encOutput.close()
 
                     // Argmax по logits.
-                    val logitsTensor = decOutput.get("logits") as? OnnxTensor
+                    val logitsTensor = ortTensor(decOutput, "logits")
                     if (logitsTensor == null) {
                         decOutput.close()
                         return@withContext Result.failure(

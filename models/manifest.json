@@ -1,14 +1,14 @@
 {
-  "version": 4,
+  "version": 5,
   "comment": "Единственный источник правды о моделях. Из него генерируются scripts/download_models.* и assets/models_catalog.json. SHA-256 заполняются после первичного скачивания (скрипт печатает их).",
   "models": [
     {
-      "id": "opus-mt-tiny-ru-en-int8",
+      "id": "opus-mt-tiny-ru-en-int8-v2",
       "category": "TRANSLATION",
       "runtime": "MARIAN_ONNX",
       "displayName": "Opus-MT Tiny (RU→EN, int8)",
-      "description": "Marian MT (Teradata), 97 МБ, высокое качество, ru→en",
-      "sizeBytes": 101868748,
+      "description": "Marian MT (Helsinki-NLP opus-mt_tiny), Optimum ONNX + int8 per-channel, 107 МБ, ru→en",
+      "sizeBytes": 112367622,
       "ramRequiredMb": 1500,
       "languages": ["ru", "en"],
       "quality": 4,
@@ -18,24 +18,39 @@
       "recommendedRamMb": 3072,
       "files": [
         {
-          "name": "model-int8.onnx",
-          "url": "https://huggingface.co/Teradata/opus-mt_tiny_rus-eng/resolve/main/onnx/model-int8.onnx",
-          "sha256": null
+          "name": "encoder_model.onnx",
+          "url": "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/encoder_model.onnx",
+          "sha256": "0bfecc740d205185d1def9929bd6376c41937eb8668380649e8a09530353cabf"
+        },
+        {
+          "name": "decoder_model.onnx",
+          "url": "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/decoder_model.onnx",
+          "sha256": "a8c423be98cb14e92024c7ee0d96ea79c12443a70e655904139885ccd270ac33"
+        },
+        {
+          "name": "decoder_with_past_model.onnx",
+          "url": "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/decoder_with_past_model.onnx",
+          "sha256": "3c28760bc59095a71c266affc92563f4d7bea9b705ffee415d541e4bd4971b82"
         },
         {
           "name": "tokenizer.json",
-          "url": "https://huggingface.co/Teradata/opus-mt_tiny_rus-eng/resolve/main/tokenizer.json",
-          "sha256": null
+          "url": "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/tokenizer.json",
+          "sha256": "919338d006828f146b4f81de714c29ab6fa3f28bf55c26f903ec6b95a7b2e0db"
+        },
+        {
+          "name": "generation_config.json",
+          "url": "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/generation_config.json",
+          "sha256": "68e3e0677a3852008c48716deb2b498ab259eb824f7225c834c967a0eecdaf2c"
         }
       ]
     },
     {
-      "id": "opus-mt-tiny-en-ru-int8",
+      "id": "opus-mt-tiny-en-ru-int8-v2",
       "category": "TRANSLATION",
       "runtime": "MARIAN_ONNX",
       "displayName": "Opus-MT Tiny (EN→RU, int8)",
-      "description": "Marian MT (Teradata), 97 МБ, высокое качество, en→ru",
-      "sizeBytes": 101868748,
+      "description": "Marian MT (Helsinki-NLP opus-mt_tiny), Optimum ONNX + int8 per-channel, 107 МБ, en→ru",
+      "sizeBytes": 112368070,
       "ramRequiredMb": 1500,
       "languages": ["ru", "en"],
       "quality": 4,
@@ -45,14 +60,29 @@
       "recommendedRamMb": 3072,
       "files": [
         {
-          "name": "model-int8.onnx",
-          "url": "https://huggingface.co/Teradata/opus-mt_tiny_eng-rus/resolve/main/onnx/model-int8.onnx",
-          "sha256": null
+          "name": "encoder_model.onnx",
+          "url": "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/encoder_model.onnx",
+          "sha256": "e228c6ec1d03f95e7aa6c2e4817b0f8b4c4fd46fada673f0fdf6b7da8e629aae"
+        },
+        {
+          "name": "decoder_model.onnx",
+          "url": "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/decoder_model.onnx",
+          "sha256": "e8a7edf94148152d2f891fe8daf0cac790bb5715762514d39d86ed65e9b0da4a"
+        },
+        {
+          "name": "decoder_with_past_model.onnx",
+          "url": "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/decoder_with_past_model.onnx",
+          "sha256": "bab6fc8d398fef2e5685aa06a94989913a2ac2871e1ace75161bd904c5896412"
         },
         {
           "name": "tokenizer.json",
-          "url": "https://huggingface.co/Teradata/opus-mt_tiny_eng-rus/resolve/main/tokenizer.json",
-          "sha256": null
+          "url": "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/tokenizer.json",
+          "sha256": "97a0b6d5e2dd24c37aaf8e881a2d0db8382e729cf8e7659e7b6ba960b8375fde"
+        },
+        {
+          "name": "generation_config.json",
+          "url": "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/generation_config.json",
+          "sha256": "68e3e0677a3852008c48716deb2b498ab259eb824f7225c834c967a0eecdaf2c"
         }
       ]
     },

@@ -74,6 +74,23 @@ class ModelRepository @Inject constructor(
         Timber.d("Удалено устаревших моделей из БД: ${obsolete.size}")
         return obsolete.mapNotNull { it.filePath }
     }
+
+    /**
+     * Очистка каталожных моделей, которых больше нет в каталоге (например,
+     * после смены id или формата модели: opus-mt с Teradata-графа на Optimum).
+     * Импортированные пользователем модели (isBuiltin=false) не затрагиваются.
+     *
+     * @param knownIds id моделей текущего каталога.
+     * @return список filePath удалённых записей для удаления файлов с диска.
+     */
+    suspend fun cleanRemovedCatalogModels(knownIds: Set<String>): List<String> {
+        val all = dao.observeAll().first()
+        val removed = all.filter { it.isBuiltin && it.id !in knownIds }
+        if (removed.isEmpty()) return emptyList()
+        removed.forEach { dao.deleteById(it.id) }
+        Timber.d("Удалено отсутствующих в каталоге моделей из БД: ${removed.size}")
+        return removed.mapNotNull { it.filePath }.distinct()
+    }
 }
 
 private fun ModelEntity.toDomain(): InstalledModel = InstalledModel(

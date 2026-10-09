@@ -1,4 +1,4 @@
-#requires -version 5.1
+﻿#requires -version 5.1
 <#
 .DESCRIPTION
     Загрузка моделей LLM-Translator из models/manifest.json в models/<id>/<file>.
