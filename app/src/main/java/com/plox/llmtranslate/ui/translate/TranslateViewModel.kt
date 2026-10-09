@@ -4,9 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.ModelManager
+import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.LanguageDetector
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
+import com.plox.llmtranslate.domain.model.TranslationModelSelector
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
@@ -59,11 +61,15 @@ class TranslateViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(TranslateUiState())
     val uiState: StateFlow<TranslateUiState> = _uiState
 
+    // Установленные модели перевода для автовыбора по направлению.
+    private var translationModels: List<InstalledModel> = emptyList()
+
     init {
         viewModelScope.launch {
-            modelManager.activeModel(ModelCategory.TRANSLATION)
-                .collect { model ->
-                    _uiState.value = _uiState.value.copy(hasTranslationModel = model != null)
+            modelManager.installedModels(ModelCategory.TRANSLATION)
+                .collect { models ->
+                    translationModels = models
+                    _uiState.value = _uiState.value.copy(hasTranslationModel = models.isNotEmpty())
                 }
         }
         viewModelScope.launch {
@@ -96,7 +102,9 @@ class TranslateViewModel @Inject constructor(
     }
 
     /**
-     * Перевести введённый текст активной LLM-моделью.
+     * Перевести введённый текст.
+     * Модель выбирается автоматически по направлению (sourceLang→targetLang);
+     * при отсутствии прямой модели используется цепочка через английский.
      */
     fun translate() {
         val state = _uiState.value
@@ -116,45 +124,56 @@ class TranslateViewModel @Inject constructor(
         viewModelScope.launch {
             update { it.copy(isTranslating = true, error = null, resultText = "") }
 
-            val model = modelManager.activeModel(ModelCategory.TRANSLATION)
-                .firstOrNull()
-            if (model == null) {
+            // Автовыбор цепочки моделей для направления.
+            val chain = TranslationModelSelector.selectChain(
+                translationModels, sourceLang.code, state.targetLang.code
+            )
+            if (chain.isNullOrEmpty()) {
                 update {
                     it.copy(
                         isTranslating = false,
-                        error = "Нет активной модели перевода. Скачайте её на экране «Модели»."
+                        error = "Нет модели для направления ${sourceLang.code.uppercase()}→${state.targetLang.code.uppercase()}. Скачайте её на экране «Модели»."
                     )
                 }
                 return@launch
             }
 
-            val engine = runtimeRouter.translationEngine(model.runtime)
-            val loadError = engine.ensureLoaded(model)
-            if (loadError != null) {
-                update { it.copy(isTranslating = false, error = loadError.message()) }
-                return@launch
+            // Последовательно прогоняем текст через каждую модель цепочки.
+            var text = state.inputText
+            var from = sourceLang.code
+            var failed: String? = null
+            for (model in chain) {
+                val dir = TranslationModelSelector.directionOf(model)
+                if (dir == null) {
+                    failed = "Не удалось определить направление модели ${model.displayName}"
+                    break
+                }
+                val engine = runtimeRouter.translationEngine(model.runtime)
+                val loadError = engine.ensureLoaded(model)
+                if (loadError != null) {
+                    failed = loadError.message()
+                    break
+                }
+                engine.translate(text, from, dir.second).fold(
+                    onSuccess = { translated ->
+                        text = translated
+                        from = dir.second
+                    },
+                    onFailure = { e ->
+                        failed = when (e) {
+                            is RuntimeError -> e.message()
+                            else -> "Ошибка перевода"
+                        }
+                    }
+                )
+                if (failed != null) break
             }
 
-            engine.translate(
-                text = state.inputText,
-                from = sourceLang.code,
-                to = state.targetLang.code
-            ).fold(
-                onSuccess = { translation ->
-                    update { it.copy(isTranslating = false, resultText = translation) }
-                },
-                onFailure = { e ->
-                    update {
-                        it.copy(
-                            isTranslating = false,
-                            error = when (e) {
-                                is RuntimeError -> e.message()
-                                else -> "Ошибка перевода"
-                            }
-                        )
-                    }
-                }
-            )
+            if (failed != null) {
+                update { it.copy(isTranslating = false, error = failed) }
+            } else {
+                update { it.copy(isTranslating = false, resultText = text) }
+            }
         }
     }
 
