@@ -16,7 +16,6 @@ timber = "5.0.1"
 kotlinxSerialization = "1.7.3"
 kotlinxCoroutines = "1.9.0"
 onnxruntime = "1.30.0"
-vosk = "0.3.75"
 sherpaOnnx = "1.13.8"
 commonsCompress = "1.26.2"
 xz = "1.9"
@@ -56,7 +55,6 @@ timber = { group = "com.jakewharton.timber", name = "timber", version.ref = "tim
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
 onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
-vosk-android = { group = "com.alphacephei", name = "vosk-android", version.ref = "vosk" }
 sherpa-onnx = { group = "com.github.k2-fsa", name = "sherpa-onnx", version.ref = "sherpaOnnx" }
 commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commonsCompress" }
 xz = { group = "org.tukaani", name = "xz", version.ref = "xz" }

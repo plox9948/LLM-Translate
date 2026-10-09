@@ -8,7 +8,13 @@ import com.plox.llmtranslate.domain.model.RuntimeType
 sealed class InstallResult {
     /** Модель установлена, путь к файлу/каталогу готов. */
     data class Success(val path: String) : InstallResult()
-    data class Failure(val message: String) : InstallResult()
+    /**
+     * Ошибка установки.
+     * @param permanent true — повторная попытка бессмысленна (например, не совпал
+     *        SHA-256: файл повреждён на сервере); воркер ставит модели ERROR
+     *        и не повторяет загрузку.
+     */
+    data class Failure(val message: String, val permanent: Boolean = false) : InstallResult()
 }
 
 /**

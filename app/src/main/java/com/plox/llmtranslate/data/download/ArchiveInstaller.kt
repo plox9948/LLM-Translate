@@ -49,7 +49,8 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
 
                 if (index == 0 && !verifySha256(archiveFile, sha256)) {
                     archiveFile.delete()
-                    return InstallResult.Failure("SHA-256 не совпадает")
+                    // Файл повреждён на сервере — повторное скачивание не поможет.
+                    return InstallResult.Failure("SHA-256 не совпадает", permanent = true)
                 }
 
                 val extracted = extractArchive(archiveFile, modelDir, fileName)

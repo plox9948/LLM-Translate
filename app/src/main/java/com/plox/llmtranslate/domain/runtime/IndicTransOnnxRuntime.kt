@@ -9,6 +9,8 @@ import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.tokenizer.IndicProcessorLite
 import com.plox.llmtranslate.domain.tokenizer.TokenizerJson
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -59,6 +61,14 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
     private var tgtDictSize: Int = Int.MAX_VALUE
     private var loadedModelId: String? = null
 
+    /**
+     * Защита нативных сессий: инференс, загрузка и разгрузка сериализуются,
+     * поэтому release() ждёт окончания активного инференса (use-after-free ORT
+     * исключён). Инференс может идти десятки секунд — для onStop-разгрузки
+     * это приемлемо, release() вызывается вне главного потока.
+     */
+    private val sessionMutex = Mutex()
+
     val isLoaded: Boolean
         get() = encoderSession != null && decoderSession != null && decoderPastSession != null
 
@@ -73,62 +83,65 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
             if (loadedModelId == modelInfo.id && isLoaded) {
                 return@withContext null
             }
-            release()
 
-            try {
-                val ortEnv = OrtEnvironment.getEnvironment()
-                env = ortEnv
-                val dir = File(path)
+            sessionMutex.withLock {
+                releaseUnlocked()
 
-                val encoderFile = findFile(dir, "encoder_model")
-                val decoderFile = findFile(dir, "decoder_model")
-                val decoderPastFile = findFile(dir, "decoder_with_past_model")
-                val srcTokFile = findFile(dir, "tokenizer_src")
-                val tgtTokFile = findFile(dir, "tokenizer_tgt")
-                val genConfigFile = findFile(dir, "generation_config")
-                val metaFile = findFile(dir, "tokenizer_meta")
+                try {
+                    val ortEnv = OrtEnvironment.getEnvironment()
+                    env = ortEnv
+                    val dir = File(path)
 
-                if (encoderFile == null || decoderFile == null || decoderPastFile == null ||
-                    srcTokFile == null || tgtTokFile == null || genConfigFile == null
-                ) {
-                    Timber.e("Не найдены файлы IndicTrans-модели в $path")
-                    return@withContext RuntimeError.LoadFailed(
-                        "indictrans", "Не найдены файлы модели"
+                    val encoderFile = findFile(dir, "encoder_model")
+                    val decoderFile = findFile(dir, "decoder_model")
+                    val decoderPastFile = findFile(dir, "decoder_with_past_model")
+                    val srcTokFile = findFile(dir, "tokenizer_src")
+                    val tgtTokFile = findFile(dir, "tokenizer_tgt")
+                    val genConfigFile = findFile(dir, "generation_config")
+                    val metaFile = findFile(dir, "tokenizer_meta")
+
+                    if (encoderFile == null || decoderFile == null || decoderPastFile == null ||
+                        srcTokFile == null || tgtTokFile == null || genConfigFile == null
+                    ) {
+                        Timber.e("Не найдены файлы IndicTrans-модели в $path")
+                        return@withContext RuntimeError.LoadFailed(
+                            "indictrans", "Не найдены файлы модели"
+                        )
+                    }
+
+                    val sessionOpts = OrtSession.SessionOptions().apply {
+                        setIntraOpNumThreads(INTRA_OP_THREADS)
+                        setInterOpNumThreads(INTER_OP_THREADS)
+                    }
+                    encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
+                    decoderSession = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
+                    decoderPastSession = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
+
+                    // numLayers = (число выходов декодера - 1) / 4.
+                    val decOutputs = decoderSession!!.outputNames.size
+                    numLayers = (decOutputs - 1) / 4
+                    Timber.d(
+                        "IndicTrans: numLayers=$numLayers, " +
+                            "decoder входы: ${decoderSession!!.inputNames}"
                     )
+
+                    val srcTok = TokenizerJson()
+                    srcTok.load(srcTokFile.absolutePath)
+                    srcTokenizer = srcTok
+                    val tgtTok = TokenizerJson()
+                    tgtTok.load(tgtTokFile.absolutePath)
+                    tgtTokenizer = tgtTok
+
+                    parseGenerationConfig(genConfigFile)
+                    parseTokenizerMeta(metaFile)
+
+                    loadedModelId = modelInfo.id
+                    null
+                } catch (e: Exception) {
+                    Timber.e(e, "Не удалось загрузить IndicTrans-модель $path")
+                    releaseUnlocked()
+                    RuntimeError.LoadFailed("indictrans", e.message ?: "Неизвестная ошибка")
                 }
-
-                val sessionOpts = OrtSession.SessionOptions().apply {
-                    setIntraOpNumThreads(INTRA_OP_THREADS)
-                    setInterOpNumThreads(INTER_OP_THREADS)
-                }
-                encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
-                decoderSession = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
-                decoderPastSession = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
-
-                // numLayers = (число выходов декодера - 1) / 4.
-                val decOutputs = decoderSession!!.outputNames.size
-                numLayers = (decOutputs - 1) / 4
-                Timber.d(
-                    "IndicTrans: numLayers=$numLayers, " +
-                        "decoder входы: ${decoderSession!!.inputNames}"
-                )
-
-                val srcTok = TokenizerJson()
-                srcTok.load(srcTokFile.absolutePath)
-                srcTokenizer = srcTok
-                val tgtTok = TokenizerJson()
-                tgtTok.load(tgtTokFile.absolutePath)
-                tgtTokenizer = tgtTok
-
-                parseGenerationConfig(genConfigFile)
-                parseTokenizerMeta(metaFile)
-
-                loadedModelId = modelInfo.id
-                null
-            } catch (e: Exception) {
-                Timber.e(e, "Не удалось загрузить IndicTrans-модель $path")
-                release()
-                RuntimeError.LoadFailed("indictrans", e.message ?: "Неизвестная ошибка")
             }
         }
 
@@ -141,162 +154,183 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(Dispatchers.IO) {
-            val ortEnv = env
-            val enc = encoderSession
-            val dec = decoderSession
-            val decPast = decoderPastSession
-            val srcTok = srcTokenizer
-            val tgtTok = tgtTokenizer
-            if (ortEnv == null || enc == null || dec == null || decPast == null ||
-                srcTok == null || tgtTok == null
-            ) {
-                return@withContext Result.failure(RuntimeError.ModelNotSelected)
-            }
-
-            try {
-                // Flores-коды языков (по схеме IndicTransToolkit).
-                val srcLang = if (from == "ne") IndicProcessorLite.NEPALI else IndicProcessorLite.ENGLISH
-                val tgtLang = if (to == "ne") IndicProcessorLite.NEPALI else IndicProcessorLite.ENGLISH
-
-                // Языковой префикс вставляется в текст до токенизации.
-                val prompt = IndicProcessorLite.preprocess(text, srcLang, tgtLang)
-                val inputIds = srcTok.encode(prompt)
-                    .map { clampId(it, srcDictSize).toLong() }
-                    .toLongArray()
-                if (inputIds.isEmpty()) {
-                    return@withContext Result.failure(
-                        RuntimeError.InferenceFailed("indictrans", "Пустой вход")
-                    )
+            sessionMutex.withLock {
+                val ortEnv = env
+                val enc = encoderSession
+                val dec = decoderSession
+                val decPast = decoderPastSession
+                val srcTok = srcTokenizer
+                val tgtTok = tgtTokenizer
+                if (ortEnv == null || enc == null || dec == null || decPast == null ||
+                    srcTok == null || tgtTok == null
+                ) {
+                    return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
-                val attentionMask = LongArray(inputIds.size) { 1L }
 
-                // Encoder.
-                val encInputIds = OnnxTensor.createTensor(
-                    ortEnv, LongBuffer.wrap(inputIds), longArrayOf(1L, inputIds.size.toLong())
-                )
-                val encAttnMask = OnnxTensor.createTensor(
-                    ortEnv, LongBuffer.wrap(attentionMask), longArrayOf(1L, attentionMask.size.toLong())
-                )
-                val encOutput = enc.run(
-                    mapOf("input_ids" to encInputIds, "attention_mask" to encAttnMask)
-                )
-                val encHiddenState = ortTensor(encOutput, "last_hidden_state")
-                    ?: run {
-                        encOutput.close(); encInputIds.close(); encAttnMask.close()
+                try {
+                    // Flores-коды языков (по схеме IndicTransToolkit).
+                    val srcLang =
+                        if (from == "ne") IndicProcessorLite.NEPALI else IndicProcessorLite.ENGLISH
+                    val tgtLang =
+                        if (to == "ne") IndicProcessorLite.NEPALI else IndicProcessorLite.ENGLISH
+
+                    // Языковой префикс вставляется в текст до токенизации.
+                    val prompt = IndicProcessorLite.preprocess(text, srcLang, tgtLang)
+                    val inputIds = srcTok.encode(prompt)
+                        .map { clampId(it, srcDictSize).toLong() }
+                        .toLongArray()
+                    if (inputIds.isEmpty()) {
                         return@withContext Result.failure(
-                            RuntimeError.InferenceFailed("indictrans", "Нет last_hidden_state")
+                            RuntimeError.InferenceFailed("indictrans", "Пустой вход")
                         )
                     }
-                encInputIds.close()
-                encAttnMask.close()
+                    val attentionMask = LongArray(inputIds.size) { 1L }
 
-                // Greedy-генерация.
-                val generatedIds = mutableListOf(decoderStartTokenId)
-                var pastOutputs: OrtSession.Result? = null
-                var lastDecInput: OnnxTensor? = null
-                var lastEncMask: OnnxTensor? = null
-
-                for (step in 0 until MAX_NEW_TOKENS) {
-                    lastDecInput?.close()
-                    lastEncMask?.close()
-
-                    val decInputIds = OnnxTensor.createTensor(
-                        ortEnv,
-                        LongBuffer.wrap(longArrayOf(generatedIds.last().toLong())),
-                        longArrayOf(1L, 1L)
+                    // Encoder. Входные тензоры закрываем сразу после run — на любом пути.
+                    val encInputIds = OnnxTensor.createTensor(
+                        ortEnv, LongBuffer.wrap(inputIds), longArrayOf(1L, inputIds.size.toLong())
                     )
-                    lastDecInput = decInputIds
+                    val encAttnMask = OnnxTensor.createTensor(
+                        ortEnv, LongBuffer.wrap(attentionMask),
+                        longArrayOf(1L, attentionMask.size.toLong())
+                    )
+                    val encOutput = try {
+                        enc.run(mapOf("input_ids" to encInputIds, "attention_mask" to encAttnMask))
+                    } finally {
+                        encInputIds.close()
+                        encAttnMask.close()
+                    }
 
-                    val decOutput = if (step == 0) {
-                        val encMaskTensor = OnnxTensor.createTensor(
-                            ortEnv, LongBuffer.wrap(attentionMask),
-                            longArrayOf(1L, attentionMask.size.toLong())
-                        )
-                        lastEncMask = encMaskTensor
-                        dec.run(
-                            mapOf(
-                                "input_ids" to decInputIds,
-                                "encoder_hidden_states" to encHiddenState,
-                                "encoder_attention_mask" to encMaskTensor
+                    // Greedy-генерация. Все нативные ресурсы закрываются в finally —
+                    // в т.ч. на путях раннего return и при исключении из run/argmax.
+                    val generatedIds = mutableListOf(decoderStartTokenId)
+                    var encResult: OrtSession.Result? = encOutput
+                    var lastDecInput: OnnxTensor? = null
+                    var lastEncMask: OnnxTensor? = null
+                    var pastOutputs: OrtSession.Result? = null
+                    val resultText: String
+                    try {
+                        for (step in 0 until MAX_NEW_TOKENS) {
+                            lastDecInput?.close()
+                            lastEncMask?.close()
+
+                            val decInputIds = OnnxTensor.createTensor(
+                                ortEnv,
+                                LongBuffer.wrap(longArrayOf(generatedIds.last().toLong())),
+                                longArrayOf(1L, 1L)
                             )
-                        )
-                    } else {
-                        val past = pastOutputs
-                            ?: return@withContext Result.failure(
-                                RuntimeError.InferenceFailed("indictrans", "Нет past_key_values")
-                            )
-                        val encMaskTensor = OnnxTensor.createTensor(
-                            ortEnv, LongBuffer.wrap(attentionMask),
-                            longArrayOf(1L, attentionMask.size.toLong())
-                        )
-                        lastEncMask = encMaskTensor
-                        val inputs = HashMap<String, OnnxTensorLike>()
-                        inputs["input_ids"] = decInputIds
-                        inputs["encoder_attention_mask"] = encMaskTensor
-                        for (i in 0 until numLayers) {
-                            for (suffix in PAST_SUFFIXES) {
-                                val tensor = ortTensor(past, "present.$i.$suffix")
-                                    ?: continue
-                                inputs["past_key_values.$i.$suffix"] = tensor
+                            lastDecInput = decInputIds
+
+                            val decOutput = if (step == 0) {
+                                val encMaskTensor = OnnxTensor.createTensor(
+                                    ortEnv, LongBuffer.wrap(attentionMask),
+                                    longArrayOf(1L, attentionMask.size.toLong())
+                                )
+                                lastEncMask = encMaskTensor
+                                dec.run(
+                                    mapOf(
+                                        "input_ids" to decInputIds,
+                                        "encoder_hidden_states" to ortTensor(
+                                            encOutput, "last_hidden_state"
+                                        ) ?: return@withContext Result.failure(
+                                            RuntimeError.InferenceFailed(
+                                                "indictrans", "Нет last_hidden_state"
+                                            )
+                                        ),
+                                        "encoder_attention_mask" to encMaskTensor
+                                    )
+                                )
+                            } else {
+                                val past = pastOutputs
+                                    ?: return@withContext Result.failure(
+                                        RuntimeError.InferenceFailed(
+                                            "indictrans", "Нет past_key_values"
+                                        )
+                                    )
+                                val encMaskTensor = OnnxTensor.createTensor(
+                                    ortEnv, LongBuffer.wrap(attentionMask),
+                                    longArrayOf(1L, attentionMask.size.toLong())
+                                )
+                                lastEncMask = encMaskTensor
+                                val inputs = HashMap<String, OnnxTensorLike>()
+                                inputs["input_ids"] = decInputIds
+                                inputs["encoder_attention_mask"] = encMaskTensor
+                                for (i in 0 until numLayers) {
+                                    for (suffix in PAST_SUFFIXES) {
+                                        val tensor = ortTensor(past, "present.$i.$suffix")
+                                            ?: continue
+                                        inputs["past_key_values.$i.$suffix"] = tensor
+                                    }
+                                }
+                                decPast.run(inputs)
                             }
+
+                            // Result текущего шага замещает прошлый past — закрываем сразу.
+                            val prevPast = pastOutputs
+                            pastOutputs = decOutput
+                            prevPast?.close()
+
+                            // Encoder больше не нужен после первого шага.
+                            if (step == 0) {
+                                encResult?.close()
+                                encResult = null
+                            }
+
+                            // Argmax по logits.
+                            val logitsTensor = ortTensor(decOutput, "logits")
+                                ?: return@withContext Result.failure(
+                                    RuntimeError.InferenceFailed("indictrans", "Нет logits")
+                                )
+                            @Suppress("UNCHECKED_CAST")
+                            val logitsData = logitsTensor.getValue() as Array<Array<FloatArray>>
+                            val lastLogits = logitsData[0][logitsData[0].size - 1]
+                            var maxToken = 0
+                            var maxVal = Float.NEGATIVE_INFINITY
+                            for (i in lastLogits.indices) {
+                                if (lastLogits[i] > maxVal) {
+                                    maxVal = lastLogits[i]
+                                    maxToken = i
+                                }
+                            }
+
+                            generatedIds.add(maxToken)
+                            if (maxToken == eosTokenId) break
                         }
-                        decPast.run(inputs)
+
+                        // Декодирование (skip-специальные).
+                        val safeIds = generatedIds.map { clampId(it, tgtDictSize) }
+                        resultText = tgtTok.decode(safeIds)
+                    } finally {
+                        lastDecInput?.close()
+                        lastEncMask?.close()
+                        pastOutputs?.close()
+                        encResult?.close()
                     }
 
-                    // Encoder больше не нужен после первого шага.
-                    if (step == 0) encOutput.close()
-
-                    // Argmax по logits.
-                    val logitsTensor = ortTensor(decOutput, "logits")
-                    if (logitsTensor == null) {
-                        decOutput.close()
-                        return@withContext Result.failure(
-                            RuntimeError.InferenceFailed("indictrans", "Нет logits")
-                        )
+                    if (resultText.isBlank()) {
+                        Result.failure(RuntimeError.InferenceFailed("indictrans", "Пустой перевод"))
+                    } else {
+                        Result.success(resultText)
                     }
-                    @Suppress("UNCHECKED_CAST")
-                    val logitsData = logitsTensor.getValue() as Array<Array<FloatArray>>
-                    val lastLogits = logitsData[0][logitsData[0].size - 1]
-                    var maxToken = 0
-                    var maxVal = Float.NEGATIVE_INFINITY
-                    for (i in lastLogits.indices) {
-                        if (lastLogits[i] > maxVal) {
-                            maxVal = lastLogits[i]
-                            maxToken = i
-                        }
-                    }
-
-                    generatedIds.add(maxToken)
-                    pastOutputs?.close()
-                    pastOutputs = decOutput
-
-                    if (maxToken == eosTokenId) break
+                } catch (e: Exception) {
+                    Timber.e(e, "Ошибка инференса IndicTrans")
+                    Result.failure(RuntimeError.InferenceFailed("indictrans", e.message ?: "Неизвестная ошибка"))
                 }
-
-                // Cleanup.
-                lastDecInput?.close()
-                lastEncMask?.close()
-                pastOutputs?.close()
-
-                // Декодирование (skip-специальные).
-                val safeIds = generatedIds.map { clampId(it, tgtDictSize) }
-                val resultText = tgtTok.decode(safeIds)
-
-                if (resultText.isBlank()) {
-                    Result.failure(RuntimeError.InferenceFailed("indictrans", "Пустой перевод"))
-                } else {
-                    Result.success(resultText)
-                }
-            } catch (e: Exception) {
-                Timber.e(e, "Ошибка инференса IndicTrans")
-                Result.failure(RuntimeError.InferenceFailed("indictrans", e.message ?: "Неизвестная ошибка"))
             }
         }
 
     /**
-     * Разгрузить модель.
+     * Разгрузить модель. Ждёт окончания активного инференса (sessionMutex).
      */
-    override fun release() {
+    override suspend fun release() {
+        sessionMutex.withLock { releaseUnlocked() }
+    }
+
+    /**
+     * Непосредственная разгрузка сессий. Вызывать только под `sessionMutex`,
+     * чтобы не пересекаться с активным инференсом.
+     */
+    private fun releaseUnlocked() {
         try {
             encoderSession?.close()
             decoderSession?.close()

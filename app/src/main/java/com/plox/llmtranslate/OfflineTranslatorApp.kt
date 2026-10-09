@@ -4,12 +4,12 @@ import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.plox.llmtranslate.BuildConfig
-import com.plox.llmtranslate.data.catalog.AssetsModelCatalogProvider
+import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
 import com.plox.llmtranslate.data.model.ModelRepository
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.File
@@ -28,7 +28,7 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
     lateinit var modelRepository: ModelRepository
 
     @Inject
-    lateinit var assetsCatalogProvider: AssetsModelCatalogProvider
+    lateinit var catalogProvider: ModelCatalogProvider
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -47,12 +47,17 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
      * Очистка устаревших моделей при старте: записи с рантаймами, которых нет в enum,
      * и встроенные записи, отсутствующие в текущем каталоге (например, после смены
      * формата модели opus-mt на Optimum ONNX). Их файлы удаляются с диска.
+     *
+     * Используются id из объединённого каталога (assets + удалённый): модели
+     * удалённого каталога не должны считаться устаревшими.
      */
     private fun cleanObsoleteModels() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val obsoletePaths = modelRepository.cleanObsoleteRuntimes().toMutableList()
-                val catalogIds = assetsCatalogProvider.catalog.first().map { it.id }.toSet()
+                // last(): flow сначала отдаёт assets, затем (при наличии) объединение
+                // с удалённым каталогом — берём итоговый список.
+                val catalogIds = catalogProvider.catalog.last().map { it.id }.toSet()
                 obsoletePaths += modelRepository.cleanRemovedCatalogModels(catalogIds)
                 obsoletePaths.distinct().forEach { path ->
                     val file = File(path)

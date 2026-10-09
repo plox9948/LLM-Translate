@@ -6,6 +6,7 @@ import android.speech.tts.UtteranceProgressListener
 import com.plox.llmtranslate.domain.model.RuntimeError
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.util.Locale
 import java.util.UUID
@@ -24,9 +25,17 @@ class TtsRuntime @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
 
+    companion object {
+        /** Таймаут ожидания колбэка инициализации системного TTS. */
+        private const val INIT_TIMEOUT_MS = 10_000L
+    }
+
     private var tts: TextToSpeech? = null
     private var ready = false
     private var lastEngine: String? = null
+
+    /** Id последней поставленной в очередь фразы — для фильтрации колбэков. */
+    private var currentUtteranceId: String? = null
 
     /**
      * Инициализировать TTS указанным движком.
@@ -40,33 +49,48 @@ class TtsRuntime @Inject constructor(
         release()
         lastEngine = engine
         val enginePackage = resolveEnginePackage(engine)
-        return suspendCancellableCoroutine { cont ->
-            try {
-                val listener = TextToSpeech.OnInitListener { status ->
-                    if (status == TextToSpeech.SUCCESS) {
-                        ready = true
-                        if (cont.isActive) cont.resume(null)
-                    } else {
-                        Timber.e("TTS инициализация: статус $status")
-                        if (cont.isActive) {
-                            cont.resume(
-                                RuntimeError.LoadFailed("tts", "Системный TTS недоступен")
-                            )
+        val initError = withTimeoutOrNull(INIT_TIMEOUT_MS) {
+            suspendCancellableCoroutine { cont ->
+                try {
+                    val listener = TextToSpeech.OnInitListener { status ->
+                        if (status == TextToSpeech.SUCCESS) {
+                            // Инициализация завершена позже таймаута — готовность
+                            // фиксируем, только если продолжение ещё активно.
+                            if (cont.isActive) {
+                                ready = true
+                                cont.resume(null)
+                            }
+                        } else {
+                            Timber.e("TTS инициализация: статус $status")
+                            if (cont.isActive) {
+                                cont.resume(
+                                    RuntimeError.LoadFailed("tts", "Системный TTS недоступен")
+                                )
+                            }
                         }
                     }
-                }
-                tts = if (enginePackage != null) {
-                    TextToSpeech(context.applicationContext, listener, enginePackage)
-                } else {
-                    TextToSpeech(context.applicationContext, listener)
-                }
-            } catch (e: Exception) {
-                Timber.e(e, "Ошибка инициализации TTS")
-                if (cont.isActive) {
-                    cont.resume(RuntimeError.LoadFailed("tts", e.message ?: "Неизвестная ошибка"))
+                    tts = if (enginePackage != null) {
+                        TextToSpeech(context.applicationContext, listener, enginePackage)
+                    } else {
+                        TextToSpeech(context.applicationContext, listener)
+                    }
+                } catch (e: Exception) {
+                    Timber.e(e, "Ошибка инициализации TTS")
+                    if (cont.isActive) {
+                        cont.resume(
+                            RuntimeError.LoadFailed("tts", e.message ?: "Неизвестная ошибка")
+                        )
+                    }
                 }
             }
         }
+        if (initError != null) return initError
+        if (ready) return null
+        // withTimeoutOrNull вернул null по таймауту (или успешный null без ready —
+        // маловероятная гонка): недозагруженный экземпляр выгружаем.
+        Timber.e("TTS инициализация: таймаут подключения движка '$engine'")
+        release()
+        return RuntimeError.LoadFailed("tts", "Таймаут инициализации TTS")
     }
 
     /**
@@ -140,9 +164,14 @@ class TtsRuntime @Inject constructor(
         }
 
         val utteranceId = UUID.randomUUID().toString()
+        currentUtteranceId = utteranceId
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
             override fun onDone(utteranceId: String?) {
+                // Завершение старой (отменённой/перезаписанной) фразы не должно
+                // сбрасывать состояние текущей — фильтруем по utteranceId.
+                if (utteranceId == null || utteranceId != currentUtteranceId) return
+                currentUtteranceId = null
                 Timber.d("TTS завершён: $utteranceId")
                 onDone?.invoke()
             }
@@ -150,6 +179,9 @@ class TtsRuntime @Inject constructor(
             @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String?) {
                 Timber.e("TTS ошибка: $utteranceId")
+                if (utteranceId != null && utteranceId == currentUtteranceId) {
+                    currentUtteranceId = null
+                }
             }
         })
 
@@ -174,5 +206,6 @@ class TtsRuntime @Inject constructor(
         tts = null
         ready = false
         lastEngine = null
+        currentUtteranceId = null
     }
 }

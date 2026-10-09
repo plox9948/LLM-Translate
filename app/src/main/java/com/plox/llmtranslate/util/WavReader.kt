@@ -27,7 +27,10 @@ object WavReader {
             // 16-bit little-endian signed → нормализованный float.
             val lo = bytes[pos].toInt() and 0xFF
             val hi = bytes[pos + 1].toInt() and 0xFF
-            samples[idx] = ((hi shl 8) or lo) / 32768.0f
+            val raw = (hi shl 8) or lo
+            // Знаковое расширение 16-битного значения (0x8000 = -32768).
+            val signed = if (raw >= 0x8000) raw - 0x10000 else raw
+            samples[idx] = signed / 32768.0f
             idx++
             pos += 2
         }
@@ -38,7 +41,8 @@ object WavReader {
      * Найти чанк "data" в RIFF-заголовке.
      * @return пара (начало PCM, размер PCM) или null, если WAV некорректен.
      */
-    private fun locateDataChunk(bytes: ByteArray): Pair<Int, Int>? {
+    // internal — покрыто unit-тестом (чистая логика, без Android).
+    internal fun locateDataChunk(bytes: ByteArray): Pair<Int, Int>? {
         if (bytes.size < 44 ||
             bytes[0].toInt() != 'R'.code ||
             bytes[1].toInt() != 'I'.code ||

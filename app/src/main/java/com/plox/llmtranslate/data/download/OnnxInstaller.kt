@@ -39,7 +39,8 @@ class OnnxInstaller : ModelInstaller, BaseDownloader() {
 
         if (!verifySha256(file, sha256)) {
             file.delete()
-            return InstallResult.Failure("SHA-256 не совпадает")
+            // Файл повреждён на сервере — повторное скачивание не поможет.
+            return InstallResult.Failure("SHA-256 не совпадает", permanent = true)
         }
         return InstallResult.Success(file.absolutePath)
     }

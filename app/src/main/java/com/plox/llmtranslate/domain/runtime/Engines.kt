@@ -18,8 +18,11 @@ interface TranslationEngine {
      */
     suspend fun translate(text: String, from: String, to: String): Result<String>
 
-    /** Разгрузить модель. */
-    fun release()
+    /**
+     * Разгрузить модель. Подвешивается до окончания активного инференса,
+     * поэтому разгрузка не может выполнить use-after-free нативных сессий.
+     */
+    suspend fun release()
 }
 
 /**
@@ -38,6 +41,9 @@ interface SttEngine {
      */
     suspend fun transcribe(wavPath: String, language: String? = null): Result<String>
 
-    /** Разгрузить модель. */
-    fun release()
+    /**
+     * Разгрузить модель. Подвешивается до окончания активного распознавания,
+     * поэтому разгрузка не может выполнить use-after-free нативных ресурсов.
+     */
+    suspend fun release()
 }

@@ -185,29 +185,37 @@ class ModelBackupManager @Inject constructor(
                     return@forEach
                 }
 
-                val model = InstalledModel(
-                    id = entry.id,
-                    category = ModelCategory.valueOf(entry.category),
-                    displayName = entry.displayName,
-                    description = entry.description,
-                    runtime = RuntimeType.valueOf(entry.runtime),
-                    sizeBytes = entry.sizeBytes,
-                    ramRequiredMb = entry.ramRequiredMb,
-                    languages = entry.languages,
-                    quality = entry.quality,
-                    speed = entry.speed,
-                    url = entry.url,
-                    urls = entry.urls,
-                    sha256 = entry.sha256,
-                    license = entry.license,
-                    minAndroidSdk = entry.minAndroidSdk,
-                    recommendedRamMb = entry.recommendedRamMb,
-                    status = ModelStatus.READY,
-                    progress = 100,
-                    filePath = targetPath,
-                    bytesDone = entry.sizeBytes,
-                    isBuiltin = entry.isBuiltin
-                )
+                // Одна битая запись (например, category/runtime из будущей версии
+                // приложения) не должна прерывать весь импорт — пропускаем её.
+                val model = try {
+                    InstalledModel(
+                        id = entry.id,
+                        category = ModelCategory.valueOf(entry.category),
+                        displayName = entry.displayName,
+                        description = entry.description,
+                        runtime = RuntimeType.valueOf(entry.runtime),
+                        sizeBytes = entry.sizeBytes,
+                        ramRequiredMb = entry.ramRequiredMb,
+                        languages = entry.languages,
+                        quality = entry.quality,
+                        speed = entry.speed,
+                        url = entry.url,
+                        urls = entry.urls,
+                        sha256 = entry.sha256,
+                        license = entry.license,
+                        minAndroidSdk = entry.minAndroidSdk,
+                        recommendedRamMb = entry.recommendedRamMb,
+                        status = ModelStatus.READY,
+                        progress = 100,
+                        filePath = targetPath,
+                        bytesDone = entry.sizeBytes,
+                        isBuiltin = entry.isBuiltin
+                    )
+                } catch (e: IllegalArgumentException) {
+                    Timber.w("Запись ${entry.id} пропущена: неизвестные данные архива (${e.message})")
+                    skipped++
+                    return@forEach
+                }
 
                 // Переименовываем временный файл в целевой.
                 if (moveToTarget(tempFile, targetPath)) {
@@ -348,10 +356,27 @@ class ModelBackupManager @Inject constructor(
             val targetFile = File(targetPath)
             targetFile.parentFile?.mkdirs()
             if (targetFile.exists()) targetFile.delete()
-            tempFile.renameTo(targetFile)
+            if (tempFile.renameTo(targetFile)) return true
+            // rename не работает между томами (cacheDir и getExternalFilesDir):
+            // копируем и удаляем временный файл.
+            copyRecursively(tempFile, targetFile)
+            tempFile.deleteRecursively()
+            true
         } catch (e: Exception) {
             Timber.e(e, "Ошибка перемещения файла в $targetPath")
             false
+        }
+    }
+
+    /**
+     * Рекурсивно скопировать файл или каталог (fallback при отказе rename).
+     */
+    private fun copyRecursively(source: File, target: File) {
+        if (source.isDirectory) {
+            target.mkdirs()
+            source.listFiles()?.forEach { copyRecursively(it, File(target, it.name)) }
+        } else {
+            source.copyTo(target, overwrite = true)
         }
     }
 

@@ -188,6 +188,12 @@ class AudioRecorder @Inject constructor(
                     synchronized(pcmBuffer) {
                         pcmBuffer.write(buffer, 0, read)
                     }
+                } else if (read < 0) {
+                    // Ошибка чтения: continue превратился бы в busy-spin
+                    // (read возвращает <0 немедленно). Завершаем цикл чтения;
+                    // остановка и сохранение — как обычно через stopRecording().
+                    Timber.e("AudioRecord.read() вернул ошибку $read — цикл чтения остановлен")
+                    break
                 }
             }
         }

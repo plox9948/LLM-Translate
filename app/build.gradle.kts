@@ -68,12 +68,19 @@ android {
         // Нативные библиотеки AAR (sherpa-onnx, onnxruntime) упаковываем по-старинке.
         jniLibs {
             useLegacyPackaging = true
+            // Конфликт libonnxruntime.so: библиотеку несут onnxruntime-android
+            // 1.30.0 (прямая зависимость; Java-API ai.onnxruntime 1.30.0 вызывается
+            // из MarianOnnxRuntime/IndicTransOnnxRuntime, Java-часть 1.30.0 всегда
+            // попадает в APK) и sherpa-onnx 1.13.8 со своей внутренней нативной
+            // ORT 1.28.2. Требуемая для Java-API версия зафиксирована:
+            // onnxruntime-android:1.30.0 (gradle/libs.versions.toml); на слиянии
+            // сейчас побеждает именно она (проверено по mergedNativeLibs.debug),
+            // pickFirst подавляет дубликат и ограничен путём нативной
+            // библиотеки конкретного ABI (lib/<abi>/libonnxruntime.so).
+            pickFirsts += "lib/*/libonnxruntime.so"
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
-            // Конфликт libonnxruntime.so между onnxruntime-android и sherpa-onnx:
-            // берём первую найденную копию.
-            pickFirst("**/libonnxruntime.so")
         }
     }
 }
@@ -111,9 +118,9 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
 
-    // Рантаймы инференса: ONNX (NLLB) и Vosk (STT).
+    // ONNX Runtime: Java-API инференса Marian/IndicTrans. Требуемая нативная
+    // версия libonnxruntime.so — 1.30.0 (см. packaging.resources.pickFirsts).
     implementation(libs.onnxruntime.android)
-    implementation(libs.vosk.android)
 
     // Новый инференс-слой: sherpa-onnx (STT) + распаковка архивов моделей.
     implementation(libs.sherpa.onnx)

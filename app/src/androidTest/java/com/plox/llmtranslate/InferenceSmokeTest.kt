@@ -11,7 +11,7 @@ import com.plox.llmtranslate.domain.runtime.IndicTransOnnxRuntime
 import com.plox.llmtranslate.domain.runtime.MarianOnnxRuntime
 import com.plox.llmtranslate.domain.runtime.SherpaSttEngine
 import kotlinx.coroutines.runBlocking
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -72,15 +72,14 @@ class InferenceSmokeTest {
         )
         val engine = MarianOnnxRuntime()
         val error = runBlocking { engine.ensureLoaded(model) }
-        assertNotNull("ensureLoaded не вернул ошибку", error == null)
-        assertTrue("Ошибка загрузки: $error", error == null)
+        assertNull("ensureLoaded вернул ошибку: $error", error)
 
         val result = runBlocking { engine.translate("Привет, как дела?", "ru", "en") }
         assertTrue("Ошибка перевода: ${result.exceptionOrNull()}", result.isSuccess)
         val text = result.getOrThrow()
         println("MARIAN RU->EN: «Привет, как дела?» => $text")
         assertTrue("Пустой перевод", text.isNotBlank())
-        engine.release()
+        runBlocking { engine.release() }
     }
 
     @Test
@@ -100,7 +99,7 @@ class InferenceSmokeTest {
         val text = result.getOrThrow()
         println("MARIAN EN->RU: «Hello, how are you?» => $text")
         assertTrue("Пустой перевод", text.isNotBlank())
-        engine.release()
+        runBlocking { engine.release() }
     }
 
     @Test
@@ -122,7 +121,7 @@ class InferenceSmokeTest {
         val text = result.getOrThrow()
         println("INDICTRANS NE->EN: «$neText» => $text")
         assertTrue("Пустой перевод", text.isNotBlank())
-        engine.release()
+        runBlocking { engine.release() }
     }
 
     @Test
@@ -142,7 +141,7 @@ class InferenceSmokeTest {
         val result = runBlocking { engine.transcribe(wavFile.absolutePath, language = "en") }
         println("SHERPA PARAKEET STT: success=${result.isSuccess}, text='${result.getOrNull()}'")
         // Главное — модель загрузилась и пайплайн не упал.
-        engine.release()
+        runBlocking { engine.release() }
     }
 
     @Test
@@ -156,7 +155,7 @@ class InferenceSmokeTest {
         val engine = SherpaSttEngine()
         val error = runBlocking { engine.ensureLoaded(model) }
         assertTrue("Ошибка загрузки sherpa-модели (transducer): $error", error == null)
-        engine.release()
+        runBlocking { engine.release() }
     }
 
     /**

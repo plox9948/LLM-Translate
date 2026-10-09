@@ -45,7 +45,6 @@ class ModelDownloadWorker @AssistedInject constructor(
         val modelsRoot = applicationContext.getExternalFilesDir("models")
             ?: applicationContext.filesDir
         val modelsDir = File(modelsRoot, runtime.name)
-        val model = repository.getById(modelId)
         val urls = urlsCsv.split(',').filter { it.isNotBlank() }
 
         Timber.d("Запуск скачивания $modelId из ${urls.size} URL")
@@ -56,39 +55,64 @@ class ModelDownloadWorker @AssistedInject constructor(
             setProgress(workDataOf(KEY_PROGRESS to progress))
             if (progress != lastSavedPercent) {
                 lastSavedPercent = progress
-                model?.let {
-                    repository.upsert(
-                        it.copy(status = ModelStatus.DOWNLOADING, progress = progress)
-                    )
+                updateIfPresent(modelId) {
+                    it.copy(status = ModelStatus.DOWNLOADING, progress = progress)
                 }
             }
         }
 
         return when (result) {
             is InstallResult.Success -> {
-                model?.let {
-                    repository.upsert(
-                        it.copy(
-                            status = ModelStatus.READY,
-                            progress = 100,
-                            filePath = result.path,
-                            bytesDone = sizeBytes
-                        )
+                val saved = updateIfPresent(modelId) { current ->
+                    current.copy(
+                        status = ModelStatus.READY,
+                        progress = 100,
+                        filePath = result.path,
+                        bytesDone = sizeBytes
                     )
+                }
+                if (!saved) {
+                    // Запись удалена/отменена во время скачивания — не восстанавливаем,
+                    // скачанный файл чистит delete(); при отмене остаётся на диске.
+                    Timber.d("Запись $modelId удалена во время скачивания — состояние не сохраняем")
                 }
                 Result.success()
             }
             is InstallResult.Failure -> {
-                if (result.message.contains("SHA-256")) {
+                if (result.permanent) {
                     // Повторная попытка не поможет — файл повреждён на сервере.
-                    model?.let { repository.upsert(it.copy(status = ModelStatus.ERROR)) }
+                    updateIfPresent(modelId) { it.copy(status = ModelStatus.ERROR) }
+                    return Result.failure(workDataOf(KEY_ERROR to result.message))
+                }
+                if (runAttemptCount >= MAX_ATTEMPTS) {
+                    Timber.e(
+                        "Модель $modelId: исчерпаны попытки скачивания " +
+                            "(попытка $runAttemptCount): ${result.message}"
+                    )
+                    updateIfPresent(modelId) { it.copy(status = ModelStatus.ERROR) }
                     return Result.failure(workDataOf(KEY_ERROR to result.message))
                 }
                 // Сетевая ошибка — повторяем (докачка продолжит с места обрыва).
-                model?.let { repository.upsert(it.copy(status = ModelStatus.DOWNLOADING)) }
+                updateIfPresent(modelId) { it.copy(status = ModelStatus.DOWNLOADING) }
                 Result.retry()
             }
         }
+    }
+
+    /**
+     * Обновить запись только если она ещё существует (перечитывание из DAO
+     * сразу перед записью): защита от гонки с cancel/delete — удалённая во
+     * время скачивания запись не восстанавливается.
+     *
+     * @return true, если запись найдена и обновлена.
+     */
+    private suspend fun updateIfPresent(
+        modelId: String,
+        transform: (InstalledModel) -> InstalledModel
+    ): Boolean {
+        val current = repository.getById(modelId) ?: return false
+        repository.upsert(transform(current))
+        return true
     }
 
     companion object {
@@ -101,6 +125,9 @@ class ModelDownloadWorker @AssistedInject constructor(
         const val KEY_ERROR = "key_error"
 
         private const val WORK_NAME_PREFIX = "download_model_"
+
+        // Максимум автоматических повторов сетевых ошибок (backoff экспоненциальный).
+        private const val MAX_ATTEMPTS = 5
 
         fun workName(modelId: String) = "${WORK_NAME_PREFIX}$modelId"
 

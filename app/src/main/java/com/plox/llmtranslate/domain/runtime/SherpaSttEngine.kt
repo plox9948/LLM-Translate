@@ -10,6 +10,8 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.util.WavReader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
@@ -42,6 +44,14 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
     private var whisperLanguage: String? = null
     private var loadedModelId: String? = null
 
+    /**
+     * Защита нативного recognizer: распознавание, загрузка и разгрузка
+     * сериализуются, поэтому release() ждёт окончания активного decode
+     * (use-after-free исключён). Распознавание может идти десятки секунд —
+     * для onStop-разгрузки это приемлемо, release() вызывается вне главного потока.
+     */
+    private val recognizerMutex = Mutex()
+
     val isLoaded: Boolean
         get() = recognizer != null
 
@@ -57,26 +67,29 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
             if (loadedModelId == model.id && recognizer != null) {
                 return@withContext null
             }
-            release()
 
-            try {
-                val info = detectModel(File(path))
-                if (info == null) {
-                    Timber.e("Не удалось определить тип sherpa-модели: $path")
-                    return@withContext RuntimeError.LoadFailed(
-                        "sherpa", "Не удалось определить тип модели по файлам"
-                    )
+            recognizerMutex.withLock {
+                releaseUnlocked()
+
+                try {
+                    val info = detectModel(File(path))
+                    if (info == null) {
+                        Timber.e("Не удалось определить тип sherpa-модели: $path")
+                        return@withContext RuntimeError.LoadFailed(
+                            "sherpa", "Не удалось определить тип модели по файлам"
+                        )
+                    }
+                    this@SherpaSttEngine.modelInfo = info
+                    whisperLanguage = if (info.type == TYPE_WHISPER) "auto" else null
+                    recognizer = buildRecognizer(info, whisperLanguage)
+                    loadedModelId = model.id
+                    Timber.d("Sherpa-модель загружена (${info.type}): $path")
+                    null
+                } catch (e: Exception) {
+                    Timber.e(e, "Не удалось загрузить sherpa-модель $path")
+                    releaseUnlocked()
+                    RuntimeError.LoadFailed("sherpa", e.message ?: "Неизвестная ошибка")
                 }
-                this@SherpaSttEngine.modelInfo = info
-                whisperLanguage = if (info.type == TYPE_WHISPER) "auto" else null
-                recognizer = buildRecognizer(info, whisperLanguage)
-                loadedModelId = model.id
-                Timber.d("Sherpa-модель загружена (${info.type}): $path")
-                null
-            } catch (e: Exception) {
-                Timber.e(e, "Не удалось загрузить sherpa-модель $path")
-                release()
-                RuntimeError.LoadFailed("sherpa", e.message ?: "Неизвестная ошибка")
             }
         }
 
@@ -87,63 +100,90 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
      */
     override suspend fun transcribe(wavPath: String, language: String?): Result<String> =
         withContext(Dispatchers.IO) {
-            val info = this@SherpaSttEngine.modelInfo
-            if (info == null || recognizer == null) {
-                return@withContext Result.failure(RuntimeError.ModelNotSelected)
-            }
+            recognizerMutex.withLock {
+                val info = this@SherpaSttEngine.modelInfo
+                if (info == null || recognizer == null) {
+                    return@withContext Result.failure(RuntimeError.ModelNotSelected)
+                }
 
-            // Для whisper при смене языка пересоздаём распознаватель.
-            if (info.type == TYPE_WHISPER && language != null && language != whisperLanguage) {
-                whisperLanguage = language
-                recognizer = buildRecognizer(info, language)
-                Timber.d("Whisper переключён на язык: $language")
-            }
+                // Для whisper при смене языка пересоздаём распознаватель.
+                if (info.type == TYPE_WHISPER && language != null && language != whisperLanguage) {
+                    try {
+                        // Обязательно освобождаем старый распознаватель — иначе
+                        // утечка сотен МБ нативной памяти при каждой смене языка.
+                        recognizer?.release()
+                        recognizer = null
+                        recognizer = buildRecognizer(info, language)
+                        whisperLanguage = language
+                        Timber.d("Whisper переключён на язык: $language")
+                    } catch (e: Exception) {
+                        Timber.e(e, "Не удалось пересоздать whisper для языка $language")
+                        recognizer = null
+                        whisperLanguage = null
+                        loadedModelId = null
+                        return@withContext Result.failure(
+                            RuntimeError.LoadFailed(
+                                "sherpa",
+                                "Не удалось переключить язык: ${e.message ?: "Неизвестная ошибка"}"
+                            )
+                        )
+                    }
+                }
 
-            val rec = recognizer
-                ?: return@withContext Result.failure(RuntimeError.ModelNotSelected)
+                val rec = recognizer
+                    ?: return@withContext Result.failure(RuntimeError.ModelNotSelected)
 
-            val file = File(wavPath)
-            if (!file.exists()) {
-                return@withContext Result.failure(
-                    RuntimeError.InferenceFailed("sherpa", "Файл не найден: $wavPath")
-                )
-            }
-
-            try {
-                val samples = WavReader.readPcmAsFloat(file)
-                if (samples.isEmpty()) {
+                val file = File(wavPath)
+                if (!file.exists()) {
                     return@withContext Result.failure(
-                        RuntimeError.InferenceFailed("sherpa", "Пустой аудиофайл")
+                        RuntimeError.InferenceFailed("sherpa", "Файл не найден: $wavPath")
                     )
                 }
 
-                val stream = rec.createStream()
                 try {
-                    stream.acceptWaveform(samples, SAMPLE_RATE)
-                    rec.decode(stream)
-                    val text = rec.getResult(stream).text.trim()
-                    if (text.isEmpty()) {
-                        Result.failure(
-                            RuntimeError.InferenceFailed("sherpa", "Распознавание не выполнено")
+                    val samples = WavReader.readPcmAsFloat(file)
+                    if (samples.isEmpty()) {
+                        return@withContext Result.failure(
+                            RuntimeError.InferenceFailed("sherpa", "Пустой аудиофайл")
                         )
-                    } else {
-                        Result.success(text)
                     }
-                } finally {
-                    stream.release()
+
+                    val stream = rec.createStream()
+                    try {
+                        stream.acceptWaveform(samples, SAMPLE_RATE)
+                        rec.decode(stream)
+                        val text = rec.getResult(stream).text.trim()
+                        if (text.isEmpty()) {
+                            Result.failure(
+                                RuntimeError.InferenceFailed("sherpa", "Распознавание не выполнено")
+                            )
+                        } else {
+                            Result.success(text)
+                        }
+                    } finally {
+                        stream.release()
+                    }
+                } catch (e: Exception) {
+                    Timber.e(e, "Ошибка распознавания sherpa")
+                    Result.failure(
+                        RuntimeError.InferenceFailed("sherpa", e.message ?: "Неизвестная ошибка")
+                    )
                 }
-            } catch (e: Exception) {
-                Timber.e(e, "Ошибка распознавания sherpa")
-                Result.failure(
-                    RuntimeError.InferenceFailed("sherpa", e.message ?: "Неизвестная ошибка")
-                )
             }
         }
 
     /**
-     * Разгрузить модель.
+     * Разгрузить модель. Ждёт окончания активного распознавания (recognizerMutex).
      */
-    override fun release() {
+    override suspend fun release() {
+        recognizerMutex.withLock { releaseUnlocked() }
+    }
+
+    /**
+     * Непосредственная разгрузка распознавателя. Вызывать только под
+     * `recognizerMutex`, чтобы не пересекаться с активным decode.
+     */
+    private fun releaseUnlocked() {
         recognizer?.release()
         recognizer = null
         modelInfo = null

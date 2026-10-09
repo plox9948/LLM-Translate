@@ -362,25 +362,29 @@ class TokenizerJson {
 
     /**
      * Нормализатор по precompiled_charsmap (SentencePiece / NFKC).
-     * Бинарный формат: [u32 trie_size, trie: [u32], normalized: utf8].
+     *
+     * Бинарный формат (sentencepiece `Normalizer::DecodePrecompiledCharsMap`):
+     * `[u32 trie_size][trie: u32-юниты darts-clone][normalized]`, где блок
+     * `normalized` — замены в UTF-8, разделённые 0x00. `value` из листа три —
+     * это БАЙТОВОЕ смещение начала записи в `normalized`, а не индекс символа.
      */
-    private class CharsmapNormalizer(charsmap: ByteArray) {
+    internal class CharsmapNormalizer(charsmap: ByteArray) {
 
-        private val normalized: String
-        private val trie: List<Int>
+        private val trie: IntArray
+        private val normalized: ByteArray
 
         init {
-            require(charsmap.size >= 4) { "charsmap слишком мал" }
-            val trieSize = readU32(charsmap, 0)
-            val trieCount = trieSize / 4
-            val trieList = ArrayList<Int>(trieCount)
-            var pos = 4
-            repeat(trieCount) {
-                trieList.add(readU32(charsmap, pos))
-                pos += 4
+            require(charsmap.size >= 8) { "charsmap слишком мал" }
+            // trie_size — размер три в байтах; darts требует кратности 1024.
+            val trieBytes = (readU32(charsmap, 0).toLong() and 0xFFFFFFFFL)
+            require(trieBytes >= 1024 && trieBytes <= charsmap.size - 4L && (trieBytes and 0x3FFL) == 0L) {
+                "некорректный размер три в charsmap"
             }
-            trie = trieList
-            normalized = String(charsmap, pos, charsmap.size - pos, StandardCharsets.UTF_8)
+            trie = IntArray((trieBytes / 4).toInt()) { readU32(charsmap, 4 + it * 4) }
+            normalized = charsmap.copyOfRange(trieBytes.toInt() + 4, charsmap.size)
+            require(normalized.isEmpty() || normalized[normalized.size - 1] == 0.toByte()) {
+                "блок normalized в charsmap должен завершаться 0x00"
+            }
         }
 
         fun normalize(original: String): String {
@@ -391,7 +395,9 @@ class TokenizerJson {
             var end = bi.next()
             while (end != -1) {
                 val grapheme = original.substring(start, end)
-                if (grapheme.length < 6) {
+                // Как в spm_precompiled: матч всей графемой ищем только для
+                // коротких графем (порог — BYTES длины, не символы).
+                if (grapheme.toByteArray(StandardCharsets.UTF_8).size < 6) {
                     val norm = transform(grapheme)
                     if (norm != null) {
                         result.append(norm)
@@ -400,9 +406,13 @@ class TokenizerJson {
                         continue
                     }
                 }
-                for (c in grapheme) {
-                    val norm = transform(c.toString())
-                    if (norm != null) result.append(norm) else result.append(c)
+                var i = 0
+                while (i < grapheme.length) {
+                    val cp = grapheme.codePointAt(i)
+                    val charCount = Character.charCount(cp)
+                    val part = grapheme.substring(i, i + charCount)
+                    result.append(transform(part) ?: part)
+                    i += charCount
                 }
                 start = end
                 end = bi.next()
@@ -410,15 +420,25 @@ class TokenizerJson {
             return result.toString()
         }
 
+        /**
+         * Самое длинное совпадение байтового ключа в три (как
+         * `Normalizer::NormalizePrefix` в sentencepiece); затем чтение записи
+         * замены из `normalized` по байтовому смещению до завершающего 0x00.
+         */
         private fun transform(chunk: String): String? {
             val results = commonPrefixSearch(chunk.toByteArray(StandardCharsets.UTF_8))
             if (results.isEmpty()) return null
-            val index = results[0]
-            var index2 = index
-            while (index2 < normalized.length && normalized[index2] != '\u0000') index2++
-            return normalized.substring(index, index2)
+            val value = results.last()
+            if (value >= normalized.size) return null
+            var end = value
+            while (end < normalized.size && normalized[end] != 0.toByte()) end++
+            return String(normalized, value, end - value, StandardCharsets.UTF_8)
         }
 
+        /**
+         * Обход darts-clone по байтам ключа; возвращает значения leaf-юнитов
+         * по возрастанию длины совпавшего префикса (последнее — самое длинное).
+         */
         private fun commonPrefixSearch(key: ByteArray): List<Int> {
             var nodePos = 0
             val results = ArrayList<Int>()
@@ -428,10 +448,11 @@ class TokenizerJson {
                 val b = c.toInt() and 0xFF
                 if (b == 0) break
                 nodePos = nodePos xor b
+                if (nodePos >= trie.size) return results
                 unit = trie[nodePos]
                 if (unitLabel(unit) != b) return results
                 nodePos = nodePos xor unitOffset(unit)
-                if (unitHasLeaf(unit)) results.add(unitValue(trie[nodePos]))
+                if (unitHasLeaf(unit) && nodePos < trie.size) results.add(unitValue(trie[nodePos]))
             }
             return results
         }
@@ -439,7 +460,10 @@ class TokenizerJson {
         private fun unitHasLeaf(unit: Int): Boolean = (unit shr 8) and 1 == 1
         private fun unitValue(unit: Int): Int = unit and 0x7FFFFFFF
         private fun unitLabel(unit: Int): Int = unit and 0x800000FF.toInt()
-        private fun unitOffset(unit: Int): Int = (unit shr 10) shl ((unit and (1 shl 9)) shr 6)
+
+        // Смещение юнита darts-clone: сдвиг 0 или 1 в зависимости от флага
+        // метки (бит 9).
+        private fun unitOffset(unit: Int): Int = (unit shr 10) shl ((unit shr 9) and 1)
 
         private fun readU32(b: ByteArray, off: Int): Int =
             (b[off].toInt() and 0xFF) or

@@ -111,17 +111,6 @@ sealed class InstallCheck {
 }
 
 /**
- * Ошибки управления моделями.
- */
-sealed class ModelError {
-    data class NotFound(val modelId: String) : ModelError()
-    data class DownloadFailed(val modelId: String, val message: String) : ModelError()
-    data class ShaMismatch(val modelId: String) : ModelError()
-    data class ImportFailed(val message: String) : ModelError()
-    data class ExportFailed(val message: String) : ModelError()
-}
-
-/**
  * Ошибки рантаймов (LLM/STT/TTS).
  */
 sealed class RuntimeError : Exception() {

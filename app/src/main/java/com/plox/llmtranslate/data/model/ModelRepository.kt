@@ -20,22 +20,27 @@ class ModelRepository @Inject constructor(
 ) {
 
     fun observeAll(): Flow<List<InstalledModel>> =
-        dao.observeAll().map { list -> list.map { it.toDomain() } }
+        dao.observeAll().map { list -> list.mapNotNull { it.toDomainOrNull() } }
 
     fun observeByCategory(category: ModelCategory): Flow<List<InstalledModel>> =
-        dao.observeByCategory(category.name).map { list -> list.map { it.toDomain() } }
+        dao.observeByCategory(category.name)
+            .map { list -> list.mapNotNull { it.toDomainOrNull() } }
 
     fun observeById(id: String): Flow<InstalledModel?> =
-        dao.observeById(id).map { it?.toDomain() }
+        dao.observeById(id).map { it?.toDomainOrNull() }
 
+    /**
+     * Модель по id. Возвращает null, если записи нет или она содержит
+     * неизвестные enum-значения (устаревшая строка БД).
+     */
     suspend fun getById(id: String): InstalledModel? =
-        dao.getById(id)?.toDomain()
+        dao.getById(id)?.toDomainOrNull()
 
     /**
      * Первая готовая модель категории (для автопереключения при удалении активной).
      */
     suspend fun getFirstReady(category: ModelCategory): InstalledModel? =
-        dao.getFirstReady(category.name)?.toDomain()
+        dao.getFirstReady(category.name)?.toDomainOrNull()
 
     /**
      * Сохранить модель. Timestamp'ы createdAt/updatedAt поддерживаются автоматически.
@@ -93,29 +98,50 @@ class ModelRepository @Inject constructor(
     }
 }
 
-private fun ModelEntity.toDomain(): InstalledModel = InstalledModel(
-    id = id,
-    category = ModelCategory.valueOf(category),
-    displayName = displayName,
-    description = description,
-    runtime = RuntimeType.valueOf(runtime),
-    sizeBytes = sizeBytes,
-    ramRequiredMb = ramRequiredMb,
-    languages = languages.split(',').filter { it.isNotBlank() },
-    quality = quality,
-    speed = speed,
+/**
+ * Устойчивое маппинг-преобразование сущности в домен.
+ *
+ * Записи с устаревшими значениями enum (результат даунгрейда или смены
+ * рантаймов) пропускаются с предупреждением, а не роняют подписчиков Flow
+ * исключением из [valueOf]. Очисткой таких строк занимается
+ * [ModelRepository.cleanObsoleteRuntimes].
+ */
+// internal — покрыто unit-тестом устойчивого маппинга (без Room).
+internal fun ModelEntity.toDomainOrNull(): InstalledModel? {
+    val categoryValue = runCatching { ModelCategory.valueOf(category) }.getOrNull()
+    val runtimeValue = runCatching { RuntimeType.valueOf(runtime) }.getOrNull()
+    val statusValue = runCatching { ModelStatus.valueOf(status) }.getOrNull()
+    if (categoryValue == null || runtimeValue == null || statusValue == null) {
+        Timber.w(
+            "Пропущена запись модели $id: неизвестные category=$category, " +
+                "runtime=$runtime, status=$status"
+        )
+        return null
+    }
+    return InstalledModel(
+        id = id,
+        category = categoryValue,
+        displayName = displayName,
+        description = description,
+        runtime = runtimeValue,
+        sizeBytes = sizeBytes,
+        ramRequiredMb = ramRequiredMb,
+        languages = languages.split(',').filter { it.isNotBlank() },
+        quality = quality,
+        speed = speed,
         url = url,
         urls = urls.split(',').filter { it.isNotBlank() },
         sha256 = sha256,
         license = license,
         minAndroidSdk = minAndroidSdk,
         recommendedRamMb = recommendedRamMb,
-        status = ModelStatus.valueOf(status),
-    progress = progress,
-    filePath = filePath,
-    bytesDone = bytesDone,
-    isBuiltin = isBuiltin
-)
+        status = statusValue,
+        progress = progress,
+        filePath = filePath,
+        bytesDone = bytesDone,
+        isBuiltin = isBuiltin
+    )
+}
 
 private fun InstalledModel.toEntity(createdAt: Long, updatedAt: Long): ModelEntity =
     ModelEntity(

@@ -31,9 +31,12 @@ class RuntimeRouter @Inject constructor(
     fun sttEngine(runtime: RuntimeType): SttEngine = sherpaSttEngine
 
     /**
-     * Разгрузить все рантаймы (при ON_STOP).
+     * Разгрузить все рантаймы (при ON_STOP). Каждый движок под мьютексом
+     * ждёт окончания активного инференса — это нормально для onStop-разгрузки,
+     * но вызывать нужно вне главного потока. Последовательный вызов release()
+     * разных движков безопасен: их мьютексы независимы, deadlock невозможен.
      */
-    fun releaseAll() {
+    suspend fun releaseAll() {
         marianOnnxRuntime.release()
         indicTransOnnxRuntime.release()
         sherpaSttEngine.release()

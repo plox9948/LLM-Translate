@@ -215,9 +215,11 @@ class ModelRamProfileTest {
         sampler.stop = true
         sampler.join()
 
-        when (engine) {
-            is TranslationEngine -> engine.release()
-            is SttEngine -> engine.release()
+        runBlocking {
+            when (engine) {
+                is TranslationEngine -> engine.release()
+                is SttEngine -> engine.release()
+            }
         }
         System.gc()
         Thread.sleep(600)
