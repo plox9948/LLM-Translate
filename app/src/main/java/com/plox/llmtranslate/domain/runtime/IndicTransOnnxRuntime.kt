@@ -336,10 +336,23 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
     private fun clampId(id: Int, dictSize: Int): Int =
         if (id < dictSize) id else 0
 
-    private fun findFile(dir: File, namePart: String): File? {
+    /**
+     * Найти файл модели по части имени.
+     *
+     * Приоритет у точного совпадения `<namePart>.onnx` (без учёта регистра):
+     * иначе listFiles() может отдать *.onnx.data (external data весов) вместо
+     * модели, и ORT упадёт с ORT_INVALID_PROTOBUF. Для токенизаторов и конфигов
+     * (без .onnx) срабатывает fallback по подстроке.
+     */
+    internal fun findFile(dir: File, namePart: String): File? {
         if (!dir.exists()) return null
-        return dir.listFiles()?.firstOrNull {
-            it.isFile && it.name.lowercase().contains(namePart)
+        val files = dir.listFiles() ?: return null
+        val exact = files.firstOrNull {
+            it.isFile && it.name.lowercase() == "${namePart.lowercase()}.onnx"
+        }
+        if (exact != null) return exact
+        return files.firstOrNull {
+            it.isFile && it.name.lowercase().contains(namePart.lowercase())
         }
     }
 }
