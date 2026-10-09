@@ -5,13 +5,14 @@
 
 ## Возможности
 
-- **Перевод текста** между русским, английским и непальским через локальную LLM
-  (llama.cpp/GGUF и ONNX/NLLB).
-- **Распознавание речи** (STT) через whisper.cpp (непальский, мультиязычный) и Vosk (русский).
+- **Перевод текста** между русским, английским и непальским через локальные ONNX-модели
+  (Marian opus-mt_tiny RU⇄EN, IndicTrans2 для непальского).
+- **Распознавание речи** (STT) через sherpa-onnx: Zipformer/GigaAM (ru), Parakeet (en),
+  IndicConformer (ne), Whisper Small (мультиязычный).
 - **Синтез речи** (TTS) через системный Android TextToSpeech
   (с поддержкой RHVoice / eSpeak NG как альтернативных движков).
 - **Менеджер моделей**: каталог моделей, скачивание с докачкой (Range),
-  проверка SHA-256, импорт своих GGUF через SAF, экспорт моделей.
+  проверка SHA-256, импорт своих файлов моделей через SAF, экспорт моделей.
 - **Управление памятью**: в ОЗУ только активные модели, выгрузка при сворачивании
   приложения, предупреждения о нехватке ОЗУ/места.
 
@@ -21,7 +22,7 @@
 - MVVM + Clean Architecture (data / domain / ui)
 - Hilt (DI), Coroutines + Flow
 - Room (метаданные моделей), DataStore (выбор), WorkManager (скачивание)
-- JNI + CMake (llama.cpp, whisper.cpp)
+- ONNX Runtime (перевод), sherpa-onnx (STT) — inference AAR, без нативной сборки с нуля
 
 ## Структура
 
@@ -30,15 +31,14 @@ app/src/main/java/com/plox/llmtranslate/
 ├── data/
 │   ├── catalog/    # парсинг JSON-каталога моделей
 │   ├── model/      # Room: сущности, DAO, репозиторий
-│   ├── download/   # WorkManager-воркер, инсталляторы (GGUF/ONNX/Vosk)
+│   ├── download/   # WorkManager-воркер, инсталляторы (мультифайл ONNX, архивы, tar.bz2)
 │   ├── backup/     # экспорт/импорт моделей и настроек (ZIP-бэкап)
 │   └── prefs/      # настройки (DataStore)
 ├── domain/
 │   ├── ModelManager.kt      # единая точка входа для UI
-│   └── runtime/             # LlmRuntime, SttRuntime, TtsRuntime, NativeBridge
+│   └── runtime/             # MarianOnnxRuntime, IndicTransOnnxRuntime, SherpaSttEngine, TtsRuntime
 ├── ui/                      # экраны: Перевод, Модели, Настройки
 └── di/                      # Hilt-модули
-app/src/main/cpp/            # CMake + JNI-мосты
 app/src/main/assets/         # models_catalog.json
 ```
 
@@ -47,27 +47,15 @@ app/src/main/assets/         # models_catalog.json
 ### Требования
 
 - Android Studio (или JDK 17 + Android SDK 34)
-- Git с поддержкой субмодулей
 
 ### Шаги
 
-1. Клонировать репозиторий и инициализировать субмодули:
+1. Клонировать репозиторий:
 
    ```bash
    git clone http://31.44.89.204:3000/plox/LLM-Translate.git
    cd LLM-Translate
-   git submodule update --init --recursive
    ```
-
-    Субмодули (llama.cpp, whisper.cpp) подключаются в `app/src/main/cpp/external/`:
-
-    ```bash
-    cd app/src/main/cpp/external
-    git submodule add https://github.com/ggml-org/llama.cpp llama.cpp
-    git submodule add https://github.com/ggml-org/whisper.cpp whisper.cpp
-    cd ../..
-    git add app/src/main/cpp/external
-    ```
 
 2. Создать `local.properties` с указанием пути к Android SDK:
 
@@ -98,16 +86,53 @@ app/src/main/assets/         # models_catalog.json
 
 Стартовый набор в `app/src/main/assets/models_catalog.json`:
 
-| Модель | Категория | Размер | RAM | Описание |
-|--------|-----------|--------|-----|----------|
-| Hy-MT1.5 1.8B 2-bit (SEQ) | Перевод | ~601 МБ | ~2 ГБ | максимальное качество (kernel Q2_0c, SME2) |
-| Hy-MT2 1.8B Q4_K_M | Перевод | ~1.13 ГБ | ~3 ГБ | стандартный GGUF, 33 языка |
-| NLLB-200 600M Q4F16 | Перевод | ~880 МБ | ~2 ГБ | 200 языков (ONNX, encoder+decoder) |
-| Whisper Tiny (Nepali) | STT | ~51 МБ | ~500 МБ | непальский |
-| Whisper Base (Multi) | STT | ~143 МБ | ~800 МБ | ru+en+ne |
-| Системный TTS / RHVoice / eSpeak NG | TTS | — | — | без установки |
+| Модель | Категория | Языки | Размер на диске | Требуется RAM | Рекоменд. RAM устройства |
+|--------|-----------|-------|-----------------|---------------|--------------------------|
+| Opus-MT Tiny (RU→EN, int8) | Перевод | ru⇄en | 107 МБ | 1500 МБ | 3 ГБ |
+| Opus-MT Tiny (EN→RU, int8) | Перевод | ru⇄en | 107 МБ | 1500 МБ | 3 ГБ |
+| IndicTrans2 (Indic→EN, int8) | Перевод | ne→en | ~250 МБ | 2500 МБ | 4 ГБ |
+| IndicTrans2 (EN→Indic, int8) | Перевод | en→ne | ~295 МБ | 2500 МБ | 4 ГБ |
+| Zipformer RU (sherpa-onnx) | STT | ru | ~90 МБ (int8) | 600 МБ | 2 ГБ |
+| GigaAM v2 RU (sherpa-onnx) | STT | ru | ~230 МБ | 1200 МБ | 3 ГБ |
+| Parakeet 110M EN (sherpa-onnx) | STT | en | ~110 МБ (int8) | 700 МБ | 2 ГБ |
+| IndicConformer NE (sherpa-onnx) | STT | ne | ~190 МБ (int8) | 1000 МБ | 3 ГБ |
+| Whisper Small Multilingual (sherpa-onnx) | STT | ru/en/ne | ~360 МБ (int8) | 1500 МБ | 4 ГБ |
+| Системный TTS / RHVoice / eSpeak NG | TTS | ru/en/ne | — | — | — |
 
-> 💡 **Рекомендуемая RAM устройства**: для перевода — 4–6 ГБ, для STT — 2–3 ГБ.
+## Фактическое потребление RAM (измерено на реальном устройстве)
+
+Замеры выполнены на телефоне OnePlus (Android 9, 5738 МБ ОЗУ): инструментационный
+тест `ModelRamProfileTest` загружает модель и выполняет инференс, а скрипт
+`tools/ramprof.sh` периодически снимает PSS процесса через `dumpsys meminfo`.
+Baseline пустого приложения — около **145 МБ**; в таблице указана дельта PSS к нему.
+
+| Модель | Steady RAM | Пик RAM | После выгрузки |
+|--------|-----------|---------|----------------|
+| Opus-MT Tiny RU→EN (int8) | ~210 МБ | ~400 МБ | освобождается полностью |
+| Opus-MT Tiny EN→RU (int8) | ~210 МБ | ~430 МБ | освобождается полностью |
+| IndicTrans2 indic→EN (int8) | ~340 МБ | ~420 МБ | остаток ~240 МБ (арены ONNX) |
+| IndicTrans2 EN→indic (int8) | ~435 МБ | ~520 МБ | освобождается полностью |
+| Zipformer RU int8 | ~110…205 МБ | ~275 МБ | частичный остаток |
+| Zipformer RU fp32 (выбирается при fp32-файлах в каталоге) | ~315…405 МБ | ~675 МБ | остаток ~230 МБ |
+| GigaAM v2 CTC RU | ~277 МБ | ~280 МБ | остаток ~150 МБ |
+| Parakeet 110M EN | ~220 МБ | ~220 МБ | освобождается полностью |
+| IndicConformer NE | ~243 МБ | ~245 МБ | освобождается (до ~2 с) |
+| Whisper Small Multilingual | ~455 МБ | ~1050 МБ при первой смене языка | освобождается полностью |
+
+Примечания:
+
+- TTS выполняется в отдельном процессе движка синтеза речи системы — на синтез
+  приложение память модели не расходует.
+- «Пик» включает кратковременные аллокации при инициализации и инференсе (оптимизация
+  графа ONNX, буферы декодирования).
+- Для Whisper первая смена языка пересоздаёт распознаватель: в момент пересборки
+  в памяти находятся оба экземпляра (пик ~1,05 ГБ). На устройствах с 4 ГБ ОЗУ
+  для распознавания лучше использовать Zipformer/GigaAM, Whisper — при 6 ГБ.
+- Zipformer: если в каталоге модели лежат и fp32-, и int8-файлы, приложение может
+  выбрать fp32 (порядок файлов не детерминирован) — RAM выше в 2–3 раза.
+
+> 💡 **Рекомендуемая RAM устройства**: для перевода — от 3 ГБ, для Whisper STT — 6 ГБ,
+> для остальных STT-моделей — от 2 ГБ.
 
 ## Лицензии моделей
 
@@ -141,12 +166,15 @@ llm_translate_backup.zip
 ├── manifest.json          # метаданные моделей (обязательно)
 ├── settings.json          # настройки (опционально)
 └── models/                # файлы моделей
-    ├── GGUF/
-    │   └── hy-mt2-1.8b-q4_k_m.gguf
-    └── ONNX/
-        └── nllb-200-600m-q4f16/
-            ├── encoder_model_q4f16.onnx
-            └── decoder_model_merged_q4f16.onnx
+    ├── MARIAN_ONNX/
+    │   └── opus-mt-tiny-ru-en-int8-v2/
+    │       ├── encoder_model.onnx
+    │       └── decoder_model.onnx
+    └── SHERPA/
+        └── stt-ru-zipformer-2024-09-18/
+            ├── encoder.int8.onnx
+            ├── decoder.int8.onnx
+            └── joiner.int8.onnx
 ```
 
 **manifest.json** — список моделей с путями:
@@ -157,14 +185,14 @@ llm_translate_backup.zip
   "exportedAt": 1700000000000,
   "models": [
     {
-      "id": "hy-mt2-1.8b-q4_k_m",
+      "id": "opus-mt-tiny-ru-en-int8-v2",
       "category": "TRANSLATION",
-      "displayName": "Hy-MT2 1.8B (Q4_K_M)",
-      "description": "Tencent Hy-MT2",
-      "runtime": "GGUF",
-      "sizeBytes": 1214378880,
-      "ramRequiredMb": 3000,
-      "languages": ["ru", "en", "ne"],
+      "displayName": "Opus-MT Tiny (RU→EN, int8)",
+      "description": "Marian MT opus-mt_tiny int8",
+      "runtime": "MARIAN_ONNX",
+      "sizeBytes": 112367622,
+      "ramRequiredMb": 1500,
+      "languages": ["ru", "en"],
       "quality": 4,
       "speed": 5,
       "url": "",
@@ -172,8 +200,8 @@ llm_translate_backup.zip
       "sha256": null,
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
-      "recommendedRamMb": 6144,
-      "relativePath": "models/GGUF/hy-mt2-1.8b-q4_k_m.gguf",
+      "recommendedRamMb": 3072,
+      "relativePath": "models/MARIAN_ONNX/opus-mt-tiny-ru-en-int8-v2/encoder_model.onnx",
       "isBuiltin": true
     }
   ]
@@ -184,8 +212,8 @@ llm_translate_backup.zip
 
 ```json
 {
-  "activeTranslation": "hy-mt2-1.8b-q4_k_m",
-  "activeStt": "whisper-base-multilingual",
+  "activeTranslation": "opus-mt-tiny-ru-en-int8-v2",
+  "activeStt": "stt-ru-zipformer-2024-09-18",
   "activeTts": "tts-system",
   "ttsEngine": "system",
   "uiLanguage": "ru",
@@ -195,8 +223,8 @@ llm_translate_backup.zip
 
 **Пошагово:**
 
-1. Скачайте нужные модели (GGUF, ONNX).
-2. Создайте папку `models/` с подкаталогами `GGUF`, `ONNX`.
+1. Скачайте нужные модели (ONNX-каталоги, sherpa-модели).
+2. Создайте папку `models/` с подкаталогами runtime (`MARIAN_ONNX`, `INDICTRANS_ONNX`, `SHERPA`).
 3. Разместите файлы моделей.
 4. Создайте `manifest.json` с записью на каждую модель (поле `relativePath` — путь к файлу внутри архива).
 5. При желании создайте `settings.json`.
@@ -204,18 +232,3 @@ llm_translate_backup.zip
 7. На телефоне: «Модели» → «Восстановить» → выберите архив.
 
 > 💡 Проще всего: сделать «Бэкап» на одном телефоне и восстановить на другом.
-
-## NLLB (ONNX) — настройка токенизатора
-
-Модель NLLB-200 использует токенизатор SentencePiece BPE. Для работы нужно
-поместить в `app/src/main/assets/` два файла:
-
-- `nllb_vocab.txt` — словарь, строки вида `id piece`
-- `nllb_merges.txt` — правила слияния, строки вида `rank piece1 piece2`
-
-Их можно получить из репозитория [Xenova/nllb-200-distilled-600M](https://huggingface.co/Xenova/nllb-200-distilled-600M)
-или сгенерировать из `sentencepiece.bpe.model`.
-
-> ⚠️ Имена входных/выходных тензоров ONNX-сессий (`input_ids`, `attention_mask`,
-> `encoder_hidden_states` и т.д.) заданы в `OnnxLlmRuntime.kt`. При использовании
-> другого экспорта ONNX проверьте и скорректируйте их под фактические имена модели.
