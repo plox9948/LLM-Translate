@@ -24,10 +24,10 @@ import javax.inject.Inject
  * Поддерживаемые языки перевода.
  */
 enum class TranslateLanguage(val code: String, val title: String) {
-    AUTO("auto", "Авто"),
-    RU("ru", "Русский"),
-    EN("en", "English"),
-    NE("ne", "नेपाली")
+    AUTO("auto", "Авто (Auto)"),
+    RU("ru", "Русский (Russian)"),
+    EN("en", "English (English)"),
+    NE("ne", "नेपाली (Nepali)")
 }
 
 /**

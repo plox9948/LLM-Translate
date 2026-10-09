@@ -6,6 +6,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.RuntimeError
+import com.plox.llmtranslate.domain.tokenizer.IndicProcessorLite
 import com.plox.llmtranslate.domain.tokenizer.TokenizerJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -28,9 +29,9 @@ import javax.inject.Singleton
  * - decoder_model.onnx — первый шаг декодера (без past);
  * - decoder_with_past_model.onnx — авторегрессионные шаги (с past_key_values).
  *
- * Greedy-цикл по translate.py репозитория модели. Языки — flores-кодами
- * (ne → npi_Deva, en → eng_Latn). External data (*.onnx.data) ORT подхватывает
- * по соседству файлов.
+ * Greedy-цикл по translate.py репозитория модели. Язык задаётся flores-префиксом
+ * в тексте по схеме IndicTransToolkit ("npi_Deva eng_Latn <текст>").
+ * External data (*.onnx.data) ORT подхватывает по соседству файлов.
  */
 @Singleton
 class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
@@ -39,8 +40,6 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
         private const val MAX_NEW_TOKENS = 128
         private const val INTRA_OP_THREADS = 4
         private const val INTER_OP_THREADS = 1
-        private const val NEPALI = "npi_Deva"
-        private const val ENGLISH = "eng_Latn"
         private val PAST_SUFFIXES = listOf(
             "decoder.key", "decoder.value", "encoder.key", "encoder.value"
         )
@@ -135,6 +134,10 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
 
     /**
      * Перевести текст (IndicTrans2 encoder-decoder, greedy).
+     *
+     * Язык задаётся flores-префиксом в тексте по схеме IndicTransToolkit:
+     * строится prompt "srcLang tgtLang <текст>", нормализуется (NFC) и
+     * токенизируется целиком одним вызовом.
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(Dispatchers.IO) {
@@ -151,21 +154,20 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
             }
 
             try {
-                // Flores-коды языков.
-                val srcLang = if (from == "ne") NEPALI else ENGLISH
-                val tgtLang = if (to == "ne") NEPALI else ENGLISH
+                // Flores-коды языков (по схеме IndicTransToolkit).
+                val srcLang = if (from == "ne") IndicProcessorLite.NEPALI else IndicProcessorLite.ENGLISH
+                val tgtLang = if (to == "ne") IndicProcessorLite.NEPALI else IndicProcessorLite.ENGLISH
 
-                val srcLangId = srcTok.specialTokenId(srcLang)
-                val tgtLangId = srcTok.specialTokenId(tgtLang)
-                if (srcLangId == null || tgtLangId == null) {
+                // Языковой префикс вставляется в текст до токенизации.
+                val prompt = IndicProcessorLite.preprocess(text, srcLang, tgtLang)
+                val inputIds = srcTok.encode(prompt)
+                    .map { clampId(it, srcDictSize).toLong() }
+                    .toLongArray()
+                if (inputIds.isEmpty()) {
                     return@withContext Result.failure(
-                        RuntimeError.InferenceFailed("indictrans", "Не найдены языковые токены")
+                        RuntimeError.InferenceFailed("indictrans", "Пустой вход")
                     )
                 }
-
-                val textIds = srcTok.encode(text)
-                val rawInputIds = listOf(srcLangId, tgtLangId) + textIds
-                val inputIds = rawInputIds.map { clampId(it, srcDictSize) }.map { it.toLong() }.toLongArray()
                 val attentionMask = LongArray(inputIds.size) { 1L }
 
                 // Encoder.
