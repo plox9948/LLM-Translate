@@ -171,8 +171,12 @@ class InferenceSmokeTest {
         val pcm = ByteArray(numSamples * 2)
         for (i in 0 until numSamples) {
             val sample = (sin(2 * PI * 440 * i / sampleRate) * 16000).toInt().toShort()
-            pcm[i * 2] = (sample and 0xFF).toByte()
-            pcm[i * 2 + 1] = ((sample shr 8) and 0xFF).toByte()
+            val le = java.nio.ByteBuffer.allocate(2)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putShort(sample)
+                .array()
+            pcm[i * 2] = le[0]
+            pcm[i * 2 + 1] = le[1]
         }
         com.plox.llmtranslate.domain.runtime.WavWriter.writeWav(file, pcm, sampleRate, 1, 16)
         return file
