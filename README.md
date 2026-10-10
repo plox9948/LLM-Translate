@@ -23,6 +23,7 @@
 - Hilt (DI), Coroutines + Flow
 - Room (метаданные моделей), DataStore (выбор), WorkManager (скачивание)
 - ONNX Runtime (перевод), sherpa-onnx (STT) — inference AAR, без нативной сборки с нуля
+  (библиотека STT вендорится патченой — см. «Вендореные нативные библиотеки»)
 
 ## Структура
 
@@ -74,6 +75,27 @@ app/src/main/assets/         # models_catalog.json
    ```bash
    adb install -r app/build/outputs/apk/debug/app-debug.apk
    ```
+
+## Вендореные нативные библиотеки
+
+В `app/src/main/jniLibs/<abi>/libsherpa-onnx-jni.so` лежит патченая копия библиотеки
+из AAR sherpa-onnx. AAR собран против ONNX Runtime 1.28.2 и требует строго
+versioned-символ `OrtGetApiBase@VERS_1.28.2`, тогда как в APK попадает
+`libonnxruntime.so` 1.30.0 от onnxruntime-android (узел `VERS_1.30.0`) — без патча
+STT падает при инициализации `OfflineRecognizer` (`UnsatisfiedLinkError`).
+Патч меняет version-node на `VERS_1.30.0` (равноимённый, с пересчётом `vna_hash`);
+локальные jniLibs имеют приоритет при слиянии, `pickFirst` подавляет дубликат из AAR.
+
+**Обязательное правило:** после обновления `sherpa-onnx` или `onnxruntime-android`
+в `gradle/libs.versions.toml` перегенерировать библиотеки скриптом:
+
+```powershell
+tools/patch-sherpa-jni-ort-version.ps1 -AarExtractDir <папка с распакованным AAR sherpa-onnx>
+```
+
+Скрипт идемпотентен (патчит всегда из распакованного AAR, бросает ошибку на уже
+патченом входе). Когда апстрим sherpa-onnx соберёт AAR с ORT >= 1.30, патч можно убрать:
+удалить `app/src/main/jniLibs/`, pickFirst для `libsherpa-onnx-jni.so` и скрипт.
 
 ## Тесты
 

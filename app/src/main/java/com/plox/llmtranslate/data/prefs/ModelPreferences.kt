@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -67,18 +68,19 @@ class ModelPreferences @Inject constructor(
      * и обновляется при записи. Позволяет применять локаль синхронно на старте
      * и при recreate() без блокировки главной нити на чтение DataStore.
      */
-    @Volatile
-    private var uiLanguageCache: String? = null
+    private val uiLanguageCacheRef = AtomicReference<String?>(null)
 
     /**
      * Прогреть кэш uiLanguage в памяти (вызывать как можно раньше — из
      * Application.onCreate). Повторные вызовы идемпотентны.
      */
     fun prefetchUiLanguage() {
-        if (uiLanguageCache != null) return
+        if (uiLanguageCacheRef.get() != null) return
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                uiLanguageCache = uiLanguage.first()
+                val value = uiLanguage.first()
+                // CAS: не перетирать кэш, обновлённый setUiLanguage() во время чтения DataStore.
+                uiLanguageCacheRef.compareAndSet(null, value)
             } catch (e: Exception) {
                 Timber.w(e, "Не удалось прогреть кэш uiLanguage")
             }
@@ -89,10 +91,10 @@ class ModelPreferences @Inject constructor(
      * Значение uiLanguage из памяти: прогретый кэш или первое чтение DataStore
      * (оно единственный раз может занять время IO).
      */
-    suspend fun awaitUiLanguageCache(): String = uiLanguageCache ?: uiLanguage.first()
+    suspend fun awaitUiLanguageCache(): String = uiLanguageCacheRef.get() ?: uiLanguage.first()
 
     suspend fun setUiLanguage(lang: String) {
-        uiLanguageCache = lang
+        uiLanguageCacheRef.set(lang)
         context.dataStore.edit { it[stringPreferencesKey("ui_language")] = lang }
     }
 
