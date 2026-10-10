@@ -125,7 +125,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     // ONNX Runtime: Java-API инференса Marian/IndicTrans. Требуемая нативная
-    // версия libonnxruntime.so — 1.30.0 (см. packaging.resources.pickFirsts).
+    // версия libonnxruntime.so — 1.30.0 (см. packaging.jniLibs.pickFirsts).
     implementation(libs.onnxruntime.android)
 
     // Новый инференс-слой: sherpa-onnx (STT) + распаковка архивов моделей.
