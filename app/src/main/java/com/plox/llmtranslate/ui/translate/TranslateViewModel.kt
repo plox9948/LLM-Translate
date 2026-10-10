@@ -2,12 +2,14 @@ package com.plox.llmtranslate.ui.translate
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.plox.llmtranslate.data.model.TranslationHistoryRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.LanguageDetector
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
+import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import com.plox.llmtranslate.domain.model.TranslationModelSelector
 import com.plox.llmtranslate.domain.model.userMessage
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
@@ -44,7 +46,8 @@ data class TranslateUiState(
     val isSpeaking: Boolean = false,
     val error: String? = null,
     val hasTranslationModel: Boolean = false,
-    val hasSttModel: Boolean = false
+    val hasSttModel: Boolean = false,
+    val history: List<TranslationHistoryEntry> = emptyList()
 )
 
 /**
@@ -56,7 +59,8 @@ class TranslateViewModel @Inject constructor(
     private val runtimeRouter: RuntimeRouter,
     private val ttsRuntime: TtsRuntime,
     private val audioRecorder: AudioRecorder,
-    private val preferences: ModelPreferences
+    private val preferences: ModelPreferences,
+    private val historyRepository: TranslationHistoryRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TranslateUiState())
@@ -78,6 +82,11 @@ class TranslateViewModel @Inject constructor(
                 .collect { model ->
                     _uiState.value = _uiState.value.copy(hasSttModel = model != null)
                 }
+        }
+        viewModelScope.launch {
+            historyRepository.observeRecent().collect { history ->
+                _uiState.value = _uiState.value.copy(history = history)
+            }
         }
         viewModelScope.launch {
             // Инициализация TTS текущим движком и переконфигурация при смене настройки.
@@ -174,6 +183,12 @@ class TranslateViewModel @Inject constructor(
                 update { it.copy(isTranslating = false, error = failed) }
             } else {
                 update { it.copy(isTranslating = false, resultText = text) }
+                historyRepository.add(
+                    sourceLang = sourceLang.code,
+                    targetLang = state.targetLang.code,
+                    inputText = state.inputText,
+                    resultText = text
+                )
             }
         }
     }
@@ -288,6 +303,34 @@ class TranslateViewModel @Inject constructor(
 
     fun clearError() {
         update { it.copy(error = null) }
+    }
+
+    /**
+     * Подставить запись истории в поле ввода: текст, направление и
+     * сохранённый результат (без повторного инференса).
+     */
+    fun useHistory(entry: TranslationHistoryEntry) {
+        val source = TranslateLanguage.entries.firstOrNull { it.code == entry.sourceLang }
+        val target = TranslateLanguage.entries.firstOrNull { it.code == entry.targetLang }
+        update {
+            it.copy(
+                sourceLang = source ?: it.sourceLang,
+                targetLang = target ?: it.targetLang,
+                inputText = entry.inputText,
+                resultText = entry.resultText,
+                error = null
+            )
+        }
+    }
+
+    /** Удалить запись из истории. */
+    fun deleteHistoryItem(id: Long) {
+        viewModelScope.launch { historyRepository.delete(id) }
+    }
+
+    /** Полностью очистить историю переводов. */
+    fun clearHistory() {
+        viewModelScope.launch { historyRepository.clear() }
     }
 
     /**

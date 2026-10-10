@@ -31,6 +31,10 @@
     <string name="translate_speak_cd">Озвучить</string>
     <string name="translate_recording_hint">● Идёт запись… Нажмите на микрофон, чтобы остановить</string>
     <string name="translate_select_language">Выберите язык</string>
+    <string name="translate_history_title">История</string>
+    <string name="translate_history_clear">Очистить</string>
+    <string name="translate_history_toggle_cd">Показать/скрыть историю</string>
+    <string name="translate_history_delete_cd">Удалить из истории</string>
 
     <!-- Экран «Модели» -->
     <string name="models_import_custom">+ Импортировать свою модель</string>

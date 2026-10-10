@@ -29,6 +29,10 @@
     <string name="translate_speak_cd">Read aloud</string>
     <string name="translate_recording_hint">● Recording… Tap the microphone to stop</string>
     <string name="translate_select_language">Select language</string>
+    <string name="translate_history_title">History</string>
+    <string name="translate_history_clear">Clear</string>
+    <string name="translate_history_toggle_cd">Show/hide history</string>
+    <string name="translate_history_delete_cd">Delete from history</string>
 
     <!-- Экран «Модели» -->
     <string name="models_import_custom">+ Import your own model</string>
