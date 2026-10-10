@@ -4,11 +4,13 @@ import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.plox.llmtranslate.BuildConfig
-import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
+import com.plox.llmtranslate.data.catalog.RemoteCatalogProvider
 import com.plox.llmtranslate.data.model.ModelRepository
+import com.plox.llmtranslate.data.prefs.ModelPreferences
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -28,7 +30,10 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
     lateinit var modelRepository: ModelRepository
 
     @Inject
-    lateinit var catalogProvider: ModelCatalogProvider
+    lateinit var catalogProvider: RemoteCatalogProvider
+
+    @Inject
+    lateinit var preferences: ModelPreferences
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -40,6 +45,9 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
         }
+        // Прогрев кэша языка в памяти: MainActivity применит локаль
+        // без блокировки главной нити на чтение DataStore.
+        preferences.prefetchUiLanguage()
         cleanObsoleteModels()
     }
 
@@ -58,7 +66,25 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
                 // last(): flow сначала отдаёт assets, затем (при наличии) объединение
                 // с удалённым каталогом — берём итоговый список.
                 val catalogIds = catalogProvider.catalog.last().map { it.id }.toSet()
-                obsoletePaths += modelRepository.cleanRemovedCatalogModels(catalogIds)
+                // Защита от неполного каталога: если удалённая часть не применилась
+                // (кэш потерян/сетевой недоступен при уже применённой версии),
+                // список содержит только assets — очистка удалила бы модели
+                // удалённого каталога. Без удалённой настройки (URL пуст) и при
+                // неприменённой версии (appliedVersion == 0) каталожных моделей
+                // удалённого каталога в БД быть не может — очистка безопасна.
+                val appliedVersion = preferences.lastRemoteCatalogVersion.first()
+                val cleaningSafe =
+                    catalogProvider.remotePartApplied ||
+                        RemoteCatalogProvider.REMOTE_CATALOG_URL.isBlank() ||
+                        appliedVersion == 0
+                if (cleaningSafe) {
+                    obsoletePaths += modelRepository.cleanRemovedCatalogModels(catalogIds)
+                } else {
+                    Timber.w(
+                        "Удалённая часть каталога недоступна (appliedVersion=$appliedVersion) — " +
+                            "очистка отсутствующих моделей пропущена"
+                    )
+                }
                 obsoletePaths.distinct().forEach { path ->
                     val file = File(path)
                     if (file.isDirectory) file.deleteRecursively() else file.delete()

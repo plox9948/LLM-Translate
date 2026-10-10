@@ -32,15 +32,24 @@ class ModelDownloadWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         val modelId = inputData.getString(KEY_MODEL_ID) ?: return Result.failure()
-        val urlsCsv = inputData.getString(KEY_URLS) ?: return Result.failure()
+        val urlsCsv = inputData.getString(KEY_URLS)
         val sha256 = inputData.getString(KEY_SHA256)
-        val runtimeName = inputData.getString(KEY_RUNTIME) ?: return Result.failure()
+        val runtimeName = inputData.getString(KEY_RUNTIME)
         val sizeBytes = inputData.getLong(KEY_SIZE_BYTES, 0L)
 
-        val runtime = RuntimeType.entries.firstOrNull { it.name == runtimeName }
-            ?: return Result.failure()
-        val installer = installerRegistry.forRuntime(runtime)
-            ?: return Result.failure()
+        val runtime = runtimeName?.let { name ->
+            RuntimeType.entries.firstOrNull { it.name == name }
+        }
+        val installer = runtime?.let { installerRegistry.forRuntime(it) }
+
+        // Ранние отказы (нет url/рантайма, неизвестный рантайм): install
+        // уже не обновит статус — переводим запись из DOWNLOADING в ERROR,
+        // иначе модель навсегда останется «скачивающейся» в UI.
+        if (urlsCsv == null || installer == null) {
+            Timber.e("Модель $modelId: некорректные входные данные скачивания")
+            markError(modelId)
+            return Result.failure()
+        }
 
         val modelsRoot = applicationContext.getExternalFilesDir("models")
             ?: applicationContext.filesDir
@@ -97,6 +106,14 @@ class ModelDownloadWorker @AssistedInject constructor(
                 Result.retry()
             }
         }
+    }
+
+    /**
+     * Перевести запись модели из DOWNLOADING в ERROR (ранний отказ воркера).
+     * Запись может быть удалена во время работы — тогда обновление пропускается.
+     */
+    private suspend fun markError(modelId: String) {
+        updateIfPresent(modelId) { it.copy(status = ModelStatus.ERROR) }
     }
 
     /**

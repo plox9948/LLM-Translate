@@ -24,7 +24,6 @@ import dagger.hilt.android.AndroidEntryPoint
 import java.util.Locale
 import javax.inject.Inject
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
@@ -42,6 +41,26 @@ class MainActivity : ComponentActivity() {
          * явный сброс на этот снимок.
          */
         private var baseConfig: Configuration? = null
+
+        /**
+         * ModelManager последней созданной активности (Hilt-синглтон процесса).
+         * Процессный observer держит эту ссылку, а не экземпляр активности,
+         * поэтому уничтоженные активности не удерживаются.
+         */
+        @Volatile
+        private var releaseTarget: ModelManager? = null
+
+        /**
+         * Единственный на процесс observer разгрузки: регистрируется один раз
+         * при первом создании активности и не снимается. Анонимный observer
+         * в каждом onCreate() накапливал наблюдателей, удерживая уничтоженные
+         * активности и многократно вызывая release() по ON_STOP.
+         */
+        private val processReleaseObserver = object : DefaultLifecycleObserver {
+            override fun onStop(owner: LifecycleOwner) {
+                releaseTarget?.releaseAllRuntimes()
+            }
+        }
     }
 
     @Inject
@@ -63,7 +82,10 @@ class MainActivity : ComponentActivity() {
 
         // Язык применяем синхронно ДО первой композиции: stringResource читает
         // ресурсы уже с нужной локалью, первый кадр уже на выбранном языке.
-        val savedLanguage = runBlocking { preferences.uiLanguage.first() }
+        // prefetch запущен в OfflineTranslatorApp.onCreate — здесь читаем из
+        // памяти; при recreate после смены языка кэш уже прогрет, поэтому
+        // главная нить не блокируется на IO.DataStore.
+        val savedLanguage = runBlocking { preferences.awaitUiLanguageCache() }
         applyUiLanguage(savedLanguage)
 
         // Смена языка вне композиции: пересоздаём активность, чтобы все
@@ -91,11 +113,10 @@ class MainActivity : ComponentActivity() {
         }
 
         // При сворачивании приложения освобождаем память: разгружаем рантаймы.
-        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStop(owner: LifecycleOwner) {
-                modelManager.releaseAllRuntimes()
-            }
-        })
+        // Observer единственный на процесс (регистрируется один раз), ссылка
+        // на ModelManager обновляется при каждом создании активности.
+        releaseTarget = modelManager
+        ProcessLifecycleOwner.get().lifecycle.addObserver(processReleaseObserver)
     }
 
     /**

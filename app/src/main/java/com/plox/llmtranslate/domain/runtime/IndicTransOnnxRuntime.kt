@@ -80,11 +80,14 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
             val path = modelInfo.filePath
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
-            if (loadedModelId == modelInfo.id && isLoaded) {
-                return@withContext null
-            }
-
             sessionMutex.withLock {
+                // Быстрый путь под мьютексом: вне него поле loadedModelId могло
+                // быть очищено параллельным release() — проверка дала бы ложное
+                // «уже загружено» и инференс упал бы на разряженных сессиях.
+                if (loadedModelId == modelInfo.id && isLoaded) {
+                    return@withContext null
+                }
+
                 releaseUnlocked()
 
                 try {

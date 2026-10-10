@@ -45,6 +45,17 @@ class RemoteCatalogProvider @Inject constructor(
     @Volatile
     private var mergedCache: List<ModelCard>? = null
 
+    /**
+     * Применялась ли удалённая часть каталога в итоговой эмиссии [catalog].
+     * false при первом чтении означает «удалённых данных нет» (пустой URL без
+     * кэша, сеть недоступна и кэш потерян/стар). Признак используется очисткой
+     * устаревших моделей, чтобы не удалить каталожные модели удалённого
+     * каталога при неполном списке.
+     */
+    @Volatile
+    var remotePartApplied: Boolean = false
+        private set
+
     override val catalog: Flow<List<ModelCard>> = flow {
         // Повторная подписка — без сети, из памяти.
         mergedCache?.let {
@@ -62,6 +73,7 @@ class RemoteCatalogProvider @Inject constructor(
             // 3. Объединяем: удалённый переопределяет assets по id.
             val merged = mergeCatalogs(assetsModels, remoteModels)
             mergedCache = merged
+            remotePartApplied = true
             emit(merged)
         } else {
             // Удалённой части нет — кэшируем assets, чтобы не ходить в сеть.

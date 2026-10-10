@@ -64,11 +64,14 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
             val path = model.filePath
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
-            if (loadedModelId == model.id && recognizer != null) {
-                return@withContext null
-            }
-
             recognizerMutex.withLock {
+                // Быстрый путь под мьютексом: вне него поле loadedModelId могло
+                // быть очищено параллельным release() — проверка дала бы ложное
+                // «уже загружено» и распознавание упало бы на null-распознавателе.
+                if (loadedModelId == model.id && recognizer != null) {
+                    return@withContext null
+                }
+
                 releaseUnlocked()
 
                 try {

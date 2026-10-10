@@ -39,8 +39,16 @@ object CatalogModule {
         assetsProvider: AssetsModelCatalogProvider,
         parser: ModelCatalogParser,
         preferences: ModelPreferences
-    ): ModelCatalogProvider =
+    ): RemoteCatalogProvider =
         RemoteCatalogProvider(context, assetsProvider, parser, preferences)
+
+    /**
+     * Тот же синглтон как интерфейс: потребители каталога зависят от
+     * ModelCatalogProvider, а очистка устаревших моделей — от RemoteCatalogProvider.
+     */
+    @Provides
+    fun provideCatalogProviderInterface(provider: RemoteCatalogProvider): ModelCatalogProvider =
+        provider
 
     @Provides
     @Singleton

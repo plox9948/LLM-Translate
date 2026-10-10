@@ -9,9 +9,13 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.plox.llmtranslate.domain.model.ModelCategory
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -58,7 +62,37 @@ class ModelPreferences @Inject constructor(
     val uiLanguage: Flow<String> =
         context.dataStore.data.map { it[stringPreferencesKey("ui_language")] ?: "system" }
 
+    /**
+     * Кэш uiLanguage в памяти процесса: прогревается [prefetchUiLanguage]
+     * и обновляется при записи. Позволяет применять локаль синхронно на старте
+     * и при recreate() без блокировки главной нити на чтение DataStore.
+     */
+    @Volatile
+    private var uiLanguageCache: String? = null
+
+    /**
+     * Прогреть кэш uiLanguage в памяти (вызывать как можно раньше — из
+     * Application.onCreate). Повторные вызовы идемпотентны.
+     */
+    fun prefetchUiLanguage() {
+        if (uiLanguageCache != null) return
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                uiLanguageCache = uiLanguage.first()
+            } catch (e: Exception) {
+                Timber.w(e, "Не удалось прогреть кэш uiLanguage")
+            }
+        }
+    }
+
+    /**
+     * Значение uiLanguage из памяти: прогретый кэш или первое чтение DataStore
+     * (оно единственный раз может занять время IO).
+     */
+    suspend fun awaitUiLanguageCache(): String = uiLanguageCache ?: uiLanguage.first()
+
     suspend fun setUiLanguage(lang: String) {
+        uiLanguageCache = lang
         context.dataStore.edit { it[stringPreferencesKey("ui_language")] = lang }
     }
 

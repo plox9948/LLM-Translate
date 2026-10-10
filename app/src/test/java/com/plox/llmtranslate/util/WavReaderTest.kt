@@ -127,4 +127,16 @@ class WavReaderTest {
         notWav[1] = 'X'.code.toByte()
         assertNull(WavReader.locateDataChunk(notWav))
     }
+
+    @Test
+    fun `negative chunk size terminates scan instead of looping`() {
+        // Битый WAV: отрицательный размер чанка сдвигает позицию назад
+        // (здесь ровно на 0 смещения) — без защиты обход зацикливается навсегда.
+        val junk = id4("junk") + le32(-8) + ByteArray(24)
+        val fmt = chunkFourcc("fmt ", ByteArray(16))
+        val body = id4("WAVE") + junk + fmt + chunkFourcc("data", pcm)
+        val bytes = id4("RIFF") + le32(body.size) + body
+        assertNull(WavReader.locateDataChunk(bytes))
+        assertTrue(WavReader.readPcmAsFloat(write(bytes)).isEmpty())
+    }
 }

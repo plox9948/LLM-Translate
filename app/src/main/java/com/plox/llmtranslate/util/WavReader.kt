@@ -64,6 +64,12 @@ object WavReader {
             }
             // Переходим к следующему чанку (с выравниванием по 2 байта).
             val chunkSize = readIntLE(bytes, pos + 4)
+            // Битый заголовок: отрицательный размер сдвигает pos назад или
+            // не двигает — обход зацикливается (висячий вызов под мьютексом STT).
+            if (chunkSize < 0) {
+                Timber.w("WAV: отрицательный размер чанка в позиции $pos")
+                return null
+            }
             pos += 8 + chunkSize + (chunkSize and 1)
         }
         return null
