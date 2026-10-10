@@ -72,12 +72,18 @@ android {
             // 1.30.0 (прямая зависимость; Java-API ai.onnxruntime 1.30.0 вызывается
             // из MarianOnnxRuntime/IndicTransOnnxRuntime, Java-часть 1.30.0 всегда
             // попадает в APK) и sherpa-onnx 1.13.8 со своей внутренней нативной
-            // ORT 1.28.2. Требуемая для Java-API версия зафиксирована:
-            // onnxruntime-android:1.30.0 (gradle/libs.versions.toml); на слиянии
-            // сейчас побеждает именно она (проверено по mergedNativeLibs.debug),
-            // pickFirst подавляет дубликат и ограничен путём нативной
-            // библиотеки конкретного ABI (lib/<abi>/libonnxruntime.so).
+            // ORT 1.28.2. В APK остаётся одна библиотека от onnxruntime-android
+            // 1.30.0 ( VERS_1.30.0 ); pickFirst подавляет дубликат и ограничен
+            // путём нативной библиотеки конкретного ABI.
             pickFirsts += "lib/*/libonnxruntime.so"
+            // libsherpa-onnx-jni.so из AAR требует OrtGetApiBase@VERS_1.28.2 —
+            // dlopen падал на единой libonnxruntime.so 1.30.0 (UnsatisfiedLinkError
+            // при инициализации OfflineRecognizer). В src/main/jniLibs лежит
+            // та же библиотека с исправленным в .dynstr именем version-node
+            // (VERS_1.28.2 -> VERS_1.30.0, см. tools/patch-sherpa-jni-ort-version.ps1);
+            // локальный jniLibs имеет приоритет при слиянии, pickFirst подавляет
+            // дубликат из AAR.
+            pickFirsts += "lib/*/libsherpa-onnx-jni.so"
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

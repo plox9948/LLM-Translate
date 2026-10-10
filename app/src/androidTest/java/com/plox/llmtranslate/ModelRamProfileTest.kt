@@ -150,18 +150,10 @@ class ModelRamProfileTest {
         val engine: Any = when (t.runtime) {
             RuntimeType.MARIAN_ONNX -> MarianOnnxRuntime()
             RuntimeType.INDICTRANS_ONNX -> IndicTransOnnxRuntime()
-            else -> {
-                // libsherpa-onnx-jni требует libonnxruntime нужной версии (VERS_1.28.2).
-                // В androidTest jniLibs лежит копия из AAR sherpa — грузим её явно
-                // и логируем, какая именно библиотека замапилась.
-                System.loadLibrary("onnxruntime")
-                File("/proc/self/maps").readLines()
-                    .filter { "libonnxruntime" in it }
-                    .map { it.substringAfterLast(' ') }
-                    .distinct()
-                    .forEach { Log.i("RAMPROF", "LIBS mapped: $it") }
-                SherpaSttEngine()
-            }
+            // Дублирующая libonnxruntime из androidTest jniLibs больше не нужна:
+            // в APK одна библиотека 1.30.0, патченый libsherpa-onnx-jni требует её же
+            // version-node (VERS_1.30.0), загрузка идёт через clinit sherpa.
+            else -> SherpaSttEngine()
         }
 
         val sampler = Sampler().also { it.start() }
