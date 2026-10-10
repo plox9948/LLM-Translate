@@ -9,6 +9,7 @@ import com.plox.llmtranslate.domain.model.LanguageDetector
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.TranslationModelSelector
+import com.plox.llmtranslate.domain.model.userMessage
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
@@ -83,7 +84,7 @@ class TranslateViewModel @Inject constructor(
             preferences.ttsEngine.collect { engine ->
                 val error = ttsRuntime.init(engine)
                 if (error != null) {
-                    Timber.w("TTS недоступен: ${error.message()}")
+                    Timber.w("TTS недоступен: ${error.userMessage()}")
                 }
             }
         }
@@ -151,7 +152,7 @@ class TranslateViewModel @Inject constructor(
                 val engine = runtimeRouter.translationEngine(model.runtime)
                 val loadError = engine.ensureLoaded(model)
                 if (loadError != null) {
-                    failed = loadError.message()
+                    failed = loadError.userMessage()
                     break
                 }
                 engine.translate(text, from, dir.second).fold(
@@ -161,7 +162,7 @@ class TranslateViewModel @Inject constructor(
                     },
                     onFailure = { e ->
                         failed = when (e) {
-                            is RuntimeError -> e.message()
+                            is RuntimeError -> e.userMessage()
                             else -> "Ошибка перевода"
                         }
                     }
@@ -197,10 +198,10 @@ class TranslateViewModel @Inject constructor(
                 return@launch
             }
 
-            val engine = runtimeRouter.sttEngine(model.runtime)
+            val engine = runtimeRouter.sttEngine()
             val loadError = engine.ensureLoaded(model)
             if (loadError != null) {
-                update { it.copy(isTranslating = false, error = loadError.message()) }
+                update { it.copy(isTranslating = false, error = loadError.userMessage()) }
                 return@launch
             }
 
@@ -219,7 +220,7 @@ class TranslateViewModel @Inject constructor(
                     update {
                         it.copy(
                             isTranslating = false,
-                            error = (e as? RuntimeError)?.message() ?: "Ошибка распознавания"
+                            error = (e as? RuntimeError)?.userMessage() ?: "Ошибка распознавания"
                         )
                     }
                 }
@@ -236,7 +237,7 @@ class TranslateViewModel @Inject constructor(
                 update { it.copy(isSpeaking = false) }
             }
             if (error != null) {
-                update { it.copy(error = error.message()) }
+                update { it.copy(error = error.userMessage()) }
             } else {
                 update { it.copy(isSpeaking = true, error = null) }
             }
@@ -303,12 +304,5 @@ class TranslateViewModel @Inject constructor(
 
     private fun update(transform: (TranslateUiState) -> TranslateUiState) {
         _uiState.value = transform(_uiState.value)
-    }
-
-    private fun RuntimeError.message(): String = when (this) {
-        is RuntimeError.LoadFailed -> "Не удалось загрузить модель: $reason"
-        is RuntimeError.InferenceFailed -> "Ошибка: $reason"
-        RuntimeError.ModelNotSelected -> "Модель не выбрана"
-        RuntimeError.ModelNotReady -> "Модель не готова"
     }
 }

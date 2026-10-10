@@ -190,94 +190,58 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
                         encAttnMask.close()
                     }
 
-                    // Все нативные ресурсы greedy-цикла закрываются в finally —
-                    // в т.ч. при раннем return и при исключении из pickToken/run.
+                    // Все нативные ресурсы greedy-цикла закрывает драйвер
+                    // greedyDecode — в т.ч. при раннем выходе и при исключении.
                     try {
                         val encHiddenState = ortTensor(encOutput, "last_hidden_state")
                             ?: return@withContext Result.failure(
                                 RuntimeError.InferenceFailed("marian", "Нет last_hidden_state")
                             )
 
-                        // Greedy-генерация. Result первого шага держим открытым всё
-                        // время: encoder-past неизменен, его берём оттуда каждый шаг.
-                        val generatedIds = mutableListOf<Int>()
-                        var step0Result: OrtSession.Result? = null
-                        var prevResult: OrtSession.Result? = null
-                        try {
-                            for (step in 0 until MAX_NEW_TOKENS) {
-                                val decInputIds = OnnxTensor.createTensor(
-                                    ortEnv,
-                                    LongBuffer.wrap(
-                                        longArrayOf(
-                                            if (step == 0) decoderStartTokenId.toLong()
-                                            else generatedIds.last().toLong()
-                                        )
-                                    ),
-                                    longArrayOf(1L, 1L)
+                        // Greedy-генерация. Encoder-past неизменен — берём его из
+                        // результата первого шага, decoder-past — из предыдущего.
+                        val generatedIds = greedyDecode(
+                            ortEnv = ortEnv,
+                            attentionMask = attentionMask,
+                            startTokenId = decoderStartTokenId,
+                            maxNewTokens = MAX_NEW_TOKENS,
+                            eosTokenId = eos,
+                            pickToken = ::pickToken
+                        ) { step, decInputIds, decAttnMask, first, prev ->
+                            if (step == 0) {
+                                dec.run(
+                                    mapOf(
+                                        "input_ids" to decInputIds,
+                                        "encoder_hidden_states" to encHiddenState,
+                                        "encoder_attention_mask" to decAttnMask
+                                    )
                                 )
-                                val decAttnMask = OnnxTensor.createTensor(
-                                    ortEnv, LongBuffer.wrap(attentionMask),
-                                    longArrayOf(1L, attentionMask.size.toLong())
-                                )
-
-                                val result: OrtSession.Result
-                                try {
-                                    if (step == 0) {
-                                        result = dec.run(
-                                            mapOf(
-                                                "input_ids" to decInputIds,
-                                                "encoder_hidden_states" to encHiddenState,
-                                                "encoder_attention_mask" to decAttnMask
-                                            )
-                                        )
-                                        step0Result = result
-                                    } else {
-                                        val inputs = HashMap<String, OnnxTensorLike>()
-                                        inputs["input_ids"] = decInputIds
-                                        inputs["encoder_attention_mask"] = decAttnMask
-                                        val s0 = step0Result
-                                        val prev = prevResult
-                                        if (s0 == null || prev == null) {
-                                            return@withContext Result.failure(
-                                                RuntimeError.InferenceFailed("marian", "Нет past_key_values")
-                                            )
-                                        }
-                                        for (i in 0 until numLayers) {
-                                            // Encoder-past: из первого шага (не меняется).
-                                            ortTensor(s0, "present.$i.encoder.key")?.let {
-                                                inputs["past_key_values.$i.encoder.key"] = it
-                                            }
-                                            ortTensor(s0, "present.$i.encoder.value")?.let {
-                                                inputs["past_key_values.$i.encoder.value"] = it
-                                            }
-                                            // Decoder-past: из предыдущего шага.
-                                            ortTensor(prev, "present.$i.decoder.key")?.let {
-                                                inputs["past_key_values.$i.decoder.key"] = it
-                                            }
-                                            ortTensor(prev, "present.$i.decoder.value")?.let {
-                                                inputs["past_key_values.$i.decoder.value"] = it
-                                            }
-                                        }
-                                        result = decPast.run(inputs)
+                            } else {
+                                val inputs = HashMap<String, OnnxTensorLike>()
+                                inputs["input_ids"] = decInputIds
+                                inputs["encoder_attention_mask"] = decAttnMask
+                                // Results уже существующих шагов — отсутствие значит
+                                // внутреннюю ошибку драйвера.
+                                val s0 = first ?: error("Нет past_key_values")
+                                val p = prev ?: error("Нет past_key_values")
+                                for (i in 0 until numLayers) {
+                                    // Encoder-past: из первого шага (не меняется).
+                                    ortTensor(s0, "present.$i.encoder.key")?.let {
+                                        inputs["past_key_values.$i.encoder.key"] = it
                                     }
-                                } finally {
-                                    decInputIds.close()
-                                    decAttnMask.close()
+                                    ortTensor(s0, "present.$i.encoder.value")?.let {
+                                        inputs["past_key_values.$i.encoder.value"] = it
+                                    }
+                                    // Decoder-past: из предыдущего шага.
+                                    ortTensor(p, "present.$i.decoder.key")?.let {
+                                        inputs["past_key_values.$i.decoder.key"] = it
+                                    }
+                                    ortTensor(p, "present.$i.decoder.value")?.let {
+                                        inputs["past_key_values.$i.decoder.value"] = it
+                                    }
                                 }
-
-                                val token = pickToken(result, generatedIds)
-                                generatedIds.add(token)
-
-                                val toClose = prevResult
-                                if (toClose != null && toClose !== step0Result) toClose.close()
-                                prevResult = result
-
-                                if (token == eos) break
+                                decPast.run(inputs)
                             }
-                        } finally {
-                            // Освобождаем results первого и последнего шага на любом пути.
-                            step0Result?.close()
-                            if (prevResult !== step0Result) prevResult?.close()
                         }
 
                         // Декодирование сгенерированных id (decode пропускает спец-токены).
@@ -303,16 +267,8 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
      * `repetition_penalty`). Чистая функция — вынесена для unit-тестов.
      */
     private fun pickToken(result: OrtSession.Result, generated: List<Int>): Int {
-        val logitsTensor = ortTensor(result, "logits")
-            ?: throw IllegalStateException("Нет logits")
-        // logits shape [batch, seq, vocab] — берём последнюю позицию seq.
-        @Suppress("UNCHECKED_CAST")
-        val logitsData = logitsTensor.getValue() as? Array<Array<FloatArray>>
-            ?: throw IllegalStateException("Неверный тип logits")
-        val last = logitsData[0][logitsData[0].size - 1].copyOf()
-
+        val last = logitsLastPosition(result)
         applyGenerationMask(last, generated, badTokenIds, REPETITION_PENALTY)
-
         return argMax(last)
     }
 
@@ -395,31 +351,4 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
             Timber.w("Не удалось прочитать generation_config.json: ${e.message}")
         }
     }
-}
-
-/**
- * Индекс максимального значения (первое вхождение при равенстве).
- * Общий для greedy-циклов движков перевода.
- */
-internal fun argMax(values: FloatArray): Int {
-    var best = 0
-    var bestVal = Float.NEGATIVE_INFINITY
-    for (i in values.indices) {
-        if (values[i] > bestVal) {
-            bestVal = values[i]
-            best = i
-        }
-    }
-    return best
-}
-
-/**
- * Безопасное извлечение тензора из результата ORT-сессии: в onnxruntime-java
- * [OrtSession.Result.get] возвращает Optional<OnnxValue>, обычный as?каст к
- * OnnxTensor всегда даёт null.
- */
-internal fun ortTensor(result: OrtSession.Result, name: String): OnnxTensor? {
-    val raw = result.get(name)
-    val value = if (raw is java.util.Optional<*>) raw.orElse(null) else raw
-    return value as? OnnxTensor
 }

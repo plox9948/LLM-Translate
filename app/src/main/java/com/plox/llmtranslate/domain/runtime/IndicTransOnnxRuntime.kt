@@ -203,103 +203,52 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                         encAttnMask.close()
                     }
 
-                    // Greedy-генерация. Все нативные ресурсы закрываются в finally —
-                    // в т.ч. на путях раннего return и при исключении из run/argmax.
-                    val generatedIds = mutableListOf(decoderStartTokenId)
-                    var encResult: OrtSession.Result? = encOutput
-                    var lastDecInput: OnnxTensor? = null
-                    var lastEncMask: OnnxTensor? = null
-                    var pastOutputs: OrtSession.Result? = null
+                    // Greedy-генерация общим драйвером. Все нативные ресурсы
+                    // закрывает greedyDecode — в т.ч. при раннем выходе и при
+                    // исключении. Стартовый токен входит в итоговый список,
+                    // past_key_values (и encoder-, и decoder-) — из результата
+                    // предыдущего шага: encoder-past неизменен между шагами.
                     val resultText: String
                     try {
-                        for (step in 0 until MAX_NEW_TOKENS) {
-                            lastDecInput?.close()
-                            lastEncMask?.close()
-
-                            val decInputIds = OnnxTensor.createTensor(
-                                ortEnv,
-                                LongBuffer.wrap(longArrayOf(generatedIds.last().toLong())),
-                                longArrayOf(1L, 1L)
-                            )
-                            lastDecInput = decInputIds
-
-                            val decOutput = if (step == 0) {
-                                val encMaskTensor = OnnxTensor.createTensor(
-                                    ortEnv, LongBuffer.wrap(attentionMask),
-                                    longArrayOf(1L, attentionMask.size.toLong())
-                                )
-                                lastEncMask = encMaskTensor
+                        val generatedIds = greedyDecode(
+                            ortEnv = ortEnv,
+                            attentionMask = attentionMask,
+                            startTokenId = decoderStartTokenId,
+                            maxNewTokens = MAX_NEW_TOKENS,
+                            eosTokenId = eosTokenId,
+                            initialIds = listOf(decoderStartTokenId),
+                            pickToken = { result, _ -> argMax(logitsLastPosition(result)) }
+                        ) { step, decInputIds, decAttnMask, _, prev ->
+                            if (step == 0) {
+                                val encHidden = ortTensor(encOutput, "last_hidden_state")
+                                    ?: error("Нет last_hidden_state")
                                 dec.run(
                                     mapOf(
                                         "input_ids" to decInputIds,
-                                        "encoder_hidden_states" to ortTensor(
-                                            encOutput, "last_hidden_state"
-                                        ) ?: return@withContext Result.failure(
-                                            RuntimeError.InferenceFailed(
-                                                "indictrans", "Нет last_hidden_state"
-                                            )
-                                        ),
-                                        "encoder_attention_mask" to encMaskTensor
+                                        "encoder_hidden_states" to encHidden,
+                                        "encoder_attention_mask" to decAttnMask
                                     )
                                 )
                             } else {
-                                val past = pastOutputs
-                                    ?: return@withContext Result.failure(
-                                        RuntimeError.InferenceFailed(
-                                            "indictrans", "Нет past_key_values"
-                                        )
-                                    )
-                                val encMaskTensor = OnnxTensor.createTensor(
-                                    ortEnv, LongBuffer.wrap(attentionMask),
-                                    longArrayOf(1L, attentionMask.size.toLong())
-                                )
-                                lastEncMask = encMaskTensor
+                                val past = prev ?: error("Нет past_key_values")
                                 val inputs = HashMap<String, OnnxTensorLike>()
                                 inputs["input_ids"] = decInputIds
-                                inputs["encoder_attention_mask"] = encMaskTensor
+                                inputs["encoder_attention_mask"] = decAttnMask
                                 for (i in 0 until numLayers) {
                                     for (suffix in PAST_SUFFIXES) {
-                                        val tensor = ortTensor(past, "present.$i.$suffix")
-                                            ?: continue
-                                        inputs["past_key_values.$i.$suffix"] = tensor
+                                        ortTensor(past, "present.$i.$suffix")?.let {
+                                            inputs["past_key_values.$i.$suffix"] = it
+                                        }
                                     }
                                 }
                                 decPast.run(inputs)
                             }
-
-                            // Result текущего шага замещает прошлый past — закрываем сразу.
-                            val prevPast = pastOutputs
-                            pastOutputs = decOutput
-                            prevPast?.close()
-
-                            // Encoder больше не нужен после первого шага.
-                            if (step == 0) {
-                                encResult?.close()
-                                encResult = null
-                            }
-
-                            // Argmax по logits.
-                            val logitsTensor = ortTensor(decOutput, "logits")
-                                ?: return@withContext Result.failure(
-                                    RuntimeError.InferenceFailed("indictrans", "Нет logits")
-                                )
-                            @Suppress("UNCHECKED_CAST")
-                            val logitsData = logitsTensor.getValue() as Array<Array<FloatArray>>
-                            val lastLogits = logitsData[0][logitsData[0].size - 1]
-                            val maxToken = argMax(lastLogits)
-
-                            generatedIds.add(maxToken)
-                            if (maxToken == eosTokenId) break
                         }
 
-                        // Декодирование (skip-специальные).
-                        val safeIds = generatedIds.map { clampId(it, tgtDictSize) }
-                        resultText = tgtTok.decode(safeIds)
+                        // Декодирование (skip-специальные), id зажимаем размером словаря.
+                        resultText = tgtTok.decode(generatedIds.map { clampId(it, tgtDictSize) })
                     } finally {
-                        lastDecInput?.close()
-                        lastEncMask?.close()
-                        pastOutputs?.close()
-                        encResult?.close()
+                        encOutput.close()
                     }
 
                     if (resultText.isBlank()) {

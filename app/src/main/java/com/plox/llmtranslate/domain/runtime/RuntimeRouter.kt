@@ -28,7 +28,7 @@ class RuntimeRouter @Inject constructor(
     /**
      * Движок распознавания речи: sherpa-onnx — единственный STT-рантайм.
      */
-    fun sttEngine(runtime: RuntimeType): SttEngine = sherpaSttEngine
+    fun sttEngine(): SttEngine = sherpaSttEngine
 
     /**
      * Разгрузить все рантаймы (при ON_STOP). Каждый движок под мьютексом

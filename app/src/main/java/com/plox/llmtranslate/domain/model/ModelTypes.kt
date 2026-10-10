@@ -128,6 +128,17 @@ sealed class RuntimeError : Exception() {
 }
 
 /**
+ * Человекочитаемое сообщение об ошибке рантайма для показа в UI.
+ * Имя userMessage — чтобы не затенять Throwable.message.
+ */
+fun RuntimeError.userMessage(): String = when (this) {
+    is RuntimeError.LoadFailed -> "Не удалось загрузить модель: $reason"
+    is RuntimeError.InferenceFailed -> "Ошибка: $reason"
+    RuntimeError.ModelNotSelected -> "Модель не выбрана"
+    RuntimeError.ModelNotReady -> "Модель не готова"
+}
+
+/**
  * Информация об устройстве для проверки совместимости.
  */
 data class DeviceInfo(
