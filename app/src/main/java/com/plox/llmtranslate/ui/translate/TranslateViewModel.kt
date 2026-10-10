@@ -8,6 +8,7 @@ import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.LanguageDetector
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.PendingTranslationHolder
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import com.plox.llmtranslate.domain.model.TranslationModelSelector
@@ -46,8 +47,7 @@ data class TranslateUiState(
     val isSpeaking: Boolean = false,
     val error: String? = null,
     val hasTranslationModel: Boolean = false,
-    val hasSttModel: Boolean = false,
-    val history: List<TranslationHistoryEntry> = emptyList()
+    val hasSttModel: Boolean = false
 )
 
 /**
@@ -60,7 +60,8 @@ class TranslateViewModel @Inject constructor(
     private val ttsRuntime: TtsRuntime,
     private val audioRecorder: AudioRecorder,
     private val preferences: ModelPreferences,
-    private val historyRepository: TranslationHistoryRepository
+    private val historyRepository: TranslationHistoryRepository,
+    private val pendingHolder: PendingTranslationHolder
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TranslateUiState())
@@ -84,8 +85,11 @@ class TranslateViewModel @Inject constructor(
                 }
         }
         viewModelScope.launch {
-            historyRepository.observeRecent().collect { history ->
-                _uiState.value = _uiState.value.copy(history = history)
+            pendingHolder.pending.collect { entry ->
+                if (entry != null) {
+                    useHistoryEntry(entry)
+                    pendingHolder.consume()
+                }
             }
         }
         viewModelScope.launch {
@@ -306,10 +310,16 @@ class TranslateViewModel @Inject constructor(
     }
 
     /**
-     * Подставить запись истории в поле ввода: текст, направление и
-     * сохранённый результат (без повторного инференса).
+     * Очистить поля ввода и результата (кнопка «Очистить» в поле ввода).
      */
-    fun useHistory(entry: TranslationHistoryEntry) {
+    fun clearInput() {
+        update { it.copy(inputText = "", resultText = "", error = null) }
+    }
+
+    /**
+     * Применить выбранную в истории запись к полям экрана.
+     */
+    private fun useHistoryEntry(entry: TranslationHistoryEntry) {
         val source = TranslateLanguage.entries.firstOrNull { it.code == entry.sourceLang }
         val target = TranslateLanguage.entries.firstOrNull { it.code == entry.targetLang }
         update {
@@ -321,16 +331,6 @@ class TranslateViewModel @Inject constructor(
                 error = null
             )
         }
-    }
-
-    /** Удалить запись из истории. */
-    fun deleteHistoryItem(id: Long) {
-        viewModelScope.launch { historyRepository.delete(id) }
-    }
-
-    /** Полностью очистить историю переводов. */
-    fun clearHistory() {
-        viewModelScope.launch { historyRepository.clear() }
     }
 
     /**

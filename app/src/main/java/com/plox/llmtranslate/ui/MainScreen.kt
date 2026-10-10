@@ -3,6 +3,7 @@ package com.plox.llmtranslate.ui
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -17,11 +18,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavOptionsBuilder
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.plox.llmtranslate.R
+import com.plox.llmtranslate.ui.history.HistoryScreen
 import com.plox.llmtranslate.ui.models.ModelsScreen
 import com.plox.llmtranslate.ui.settings.SettingsScreen
 import com.plox.llmtranslate.ui.translate.TranslateScreen
@@ -31,6 +34,7 @@ import com.plox.llmtranslate.ui.translate.TranslateScreen
  */
 enum class Screen(val route: String, @StringRes val titleRes: Int, val icon: ImageVector) {
     TRANSLATE("translate", R.string.nav_translate, Icons.Filled.Translate),
+    HISTORY("history", R.string.nav_history, Icons.Filled.History),
     MODELS("models", R.string.nav_models, Icons.Filled.Memory),
     SETTINGS("settings", R.string.nav_settings, Icons.Filled.Settings)
 }
@@ -44,21 +48,23 @@ fun MainScreen() {
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
 
+    // Единый режим перехода между вкладками: одна запись на таб в стопке,
+    // с сохранением/восстановлением состояния экрана.
+    val tabMode: NavOptionsBuilder.() -> Unit = {
+        popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+        launchSingleTop = true
+        restoreState = true
+    }
+
+    fun navigateTab(route: String) = navController.navigate(route) { tabMode() }
+
     Scaffold(
         bottomBar = {
             NavigationBar {
                 Screen.entries.forEach { screen ->
                     NavigationBarItem(
                         selected = currentRoute == screen.route,
-                        onClick = {
-                            navController.navigate(screen.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
-                                }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
+                        onClick = { navigateTab(screen.route) },
                         icon = {
                             Icon(screen.icon, contentDescription = stringResource(screen.titleRes))
                         },
@@ -74,6 +80,11 @@ fun MainScreen() {
             modifier = Modifier.padding(padding)
         ) {
             composable(Screen.TRANSLATE.route) { TranslateScreen() }
+            composable(Screen.HISTORY.route) {
+                HistoryScreen(
+                    onUseEntry = { navigateTab(Screen.TRANSLATE.route) }
+                )
+            }
             composable(Screen.MODELS.route) { ModelsScreen() }
             composable(Screen.SETTINGS.route) { SettingsScreen() }
         }

@@ -3,25 +3,16 @@ package com.plox.llmtranslate.ui.translate
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -36,6 +27,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -44,17 +36,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.plox.llmtranslate.R
-import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 
 /**
  * Экран «Перевод»: текст или аудио → перевод → озвучивание.
@@ -160,20 +149,29 @@ fun TranslateScreen(
             }
         }
 
-        // Кнопка перевода.
-        Button(
-            onClick = viewModel::translate,
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isTranslating && state.hasTranslationModel
-        ) {
-            Icon(Icons.Filled.Translate, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                stringResource(
-                    if (state.isTranslating) R.string.translate_in_progress
-                    else R.string.translate_action
+        // Кнопки перевода и очистки поля.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = viewModel::translate,
+                modifier = Modifier.weight(1f),
+                enabled = !state.isTranslating && state.hasTranslationModel
+            ) {
+                Icon(Icons.Filled.Translate, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    stringResource(
+                        if (state.isTranslating) R.string.translate_in_progress
+                        else R.string.translate_action
+                    )
                 )
-            )
+            }
+            OutlinedButton(
+                onClick = viewModel::clearInput,
+                enabled = !state.isTranslating &&
+                    (state.inputText.isNotEmpty() || state.resultText.isNotEmpty())
+            ) {
+                Text(stringResource(R.string.translate_clear))
+            }
         }
 
         if (!state.hasTranslationModel) {
@@ -221,14 +219,6 @@ fun TranslateScreen(
                 }
             }
         }
-
-        // История переводов.
-        HistorySection(
-            history = state.history,
-            onUse = viewModel::useHistory,
-            onDelete = viewModel::deleteHistoryItem,
-            onClear = viewModel::clearHistory
-        )
 
         // Индикатор записи.
         if (state.isRecording) {
@@ -297,124 +287,5 @@ private fun LanguageChip(
             },
             confirmButton = {}
         )
-    }
-}
-
-/**
- * Сворачиваемая секция истории переводов. Пустая история не показывается.
- */
-@Composable
-private fun HistorySection(
-    history: List<TranslationHistoryEntry>,
-    onUse: (TranslationHistoryEntry) -> Unit,
-    onDelete: (Long) -> Unit,
-    onClear: () -> Unit
-) {
-    if (history.isEmpty()) return
-    var expanded by rememberSaveable { mutableStateOf(true) }
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.History,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = stringResource(R.string.translate_history_title),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = onClear) {
-                    Text(stringResource(R.string.translate_history_clear))
-                }
-                IconButton(onClick = { expanded = !expanded }) {
-                    Icon(
-                        imageVector = if (expanded) Icons.Filled.ExpandLess
-                        else Icons.Filled.ExpandMore,
-                        contentDescription = stringResource(R.string.translate_history_toggle_cd)
-                    )
-                }
-            }
-            if (expanded) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 220.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    history.forEach { entry ->
-                        HistoryItem(
-                            entry = entry,
-                            onUse = { onUse(entry) },
-                            onDelete = { onDelete(entry.id) }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * Одна запись истории: направление, фрагменты текста, кнопки повтора/удаления.
- */
-@Composable
-private fun HistoryItem(
-    entry: TranslationHistoryEntry,
-    onUse: () -> Unit,
-    onDelete: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onUse),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(modifier = Modifier.padding(start = 12.dp, top = 8.dp, end = 4.dp, bottom = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = entry.sourceLang.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = entry.targetLang.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                IconButton(onClick = onDelete, modifier = Modifier.width(40.dp)) {
-                    Icon(
-                        imageVector = Icons.Filled.Close,
-                        contentDescription = stringResource(R.string.translate_history_delete_cd)
-                    )
-                }
-            }
-            Text(
-                text = entry.inputText,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = entry.resultText,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
     }
 }
