@@ -10,11 +10,13 @@ import com.plox.llmtranslate.domain.model.LanguageDetector
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
 import com.plox.llmtranslate.domain.model.RuntimeError
+import com.plox.llmtranslate.domain.model.SentenceSplitter
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import com.plox.llmtranslate.domain.model.TranslationModelSelector
 import com.plox.llmtranslate.domain.model.userMessage
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
+import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -168,7 +170,7 @@ class TranslateViewModel @Inject constructor(
                     failed = loadError.userMessage()
                     break
                 }
-                engine.translate(text, from, dir.second).fold(
+                translateSegments(engine, text, from, dir.second).fold(
                     onSuccess = { translated ->
                         text = translated
                         from = dir.second
@@ -331,6 +333,31 @@ class TranslateViewModel @Inject constructor(
                 error = null
             )
         }
+    }
+
+    /**
+     * Перевести текст движком по предложениям: tiny-модели Marian теряют хвост
+     * на длинном многосоставном входе (ранний EOS после первой фразы), поэтому
+     * вход разбивается [SentenceSplitter], сегменты переводятся по отдельности
+     * и склеиваются через пробел.
+     */
+    private suspend fun translateSegments(
+        engine: TranslationEngine,
+        text: String,
+        from: String,
+        to: String
+    ): Result<String> {
+        val segments = SentenceSplitter.split(text).ifEmpty { listOf(text) }
+        if (segments.size == 1) return engine.translate(segments.first(), from, to)
+
+        val translated = StringBuilder()
+        for (segment in segments) {
+            engine.translate(segment, from, to).fold(
+                onSuccess = { translated.append(it).append(' ') },
+                onFailure = { return Result.failure(it) }
+            )
+        }
+        return Result.success(translated.toString().trim())
     }
 
     /**

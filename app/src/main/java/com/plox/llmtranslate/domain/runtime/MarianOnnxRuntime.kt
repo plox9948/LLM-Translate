@@ -44,7 +44,10 @@ import javax.inject.Singleton
 class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
 
     companion object {
-        private const val MAX_NEW_TOKENS = 64
+        // Лимит генерации на одно предложение: текст разбивается по предложениям
+        // до инференса (SentenceSplitter в ViewModel), 64 токена на крошечных
+        // моделях обрезал длинные одиночные предложения.
+        private const val MAX_NEW_TOKENS = 128
         private const val INTRA_OP_THREADS = 4
         private const val INTER_OP_THREADS = 1
 
