@@ -38,7 +38,8 @@ app/src/main/java/com/plox/llmtranslate/
 ├── domain/
 │   ├── ModelManager.kt      # интерфейс + ModelManagerImpl — единая точка входа для UI
 │   ├── model/               # типы моделей, InstallCheckLogic, детектор языка, выбор модели перевода
-│   ├── runtime/             # MarianOnnxRuntime, IndicTransOnnxRuntime, SherpaSttEngine, TtsRuntime, RuntimeRouter
+│   ├── runtime/             # MarianOnnxRuntime, IndicTransOnnxRuntime, GreedyDecoder,
+│   │                        # SherpaSttEngine, TtsRuntime, RuntimeRouter
 │   └── tokenizer/           # инференс-токенизаторы (TokenizerJson, IndicProcessorLite)
 ├── util/                    # WavReader
 ├── ui/                      # экраны: Перевод, Модели, Настройки
