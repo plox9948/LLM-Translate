@@ -61,8 +61,9 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                 // Архивы sherpa содержат единственный подкаталог — подтягиваем его наверх.
                 flattenModelDir(modelDir)
             } else {
-                val file = downloadFile(url, modelDir, fileName, onProgress)
-                    ?: return InstallResult.Failure("Не удалось скачать: $fileName")
+                if (downloadFile(url, modelDir, fileName, onProgress) == null) {
+                    return InstallResult.Failure("Не удалось скачать: $fileName")
+                }
             }
         }
 
@@ -147,20 +148,11 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             subdir.listFiles()?.forEach { entry ->
                 val target = File(destDir, entry.name)
                 if (!entry.renameTo(target)) {
-                    copyRecursively(entry, target)
+                    entry.copyRecursively(target, overwrite = true)
                 }
             }
             subdir.deleteRecursively()
             return
-        }
-    }
-
-    private fun copyRecursively(source: File, target: File) {
-        if (source.isDirectory) {
-            target.mkdirs()
-            source.listFiles()?.forEach { copyRecursively(it, File(target, it.name)) }
-        } else {
-            source.copyTo(target, overwrite = true)
         }
     }
 

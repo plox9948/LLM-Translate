@@ -2,9 +2,8 @@ package com.plox.llmtranslate.ui.models
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,7 +14,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
@@ -44,7 +42,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -52,10 +49,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.InstallCheck
 import com.plox.llmtranslate.domain.model.InstalledModel
+import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import java.util.Locale
-import javax.inject.Inject
 
 /**
  * Экран «Модели»: три секции по категориям, карточки, скачивание, импорт.
@@ -120,7 +117,7 @@ fun ModelsScreen(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)
+        contentPadding = PaddingValues(16.dp)
     ) {
         item {
             Text(
@@ -132,36 +129,13 @@ fun ModelsScreen(
 
             // Баннер причины блокировки установки (тап — скрыть).
             blockedReason?.let { reason ->
-                Surface(
-                    onClick = { viewModel.clearBlockedReason() },
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = reason,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(12.dp)
-                    )
-                }
+                ErrorBanner(text = reason, onClick = { viewModel.clearBlockedReason() })
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
             // Баннер предупреждения об ОЗУ.
-            if (ramWarning != null) {
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = ramWarning,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(12.dp)
-                    )
-                }
+            ramWarning?.let { warning ->
+                ErrorBanner(text = warning)
                 Spacer(modifier = Modifier.height(8.dp))
             }
             OutlinedButton(
@@ -184,7 +158,7 @@ fun ModelsScreen(
                     modifier = Modifier.weight(1f),
                     enabled = !uiState.isBusy
                 ) {
-                            Icon(Icons.Filled.FileUpload, contentDescription = null)
+                    Icon(Icons.Filled.FileUpload, contentDescription = null)
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(stringResource(R.string.models_backup))
                 }
@@ -279,18 +253,12 @@ fun ModelsScreen(
     }
 
     // Диалог подтверждения некоммерческой лицензии.
-    if (licenseModel != null) {
+    licenseModel?.let { card ->
         AlertDialog(
             onDismissRequest = { viewModel.cancelLicenseConfirm() },
             title = { Text(stringResource(R.string.models_license_title)) },
             text = {
-                Text(
-                    stringResource(
-                        R.string.models_license_text,
-                        licenseModel?.displayName.orEmpty(),
-                        licenseModel?.license.orEmpty()
-                    )
-                )
+                Text(stringResource(R.string.models_license_text, card.displayName, card.license))
             },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmLicenseAndDownload() }) {
@@ -306,9 +274,39 @@ fun ModelsScreen(
     }
 }
 
+/**
+ * Баннер ошибки/предупреждения на весь экран.
+ * @param onClick необязательный обработчик тапа (скрытие баннера).
+ */
+@Composable
+private fun ErrorBanner(text: String, onClick: (() -> Unit)? = null) {
+    val content: @Composable () -> Unit = {
+        Text(
+            text = text,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(12.dp)
+        )
+    }
+    if (onClick != null) {
+        Surface(
+            onClick = onClick,
+            color = MaterialTheme.colorScheme.errorContainer,
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth()
+        ) { content() }
+    } else {
+        Surface(
+            color = MaterialTheme.colorScheme.errorContainer,
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth()
+        ) { content() }
+    }
+}
+
 @Composable
 private fun ModelCardItem(
-    card: com.plox.llmtranslate.domain.model.ModelCard,
+    card: ModelCard,
     installedModel: InstalledModel?,
     isActive: Boolean,
     check: InstallCheck?,
@@ -509,14 +507,19 @@ private fun categoryTitle(category: ModelCategory): String = stringResource(
     }
 )
 
+// Пороги форматирования размера (КиБ/МиБ/ГиБ в байтах).
+private const val BYTES_IN_KB = 1_024L
+private const val BYTES_IN_MB = 1_048_576L
+private const val BYTES_IN_GB = 1_073_741_824L
+
 @Composable
 private fun formatBytes(bytes: Long): String {
     val unitGb = stringResource(R.string.unit_gb)
     val unitMb = stringResource(R.string.unit_mb)
     val unitKb = stringResource(R.string.unit_kb)
     return when {
-        bytes >= 1_073_741_824 -> String.format(Locale.US, "%.1f %s", bytes / 1_073_741_824.0, unitGb)
-        bytes >= 1_048_576 -> String.format(Locale.US, "%.0f %s", bytes / 1_048_576.0, unitMb)
-        else -> String.format(Locale.US, "%.0f %s", bytes / 1024.0, unitKb)
+        bytes >= BYTES_IN_GB -> String.format(Locale.US, "%.1f %s", bytes / BYTES_IN_GB.toDouble(), unitGb)
+        bytes >= BYTES_IN_MB -> String.format(Locale.US, "%.0f %s", bytes / BYTES_IN_MB.toDouble(), unitMb)
+        else -> String.format(Locale.US, "%.0f %s", bytes / BYTES_IN_KB.toDouble(), unitKb)
     }
 }

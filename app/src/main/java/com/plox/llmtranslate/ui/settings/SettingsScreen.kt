@@ -12,10 +12,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -105,122 +105,66 @@ fun SettingsScreen(
         )
 
         // TTS-движок.
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text(
-                    text = stringResource(R.string.settings_tts_engine),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                TtsOption(
-                    "system",
-                    stringResource(R.string.settings_tts_system),
-                    state.ttsEngine,
-                    viewModel::onTtsEngineChange
-                )
-                TtsOption(
-                    "rhvoice",
-                    stringResource(R.string.settings_tts_rhvoice),
-                    state.ttsEngine,
-                    viewModel::onTtsEngineChange
-                )
-                TtsOption(
-                    "espeak",
-                    stringResource(R.string.settings_tts_espeak),
-                    state.ttsEngine,
-                    viewModel::onTtsEngineChange
-                )
-            }
-        }
+        OptionCard(
+            titleRes = R.string.settings_tts_engine,
+            selected = state.ttsEngine,
+            onSelect = viewModel::onTtsEngineChange,
+            options = listOf(
+                "system" to stringResource(R.string.settings_tts_system),
+                "rhvoice" to stringResource(R.string.settings_tts_rhvoice),
+                "espeak" to stringResource(R.string.settings_tts_espeak)
+            )
+        )
 
         // Язык интерфейса.
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text(
-                    text = stringResource(R.string.settings_ui_language),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                LangOption(
-                    "system",
-                    stringResource(R.string.option_system),
-                    state.uiLanguage,
-                    viewModel::onUiLanguageChange
-                )
-                LangOption(
-                    "ru",
-                    stringResource(R.string.option_ru),
-                    state.uiLanguage,
-                    viewModel::onUiLanguageChange
-                )
-                LangOption(
-                    "en",
-                    stringResource(R.string.option_en),
-                    state.uiLanguage,
-                    viewModel::onUiLanguageChange
-                )
-            }
-        }
+        OptionCard(
+            titleRes = R.string.settings_ui_language,
+            selected = state.uiLanguage,
+            onSelect = viewModel::onUiLanguageChange,
+            options = listOf(
+                "system" to stringResource(R.string.option_system),
+                "ru" to stringResource(R.string.option_ru),
+                "en" to stringResource(R.string.option_en)
+            )
+        )
 
         // Тема.
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text(
-                    text = stringResource(R.string.settings_theme),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                ThemeOption(
-                    "system",
-                    stringResource(R.string.option_system),
-                    state.theme,
-                    viewModel::onThemeChange
-                )
-                ThemeOption(
-                    "light",
-                    stringResource(R.string.settings_theme_light),
-                    state.theme,
-                    viewModel::onThemeChange
-                )
-                ThemeOption(
-                    "dark",
-                    stringResource(R.string.settings_theme_dark),
-                    state.theme,
-                    viewModel::onThemeChange
-                )
-            }
-        }
+        OptionCard(
+            titleRes = R.string.settings_theme,
+            selected = state.theme,
+            onSelect = viewModel::onThemeChange,
+            options = listOf(
+                "system" to stringResource(R.string.option_system),
+                "light" to stringResource(R.string.settings_theme_light),
+                "dark" to stringResource(R.string.settings_theme_dark)
+            )
+        )
     }
 }
 
+/**
+ * Карточка настройки с заголовком и списком radio-опций.
+ * @param options пары (значение, подпись).
+ */
 @Composable
-private fun TtsOption(
-    value: String,
-    label: String,
+private fun OptionCard(
+    titleRes: Int,
     selected: String,
-    onSelect: (String) -> Unit
+    onSelect: (String) -> Unit,
+    options: List<Pair<String, String>>
 ) {
-    OptionRow(value, label, selected, onSelect)
-}
-
-@Composable
-private fun LangOption(
-    value: String,
-    label: String,
-    selected: String,
-    onSelect: (String) -> Unit
-) {
-    OptionRow(value, label, selected, onSelect)
-}
-
-@Composable
-private fun ThemeOption(
-    value: String,
-    label: String,
-    selected: String,
-    onSelect: (String) -> Unit
-) {
-    OptionRow(value, label, selected, onSelect)
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = stringResource(titleRes),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            options.forEach { (value, label) ->
+                OptionRow(value, label, selected, onSelect)
+            }
+        }
+    }
 }
 
 @Composable
@@ -234,7 +178,7 @@ private fun OptionRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
-        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+        verticalAlignment = Alignment.CenterVertically
     ) {
         RadioButton(
             selected = selected == value,

@@ -21,12 +21,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -41,10 +42,8 @@ class ModelManagerImpl @Inject constructor(
     private val preferences: ModelPreferences,
     private val deviceInfoProvider: DeviceInfoProvider,
     private val runtimeRouter: RuntimeRouter,
-    appScope: CoroutineScope
+    private val scope: CoroutineScope
 ) : ModelManager {
-
-    private val scope = appScope
 
     private val modelsDir: File
         get() = context.getExternalFilesDir("models") ?: context.filesDir
@@ -138,42 +137,42 @@ class ModelManagerImpl @Inject constructor(
 
     override suspend fun importFromUri(uri: Uri): String? =
         withContext(Dispatchers.IO) {
-        try {
-            val fileName = queryFileName(uri) ?: return@withContext null
-            val targetFile = copyFromUri(uri) ?: return@withContext null
+            try {
+                val fileName = queryFileName(uri) ?: return@withContext null
+                val targetFile = copyFromUri(uri) ?: return@withContext null
 
-            val modelId = fileName.removeSuffix(".gguf").removeSuffix(".onnx").removeSuffix(".zip")
-            val model = InstalledModel(
-                id = modelId,
-                category = guessCategory(fileName),
-                displayName = fileName,
-                description = "Импортированная модель",
-                runtime = guessRuntime(fileName),
-                sizeBytes = targetFile.length(),
-                ramRequiredMb = 0,
-                languages = emptyList(),
-                quality = 3,
-                speed = 3,
-                url = "",
-                urls = emptyList(),
-                sha256 = null,
-                license = "Неизвестна",
-                minAndroidSdk = 26,
-                recommendedRamMb = 0,
-                status = ModelStatus.READY,
-                progress = 100,
-                filePath = targetFile.absolutePath,
-                bytesDone = targetFile.length(),
-                isBuiltin = false
-            )
-            repository.upsert(model)
-            Timber.d("Импортирована модель $modelId из $uri")
-            modelId
-        } catch (e: Exception) {
-            Timber.e(e, "Ошибка импорта модели из $uri")
-            null
+                val modelId = fileName.removeSuffix(".gguf").removeSuffix(".onnx").removeSuffix(".zip")
+                val model = InstalledModel(
+                    id = modelId,
+                    category = guessCategory(fileName),
+                    displayName = fileName,
+                    description = "Импортированная модель",
+                    runtime = guessRuntime(fileName),
+                    sizeBytes = targetFile.length(),
+                    ramRequiredMb = 0,
+                    languages = emptyList(),
+                    quality = 3,
+                    speed = 3,
+                    url = "",
+                    urls = emptyList(),
+                    sha256 = null,
+                    license = "Неизвестна",
+                    minAndroidSdk = 26,
+                    recommendedRamMb = 0,
+                    status = ModelStatus.READY,
+                    progress = 100,
+                    filePath = targetFile.absolutePath,
+                    bytesDone = targetFile.length(),
+                    isBuiltin = false
+                )
+                repository.upsert(model)
+                Timber.d("Импортирована модель $modelId из $uri")
+                modelId
+            } catch (e: Exception) {
+                Timber.e(e, "Ошибка импорта модели из $uri")
+                null
+            }
         }
-    }
 
     override suspend fun exportToUri(modelId: String, targetUri: Uri): Boolean =
         withContext(Dispatchers.IO) {
@@ -189,11 +188,9 @@ class ModelManagerImpl @Inject constructor(
                 output.use { out ->
                     if (source.isDirectory) {
                         // Каталог модели упаковываем в zip потоково.
-                        java.util.zip.ZipOutputStream(out.buffered()).use { zip ->
+                        ZipOutputStream(out.buffered()).use { zip ->
                             source.walkTopDown().filter { it.isFile }.forEach { f ->
-                                zip.putNextEntry(
-                                    java.util.zip.ZipEntry(f.relativeTo(source).path)
-                                )
+                                zip.putNextEntry(ZipEntry(f.relativeTo(source).path))
                                 f.inputStream().buffered().use { it.copyTo(zip) }
                                 zip.closeEntry()
                             }
@@ -242,15 +239,6 @@ class ModelManagerImpl @Inject constructor(
             runtimeRouter.releaseAll()
             Timber.d("Рантаймы разгружены (ON_STOP)")
         }
-    }
-
-    override suspend fun activeRamRequiredMb(): Long {
-        val llmId = preferences.getActiveModelId(ModelCategory.TRANSLATION)
-        val sttId = preferences.getActiveModelId(ModelCategory.STT)
-        var total = 0L
-        llmId?.let { repository.getById(it)?.ramRequiredMb?.let { mb -> total += mb } }
-        sttId?.let { repository.getById(it)?.ramRequiredMb?.let { mb -> total += mb } }
-        return total
     }
 
     private suspend fun copyFromUri(uri: Uri): File? {

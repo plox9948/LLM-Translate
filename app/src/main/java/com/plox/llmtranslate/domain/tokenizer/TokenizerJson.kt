@@ -42,14 +42,11 @@ class TokenizerJson {
 
     // Модель.
     private var modelType: String = ""
-    private var merges: List<Pair<String, String>> = emptyList()
     private var mergeRanks: Map<Pair<String, String>, Int> = emptyMap()
     private var unigramScores: Map<String, Float> = emptyMap()
 
     // Пре-токенизатор (Metaspace).
-    private var preTokenizerType: String = ""
     private var metaspaceReplacement: String = "▁"
-    private var metaspacePrependAlways: Boolean = true
 
     // Декодер.
     private var decoderType: String = ""
@@ -211,10 +208,9 @@ class TokenizerJson {
 
     private fun parsePreTokenizer(root: JsonObject) {
         val pt = root["pre_tokenizer"] as? JsonObject ?: return
-        preTokenizerType = (pt["type"] as? JsonPrimitive)?.contentOrNull ?: ""
-        if (preTokenizerType == "Metaspace") {
+        val type = (pt["type"] as? JsonPrimitive)?.contentOrNull ?: ""
+        if (type == "Metaspace") {
             metaspaceReplacement = (pt["replacement"] as? JsonPrimitive)?.contentOrNull ?: "▁"
-            metaspacePrependAlways = (pt["prepend_scheme"] as? JsonPrimitive)?.contentOrNull == "always"
         }
     }
 
@@ -253,18 +249,15 @@ class TokenizerJson {
                     v[k] = id
                 }
                 vocab = v
-                val m = ArrayList<Pair<String, String>>()
-                model["merges"]?.jsonArray?.forEach { el ->
+                val ranks = HashMap<Pair<String, String>, Int>()
+                model["merges"]?.jsonArray?.forEachIndexed { idx, el ->
                     val arr = el.jsonArray
                     if (arr.size >= 2) {
-                        val a = (arr[0] as? JsonPrimitive)?.contentOrNull ?: return@forEach
-                        val b = (arr[1] as? JsonPrimitive)?.contentOrNull ?: return@forEach
-                        m.add(a to b)
+                        val a = (arr[0] as? JsonPrimitive)?.contentOrNull ?: return@forEachIndexed
+                        val b = (arr[1] as? JsonPrimitive)?.contentOrNull ?: return@forEachIndexed
+                        ranks[a to b] = idx
                     }
                 }
-                merges = m
-                val ranks = HashMap<Pair<String, String>, Int>()
-                m.forEachIndexed { idx, pair -> ranks[pair] = idx }
                 mergeRanks = ranks
                 rebuildInvVocab()
             }

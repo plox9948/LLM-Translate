@@ -359,24 +359,12 @@ class ModelBackupManager @Inject constructor(
             if (tempFile.renameTo(targetFile)) return true
             // rename не работает между томами (cacheDir и getExternalFilesDir):
             // копируем и удаляем временный файл.
-            copyRecursively(tempFile, targetFile)
+            val copied = tempFile.copyRecursively(targetFile, overwrite = true)
             tempFile.deleteRecursively()
-            true
+            copied
         } catch (e: Exception) {
             Timber.e(e, "Ошибка перемещения файла в $targetPath")
             false
-        }
-    }
-
-    /**
-     * Рекурсивно скопировать файл или каталог (fallback при отказе rename).
-     */
-    private fun copyRecursively(source: File, target: File) {
-        if (source.isDirectory) {
-            target.mkdirs()
-            source.listFiles()?.forEach { copyRecursively(it, File(target, it.name)) }
-        } else {
-            source.copyTo(target, overwrite = true)
         }
     }
 
@@ -400,18 +388,10 @@ class ModelBackupManager @Inject constructor(
     }
 
     /**
-     * Прочитать содержимое записи ZIP.
+     * Прочитать содержимое записи ZIP целиком (UTF-8).
      */
-    private fun readEntry(zip: ZipInputStream): String {
-        val buffer = ByteArray(8192)
-        val outputStream = java.io.ByteArrayOutputStream()
-        while (true) {
-            val read = zip.read(buffer)
-            if (read < 0) break
-            outputStream.write(buffer, 0, read)
-        }
-        return String(outputStream.toByteArray(), Charsets.UTF_8)
-    }
+    private fun readEntry(zip: ZipInputStream): String =
+        String(zip.readBytes(), Charsets.UTF_8)
 }
 
 

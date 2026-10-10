@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.ui.models
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.data.backup.ModelBackupManager
@@ -7,14 +8,15 @@ import com.plox.llmtranslate.domain.DiskUsage
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.DeviceInfo
 import com.plox.llmtranslate.domain.model.InstallCheck
+import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -60,8 +62,8 @@ class ModelsViewModel @Inject constructor(
     private val _deviceInfo = MutableStateFlow<DeviceInfo?>(null)
     val deviceInfo: StateFlow<DeviceInfo?> = _deviceInfo
 
-    private val activeIdsFlow: kotlinx.coroutines.flow.Flow<Map<ModelCategory, String?>> =
-        kotlinx.coroutines.flow.combine(
+    private val activeIdsFlow: Flow<Map<ModelCategory, String?>> =
+        combine(
             modelManager.activeModelId(ModelCategory.TRANSLATION),
             modelManager.activeModelId(ModelCategory.STT),
             modelManager.activeModelId(ModelCategory.TTS)
@@ -80,7 +82,7 @@ class ModelsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            kotlinx.coroutines.flow.combine(
+            combine(
                 modelManager.catalog,
                 modelManager.installedModels(null),
                 activeIdsFlow,
@@ -104,16 +106,13 @@ class ModelsViewModel @Inject constructor(
                 )
             }
         }
-    }
-
-    val licenseConfirmModel = MutableStateFlow<ModelCard?>(null)
-
-    init {
         viewModelScope.launch {
             // Устройство для проверки совместимости.
             _deviceInfo.value = modelManager.deviceInfo()
         }
     }
+
+    val licenseConfirmModel = MutableStateFlow<ModelCard?>(null)
 
     /** Причина последней блокировки установки (баннер в UI). */
     private val _blockedReason = MutableStateFlow<String?>(null)
@@ -170,7 +169,7 @@ class ModelsViewModel @Inject constructor(
         modelManager.cancelDownload(model.id)
     }
 
-    fun onImportResult(uri: android.net.Uri) {
+    fun onImportResult(uri: Uri) {
         viewModelScope.launch {
             modelManager.importFromUri(uri)
         }
@@ -191,7 +190,7 @@ class ModelsViewModel @Inject constructor(
     /**
      * Завершить экспорт: скопировать модель в выбранный SAF-uri.
      */
-    fun onExportResult(uri: android.net.Uri?) {
+    fun onExportResult(uri: Uri?) {
         val request = uiState.value.exportRequest
         _uiState.value = _uiState.value.copy(exportRequest = null)
         if (uri == null || request == null) return
@@ -214,7 +213,7 @@ class ModelsViewModel @Inject constructor(
     /**
      * Завершить экспорт бэкапа: записать ZIP в выбранный SAF-uri.
      */
-    fun onBackupExportResult(uri: android.net.Uri?) {
+    fun onBackupExportResult(uri: Uri?) {
         _uiState.value = _uiState.value.copy(backupExportRequest = null)
         if (uri == null) return
         viewModelScope.launch {
@@ -230,7 +229,7 @@ class ModelsViewModel @Inject constructor(
     /**
      * Импортировать резервную копию из SAF-uri.
      */
-    fun onBackupImportResult(uri: android.net.Uri?) {
+    fun onBackupImportResult(uri: Uri?) {
         if (uri == null) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isBusy = true, statusMessage = "Импорт…")
@@ -255,16 +254,13 @@ class ModelsViewModel @Inject constructor(
 
     /**
      * Проверить предупреждение о памяти при одновременной активации LLM и STT.
+     * Логика и текст — в [InstallCheckLogic.ramWarning].
      */
     fun checkRamWarning(): String? {
         val device = _deviceInfo.value ?: return null
         val state = uiState.value
         val llm = state.installed.firstOrNull { it.id == state.activeIds[ModelCategory.TRANSLATION] }
         val stt = state.installed.firstOrNull { it.id == state.activeIds[ModelCategory.STT] }
-        if (llm == null || stt == null) return null
-        val total = (llm.ramRequiredMb + stt.ramRequiredMb).toLong()
-        return if (device.isNearRamLimit(total)) {
-            "Активные модели требуют ~${total} МБ ОЗУ — близко к лимиту устройства"
-        } else null
+        return InstallCheckLogic.ramWarning(llm?.ramRequiredMb, stt?.ramRequiredMb, device)
     }
 }

@@ -1,12 +1,14 @@
 package com.plox.llmtranslate.data.download
 
-import com.plox.llmtranslate.domain.model.RuntimeType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
+import java.io.FileOutputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 /**
  * Базовая логика скачивания с докачкой (Range) и проверкой SHA-256.
@@ -56,8 +58,8 @@ abstract class BaseDownloader {
 
             val totalBytes = bytesDone + (urlConn.contentLengthLong.takeIf { it > 0 } ?: 0L)
             // При докачке открываем файл в режиме append, иначе — с нуля.
-            val out: java.io.OutputStream = if (bytesDone > 0) {
-                java.io.FileOutputStream(partFile, true)
+            val out: OutputStream = if (bytesDone > 0) {
+                FileOutputStream(partFile, true)
             } else {
                 partFile.outputStream()
             }
@@ -127,7 +129,7 @@ abstract class BaseDownloader {
     protected suspend fun verifySha256(file: File, expected: String?): Boolean =
         withContext(Dispatchers.IO) {
             if (expected.isNullOrBlank()) return@withContext true
-            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            val digest = MessageDigest.getInstance("SHA-256")
             file.inputStream().buffered().use { input ->
                 val buffer = ByteArray(64 * 1024)
                 while (true) {

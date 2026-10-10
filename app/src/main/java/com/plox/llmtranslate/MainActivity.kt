@@ -2,7 +2,6 @@ package com.plox.llmtranslate
 
 import android.content.res.Configuration
 import android.os.Bundle
-import android.util.DisplayMetrics
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge

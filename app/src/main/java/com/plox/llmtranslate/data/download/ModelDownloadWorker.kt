@@ -2,8 +2,11 @@ package com.plox.llmtranslate.data.download
 
 import android.content.Context
 import androidx.hilt.work.HiltWorker
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -163,12 +166,12 @@ class ModelDownloadWorker @AssistedInject constructor(
                     )
                 )
                 .setConstraints(
-                    androidx.work.Constraints.Builder()
-                        .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
                         .build()
                 )
                 .setBackoffCriteria(
-                    androidx.work.BackoffPolicy.EXPONENTIAL,
+                    BackoffPolicy.EXPONENTIAL,
                     30, TimeUnit.SECONDS
                 )
                 .build()

@@ -18,7 +18,6 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import timber.log.Timber
 import java.io.File
-import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -287,14 +286,7 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                             @Suppress("UNCHECKED_CAST")
                             val logitsData = logitsTensor.getValue() as Array<Array<FloatArray>>
                             val lastLogits = logitsData[0][logitsData[0].size - 1]
-                            var maxToken = 0
-                            var maxVal = Float.NEGATIVE_INFINITY
-                            for (i in lastLogits.indices) {
-                                if (lastLogits[i] > maxVal) {
-                                    maxVal = lastLogits[i]
-                                    maxToken = i
-                                }
-                            }
+                            val maxToken = argMax(lastLogits)
 
                             generatedIds.add(maxToken)
                             if (maxToken == eosTokenId) break

@@ -136,16 +136,6 @@ class TtsRuntime @Inject constructor(
     }
 
     /**
-     * Поддерживается ли язык.
-     * @param lang код языка (ru, en, ne).
-     */
-    fun isLanguageAvailable(lang: String): Boolean {
-        val engine = tts ?: return false
-        return engine.isLanguageAvailable(Locale(lang)) >=
-            TextToSpeech.LANG_AVAILABLE
-    }
-
-    /**
      * Озвучить текст на языке [lang].
      * @param onDone колбэк завершения озвучивания (вызывается на главном потоке).
      * @return null при успехе или [RuntimeError].

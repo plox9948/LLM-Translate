@@ -66,9 +66,6 @@ interface ModelManager {
      */
     fun releaseAllRuntimes()
 
-    /** Суммарная ОЗУ, требуемая активными LLM+STT моделями. */
-    suspend fun activeRamRequiredMb(): Long
-
     /** Информация об устройстве для проверки совместимости. */
     fun deviceInfo(): DeviceInfo
 }

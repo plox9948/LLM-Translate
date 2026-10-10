@@ -54,13 +54,21 @@ data class ModelCard(
 ) {
     /** Лицензия требует подтверждения (некоммерческая). */
     val requiresLicenseConfirmation: Boolean
-        get() = license.uppercase().contains("NC") ||
-            license.uppercase().contains("NON-COMMERCIAL")
+        get() {
+            val upper = license.uppercase()
+            return upper.contains("NC") || upper.contains("NON-COMMERCIAL")
+        }
 
     /** Все URL для скачивания: urls (мультифайл) или url (один файл). */
-    fun downloadUrls(): List<String> =
-        if (urls.isNotEmpty()) urls else url.takeIf { it.isNotBlank() }?.let { listOf(it) } ?: emptyList()
+    fun downloadUrls(): List<String> = resolveDownloadUrls(url, urls)
 }
+
+/**
+ * Общий разбор URL скачивания для [ModelCard] и [InstalledModel]:
+ * urls (мультифайл) или url (один файл).
+ */
+private fun resolveDownloadUrls(url: String, urls: List<String>): List<String> =
+    if (urls.isNotEmpty()) urls else listOfNotNull(url.takeIf { it.isNotBlank() })
 
 /**
  * Установленная модель (каталожная или импортированная).
@@ -92,8 +100,7 @@ data class InstalledModel(
         get() = status == ModelStatus.READY && !filePath.isNullOrBlank()
 
     /** Все URL для скачивания: urls (мультифайл) или url (один файл). */
-    fun downloadUrls(): List<String> =
-        if (urls.isNotEmpty()) urls else url.takeIf { it.isNotBlank() }?.let { listOf(it) } ?: emptyList()
+    fun downloadUrls(): List<String> = resolveDownloadUrls(url, urls)
 }
 
 /**

@@ -210,10 +210,9 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
      * Определить тип модели по файлам каталога.
      */
     private fun detectModel(dir: File): ModelInfo? {
-        val onnxFiles = dir.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".onnx") }
-            ?: return null
-        val tokens = dir.listFiles()?.firstOrNull { it.isFile && it.name == "tokens.txt" }
+        val files = dir.listFiles() ?: return null
+        val onnxFiles = files.filter { it.isFile && it.name.endsWith(".onnx") }
+        val tokens = files.firstOrNull { it.isFile && it.name == "tokens.txt" }
             ?: return null
 
         fun byContains(part: String): String? =

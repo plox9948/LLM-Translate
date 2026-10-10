@@ -313,15 +313,7 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
 
         applyGenerationMask(last, generated, badTokenIds, REPETITION_PENALTY)
 
-        var best = 0
-        var bestVal = Float.NEGATIVE_INFINITY
-        for (i in last.indices) {
-            if (last[i] > bestVal) {
-                bestVal = last[i]
-                best = i
-            }
-        }
-        return best
+        return argMax(last)
     }
 
     override suspend fun release() {
@@ -403,6 +395,22 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
             Timber.w("Не удалось прочитать generation_config.json: ${e.message}")
         }
     }
+}
+
+/**
+ * Индекс максимального значения (первое вхождение при равенстве).
+ * Общий для greedy-циклов движков перевода.
+ */
+internal fun argMax(values: FloatArray): Int {
+    var best = 0
+    var bestVal = Float.NEGATIVE_INFINITY
+    for (i in values.indices) {
+        if (values[i] > bestVal) {
+            bestVal = values[i]
+            best = i
+        }
+    }
+    return best
 }
 
 /**

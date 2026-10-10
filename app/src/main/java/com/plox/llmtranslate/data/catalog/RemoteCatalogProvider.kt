@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -69,7 +71,7 @@ class RemoteCatalogProvider @Inject constructor(
 
         // 2. Пытаемся получить удалённый каталог (новый или из кэша).
         val remoteModels = fetchRemoteCatalog()
-        if (remoteModels != null && remoteModels.isNotEmpty()) {
+        if (!remoteModels.isNullOrEmpty()) {
             // 3. Объединяем: удалённый переопределяет assets по id.
             val merged = mergeCatalogs(assetsModels, remoteModels)
             mergedCache = merged
@@ -93,10 +95,10 @@ class RemoteCatalogProvider @Inject constructor(
             return@withContext readCacheIfApplicable(appliedVersion)
         }
 
-        var connection: java.net.HttpURLConnection? = null
+        var connection: HttpURLConnection? = null
         try {
-            val url = java.net.URL(REMOTE_CATALOG_URL)
-            val urlConn = url.openConnection() as java.net.HttpURLConnection
+            val url = URL(REMOTE_CATALOG_URL)
+            val urlConn = url.openConnection() as HttpURLConnection
             connection = urlConn
             urlConn.connectTimeout = 10_000
             urlConn.readTimeout = 15_000
