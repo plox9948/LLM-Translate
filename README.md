@@ -36,8 +36,11 @@ app/src/main/java/com/plox/llmtranslate/
 │   ├── backup/     # экспорт/импорт моделей и настроек (ZIP-бэкап)
 │   └── prefs/      # настройки (DataStore)
 ├── domain/
-│   ├── ModelManager.kt      # единая точка входа для UI
-│   └── runtime/             # MarianOnnxRuntime, IndicTransOnnxRuntime, SherpaSttEngine, TtsRuntime
+│   ├── ModelManager.kt      # интерфейс + ModelManagerImpl — единая точка входа для UI
+│   ├── model/               # типы моделей, InstallCheckLogic, детектор языка, выбор модели перевода
+│   ├── runtime/             # MarianOnnxRuntime, IndicTransOnnxRuntime, SherpaSttEngine, TtsRuntime, RuntimeRouter
+│   └── tokenizer/           # инференс-токенизаторы (TokenizerJson, IndicProcessorLite)
+├── util/                    # WavReader
 ├── ui/                      # экраны: Перевод, Модели, Настройки
 └── di/                      # Hilt-модули
 app/src/main/assets/         # models_catalog.json
@@ -83,8 +86,10 @@ app/src/main/assets/         # models_catalog.json
 versioned-символ `OrtGetApiBase@VERS_1.28.2`, тогда как в APK попадает
 `libonnxruntime.so` 1.30.0 от onnxruntime-android (узел `VERS_1.30.0`) — без патча
 STT падает при инициализации `OfflineRecognizer` (`UnsatisfiedLinkError`).
-Патч меняет version-node на `VERS_1.30.0` (равноимённый, с пересчётом `vna_hash`);
-локальные jniLibs имеют приоритет при слиянии, `pickFirst` подавляет дубликат из AAR.
+Патч переименовывает version-node в `VERS_1.30.0` (строки одинаковой длины —
+побайтовая замена без сдвига таблиц, с пересчётом `vna_hash`, по которому
+Android-линкер сопоставляет версии); локальные jniLibs имеют приоритет при слиянии,
+`pickFirst` подавляет дубликат из AAR.
 
 **Обязательное правило:** после обновления `sherpa-onnx` или `onnxruntime-android`
 в `gradle/libs.versions.toml` перегенерировать библиотеки скриптом:
@@ -92,6 +97,11 @@ STT падает при инициализации `OfflineRecognizer` (`Unsatis
 ```powershell
 tools/patch-sherpa-jni-ort-version.ps1 -AarExtractDir <папка с распакованным AAR sherpa-onnx>
 ```
+
+Ожидаемая структура входа: `<AarExtractDir>/jni/<abi>/libsherpa-onnx-jni.so`.
+По умолчанию патчатся ABI `arm64-v8a, x86_64` и версия `VERS_1.28.2 → VERS_1.30.0`
+(переопределяются параметрами `-Abis`, `-FromVersion`, `-ToVersion`; при обновлении
+ORT их нужно выставить актуальными). Результат — в `app/src/main/jniLibs/<abi>/`.
 
 Скрипт идемпотентен (патчит всегда из распакованного AAR, бросает ошибку на уже
 патченом входе). Когда апстрим sherpa-onnx соберёт AAR с ORT >= 1.30, патч можно убрать:
