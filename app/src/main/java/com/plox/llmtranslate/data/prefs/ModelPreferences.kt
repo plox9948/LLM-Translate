@@ -105,10 +105,28 @@ class ModelPreferences @Inject constructor(
         context.dataStore.edit { it[stringPreferencesKey("theme")] = theme }
     }
 
+    /**
+     * Тайм-аут отложенной выгрузки рантаймов при сворачивании приложения, минуты:
+     * 0 — выгружать сразу, -1 — не выгружать. По умолчанию 5.
+     */
+    val unloadTimeoutMinutes: Flow<Int> =
+        context.dataStore.data.map {
+            it[intPreferencesKey("unload_timeout_minutes")] ?: DEFAULT_UNLOAD_TIMEOUT_MINUTES
+        }
+
+    suspend fun setUnloadTimeoutMinutes(minutes: Int) {
+        context.dataStore.edit { it[intPreferencesKey("unload_timeout_minutes")] = minutes }
+    }
+
     val lastRemoteCatalogVersion: Flow<Int> =
         context.dataStore.data.map { it[intPreferencesKey("remote_catalog_version")] ?: 0 }
 
     suspend fun setLastRemoteCatalogVersion(version: Int) {
         context.dataStore.edit { it[intPreferencesKey("remote_catalog_version")] = version }
+    }
+
+    companion object {
+        /** Тайм-аут выгрузки рантаймов по умолчанию, минуты. */
+        const val DEFAULT_UNLOAD_TIMEOUT_MINUTES = 5
     }
 }

@@ -1,9 +1,11 @@
 package com.plox.llmtranslate.di
 
+import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.AndroidDeviceInfoProvider
 import com.plox.llmtranslate.domain.DeviceInfoProvider
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.ModelManagerImpl
+import com.plox.llmtranslate.domain.UnloadTimeoutProvider
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -14,7 +16,9 @@ import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
+import timber.log.Timber
 
 /**
  * Hilt-модуль домена.
@@ -39,6 +43,23 @@ abstract class DomainModule {
         @Singleton
         fun provideAppScope(): CoroutineScope =
             CoroutineScope(Dispatchers.IO)
+
+        /**
+         * Поставщик тайм-аута выгрузки: читает настройку из DataStore
+         * в момент планирования; при ошибке чтения — значение по умолчанию.
+         */
+        @Provides
+        @Singleton
+        fun provideUnloadTimeoutProvider(
+            preferences: ModelPreferences
+        ): UnloadTimeoutProvider = UnloadTimeoutProvider {
+            try {
+                preferences.unloadTimeoutMinutes.first()
+            } catch (e: Exception) {
+                Timber.w(e, "Не удалось прочитать тайм-аут выгрузки, беру значение по умолчанию")
+                ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES
+            }
+        }
 
         /**
          * Единый конфигурированный Json для сериализации.

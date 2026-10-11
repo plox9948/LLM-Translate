@@ -16,6 +16,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.plox.llmtranslate.data.prefs.ModelPreferences
+import com.plox.llmtranslate.domain.BackgroundUnloadScheduler
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.ui.MainScreen
 import com.plox.llmtranslate.ui.theme.OfflineTranslatorTheme
@@ -50,20 +51,41 @@ class MainActivity : ComponentActivity() {
         private var releaseTarget: ModelManager? = null
 
         /**
+         * Планировщик отложенной выгрузки последней созданной активности
+         * (Hilt-синглтон процесса). Обновляется вместе с [releaseTarget].
+         */
+        @Volatile
+        private var backgroundUnload: BackgroundUnloadScheduler? = null
+
+        /**
          * Единственный на процесс observer разгрузки: регистрируется один раз
          * при первом создании активности и не снимается. Анонимный observer
          * в каждом onCreate() накапливал наблюдателей, удерживая уничтоженные
          * активности и многократно вызывая release() по ON_STOP.
+         *
+         * ON_STOP — планирует отложенную выгрузку с тайм-аутом из настроек
+         * (читается на момент сворачивания); ON_START процесса — отменяет её,
+         * если пользователь вернулся до истечения тайм-аута.
          */
         private val processReleaseObserver = object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) {
+                backgroundUnload?.cancel()
+            }
+
             override fun onStop(owner: LifecycleOwner) {
-                releaseTarget?.releaseAllRuntimes()
+                val target = releaseTarget
+                val scheduler = backgroundUnload
+                if (target == null || scheduler == null) return
+                scheduler.schedule(target::releaseAllRuntimes)
             }
         }
     }
 
     @Inject
     lateinit var modelManager: ModelManager
+
+    @Inject
+    lateinit var unloadScheduler: BackgroundUnloadScheduler
 
     @Inject
     lateinit var preferences: ModelPreferences
@@ -111,10 +133,12 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // При сворачивании приложения освобождаем память: разгружаем рантаймы.
-        // Observer единственный на процесс (регистрируется один раз), ссылка
-        // на ModelManager обновляется при каждом создании активности.
+        // При сворачивании процесса планируем отложенную выгрузку рантаймов
+        // (тайм-аут из настроек), при возврате — отменяем. Ссылки на синглтоны
+        // обновляются при каждом создании активности; observer единственный
+        // на процесс (регистрируется один раз).
         releaseTarget = modelManager
+        backgroundUnload = unloadScheduler
         ProcessLifecycleOwner.get().lifecycle.addObserver(processReleaseObserver)
     }
 

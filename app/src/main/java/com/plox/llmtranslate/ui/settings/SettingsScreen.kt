@@ -28,6 +28,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.prefs.ModelPreferences
+import com.plox.llmtranslate.domain.BackgroundUnloadScheduler
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,7 +41,8 @@ import javax.inject.Inject
 data class SettingsUiState(
     val ttsEngine: String = "system",
     val uiLanguage: String = "system",
-    val theme: String = "system"
+    val theme: String = "system",
+    val unloadTimeoutMinutes: Int = ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES
 )
 
 /**
@@ -70,6 +72,11 @@ class SettingsViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(theme = theme)
             }
         }
+        viewModelScope.launch {
+            preferences.unloadTimeoutMinutes.collect { minutes ->
+                _uiState.value = _uiState.value.copy(unloadTimeoutMinutes = minutes)
+            }
+        }
     }
 
     fun onTtsEngineChange(engine: String) {
@@ -83,10 +90,20 @@ class SettingsViewModel @Inject constructor(
     fun onThemeChange(theme: String) {
         viewModelScope.launch { preferences.setTheme(theme) }
     }
+
+    /**
+     * Смена тайм-аута выгрузки: значение опции — минуты в строковом виде
+     * («-1» — не выгружать, «0» — сразу).
+     */
+    fun onUnloadTimeoutChange(value: String) {
+        val minutes = value.toIntOrNull()
+            ?: ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES
+        viewModelScope.launch { preferences.setUnloadTimeoutMinutes(minutes) }
+    }
 }
 
 /**
- * Экран «Настройки»: TTS-движок, язык интерфейса, тема.
+ * Экран «Настройки»: TTS-движок, язык интерфейса, тема, выгрузка моделей.
  */
 @Composable
 fun SettingsScreen(
@@ -140,6 +157,23 @@ fun SettingsScreen(
                 "system" to stringResource(R.string.option_system),
                 "light" to stringResource(R.string.settings_theme_light),
                 "dark" to stringResource(R.string.settings_theme_dark)
+            )
+        )
+
+        // Выгрузка моделей при сворачивании.
+        OptionCard(
+            titleRes = R.string.settings_unload_models,
+            selected = state.unloadTimeoutMinutes.toString(),
+            onSelect = viewModel::onUnloadTimeoutChange,
+            options = listOf(
+                BackgroundUnloadScheduler.UNLOAD_IMMEDIATELY.toString() to
+                    stringResource(R.string.settings_unload_now),
+                ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES.toString() to
+                    stringResource(R.string.settings_unload_after_5),
+                "15" to stringResource(R.string.settings_unload_after_15),
+                "30" to stringResource(R.string.settings_unload_after_30),
+                BackgroundUnloadScheduler.NEVER_UNLOAD.toString() to
+                    stringResource(R.string.settings_unload_never)
             )
         )
     }
