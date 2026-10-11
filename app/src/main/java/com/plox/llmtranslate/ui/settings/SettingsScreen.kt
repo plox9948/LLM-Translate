@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -173,7 +174,11 @@ fun SettingsScreen(
                 BackgroundUnloadScheduler.UNLOAD_IMMEDIATELY.toString() to
                     stringResource(R.string.settings_unload_now),
                 defaultUnloadMinutes.toString() to
-                    stringResource(R.string.settings_unload_after_default, defaultUnloadMinutes),
+                    pluralStringResource(
+                        R.plurals.settings_unload_after_default,
+                        defaultUnloadMinutes,
+                        defaultUnloadMinutes
+                    ),
                 "15" to stringResource(R.string.settings_unload_after_15),
                 "30" to stringResource(R.string.settings_unload_after_30),
                 BackgroundUnloadScheduler.NEVER_UNLOAD.toString() to

@@ -62,27 +62,22 @@ class ModelDownloadWorker @AssistedInject constructor(
         Timber.d("Запуск скачивания $modelId из ${urls.size} URL")
 
         // Троттлинг записи в Room: пишем только при изменении процента.
+        // Все записи прогресса — точечные UPDATE только полей статуса/прогресса
+        // (не upsert всей строки): свежий read-modify-write не может затереть
+        // каталожные поля (ram_required_mb и др.), обновлённые
+        // syncCatalogRamFields параллельно на старте процесса.
         var lastSavedPercent = -1
         val result = installer.install(urls, sha256, modelsDir, modelId) { progress ->
             setProgress(workDataOf(KEY_PROGRESS to progress))
             if (progress != lastSavedPercent) {
                 lastSavedPercent = progress
-                updateIfPresent(modelId) {
-                    it.copy(status = ModelStatus.DOWNLOADING, progress = progress)
-                }
+                repository.updateDownloadProgress(modelId, ModelStatus.DOWNLOADING, progress)
             }
         }
 
         return when (result) {
             is InstallResult.Success -> {
-                val saved = updateIfPresent(modelId) { current ->
-                    current.copy(
-                        status = ModelStatus.READY,
-                        progress = 100,
-                        filePath = result.path,
-                        bytesDone = sizeBytes
-                    )
-                }
+                val saved = repository.finalizeDownload(modelId, result.path, sizeBytes)
                 if (!saved) {
                     // Запись удалена/отменена во время скачивания — не восстанавливаем,
                     // скачанный файл чистит delete(); при отмене остаётся на диске.
@@ -93,7 +88,7 @@ class ModelDownloadWorker @AssistedInject constructor(
             is InstallResult.Failure -> {
                 if (result.permanent) {
                     // Повторная попытка не поможет — файл повреждён на сервере.
-                    updateIfPresent(modelId) { it.copy(status = ModelStatus.ERROR) }
+                    repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
                     return Result.failure(workDataOf(KEY_ERROR to result.message))
                 }
                 if (runAttemptCount >= MAX_ATTEMPTS) {
@@ -101,11 +96,11 @@ class ModelDownloadWorker @AssistedInject constructor(
                         "Модель $modelId: исчерпаны попытки скачивания " +
                             "(попытка $runAttemptCount): ${result.message}"
                     )
-                    updateIfPresent(modelId) { it.copy(status = ModelStatus.ERROR) }
+                    repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
                     return Result.failure(workDataOf(KEY_ERROR to result.message))
                 }
                 // Сетевая ошибка — повторяем (докачка продолжит с места обрыва).
-                updateIfPresent(modelId) { it.copy(status = ModelStatus.DOWNLOADING) }
+                repository.updateDownloadStatus(modelId, ModelStatus.DOWNLOADING)
                 Result.retry()
             }
         }
@@ -116,23 +111,7 @@ class ModelDownloadWorker @AssistedInject constructor(
      * Запись может быть удалена во время работы — тогда обновление пропускается.
      */
     private suspend fun markError(modelId: String) {
-        updateIfPresent(modelId) { it.copy(status = ModelStatus.ERROR) }
-    }
-
-    /**
-     * Обновить запись только если она ещё существует (перечитывание из DAO
-     * сразу перед записью): защита от гонки с cancel/delete — удалённая во
-     * время скачивания запись не восстанавливается.
-     *
-     * @return true, если запись найдена и обновлена.
-     */
-    private suspend fun updateIfPresent(
-        modelId: String,
-        transform: (InstalledModel) -> InstalledModel
-    ): Boolean {
-        val current = repository.getById(modelId) ?: return false
-        repository.upsert(transform(current))
-        return true
+        repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
     }
 
     companion object {

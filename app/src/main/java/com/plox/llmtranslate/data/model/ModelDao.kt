@@ -57,6 +57,57 @@ interface ModelDao {
         updatedAt: Long
     ): Int
 
+    /**
+     * Точечное обновление только статуса и времени изменения.
+     *
+     * В отличие от upsert (INSERT OR REPLACE всей строки) не затрагивает
+     * каталожные поля (ram_required_mb, recommended_ram_mb, description и
+     * прочие), поэтому не может затереть свежие значения, записанные
+     * параллельно [syncRamFields].
+     *
+     * @return число обновлённых строк (0 — запись удалена/не найдена).
+     */
+    @Query("UPDATE models SET status = :status, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateStatusById(id: String, status: String, updatedAt: Long): Int
+
+    /**
+     * Точечное обновление статуса и процента скачивания (без file_path/
+     * bytes_done — они пишутся только при завершении). Каталогные поля не
+     * затрагиваются, см. [updateStatusById].
+     *
+     * @return число обновлённых строк (0 или 1).
+     */
+    @Query(
+        "UPDATE models SET status = :status, progress = :progress, " +
+            "updated_at = :updatedAt WHERE id = :id"
+    )
+    suspend fun updateProgressById(
+        id: String,
+        status: String,
+        progress: Int,
+        updatedAt: Long
+    ): Int
+
+    /**
+     * Точечное завершение скачивания: статус, прогресс 100, путь и байты.
+     * Каталогные поля не затрагиваются, см. [updateStatusById].
+     *
+     * @return число обновлённых строк (0 или 1).
+     */
+    @Query(
+        "UPDATE models SET status = :status, progress = :progress, " +
+            "file_path = :filePath, bytes_done = :bytesDone, " +
+            "updated_at = :updatedAt WHERE id = :id"
+    )
+    suspend fun finalizeDownloadById(
+        id: String,
+        status: String,
+        progress: Int,
+        filePath: String,
+        bytesDone: Long,
+        updatedAt: Long
+    ): Int
+
     @Delete
     suspend fun delete(entity: ModelEntity)
 

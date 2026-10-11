@@ -51,6 +51,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.InstallCheck
 import com.plox.llmtranslate.domain.model.InstalledModel
@@ -76,21 +79,32 @@ fun ModelsScreen(
     val processPssMb by viewModel.processPssMb.collectAsState()
     val ttsEngine by viewModel.ttsEngine.collectAsState()
 
-    // Опрос PSS процесса живёт здесь, а не в ViewModel: LaunchedEffect
-    // отменяется при выбросе экрана из composition (навигация с backstack) —
-    // это и есть гейт видимости, без обращения к AMS в фоне скрытого экрана.
-    // Первый замер — сразу при входе, далее раз в PSS_POLL_INTERVAL_MS;
-    // при уходе с экрана или разгрузке моделей значение обнуляется.
+    // Опрос PSS процесса живёт здесь, а не в ViewModel: цикл остановлен,
+    // пока экран убран из composition (навигация с backstack) ИЛИ приложение
+    // в фоне (<STARTED, activity STOP) — composition при этом жива, поэтому
+    // одного LaunchedEffect мало: repeatOnLifecycle гасит опрос до возврата
+    // на передний план, без обращений к AMS в фоне.
+    // Первый замер — сразу при входе/возврате на передний план, далее раз в
+    // PSS_POLL_INTERVAL_MS; при уходе в фон, с экрана или при разгрузке
+    // моделей значение обнуляется.
     val hasLoadedModels = uiState.loadedModels.isNotEmpty()
+    val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(hasLoadedModels) {
         if (!hasLoadedModels) {
             viewModel.resetProcessPss()
             return@LaunchedEffect
         }
         try {
-            while (true) {
-                viewModel.pollProcessPss()
-                delay(ModelsViewModel.PSS_POLL_INTERVAL_MS)
+            lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                try {
+                    while (true) {
+                        viewModel.pollProcessPss()
+                        delay(ModelsViewModel.PSS_POLL_INTERVAL_MS)
+                    }
+                } finally {
+                    // Уход в фон (<STARTED): опрос остановлен — сбрасываем показ.
+                    viewModel.resetProcessPss()
+                }
             }
         } finally {
             // Отмена при выбросе composition — сбрасываем показ PSS.

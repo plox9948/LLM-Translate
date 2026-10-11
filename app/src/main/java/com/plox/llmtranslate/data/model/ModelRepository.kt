@@ -57,6 +57,38 @@ class ModelRepository @Inject constructor(
         )
     }
 
+    /**
+     * Точечное обновление только статуса скачивания (ошибки, повторы).
+     * Каталогные поля не перезаписываются — безопаснее read-modify-write
+     * upsert'а при гонке с [syncCatalogRamFields].
+     *
+     * @return false, если запись удалена/не найдена (защита от гонки с
+     * cancel/delete — удалённая запись не восстанавливается).
+     */
+    suspend fun updateDownloadStatus(id: String, status: ModelStatus): Boolean =
+        dao.updateStatusById(id, status.name, System.currentTimeMillis()) > 0
+
+    /**
+     * Точечное обновление статуса и процента скачивания, каталожные поля
+     * не затрагиваются, см. [updateDownloadStatus].
+     */
+    suspend fun updateDownloadProgress(id: String, status: ModelStatus, progress: Int): Boolean =
+        dao.updateProgressById(id, status.name, progress, System.currentTimeMillis()) > 0
+
+    /**
+     * Точечное завершение скачивания: READY, прогресс 100, filePath, bytesDone.
+     * Каталогные поля не затрагиваются, см. [updateDownloadStatus].
+     */
+    suspend fun finalizeDownload(id: String, filePath: String, bytesDone: Long): Boolean =
+        dao.finalizeDownloadById(
+            id,
+            ModelStatus.READY.name,
+            100,
+            filePath,
+            bytesDone,
+            System.currentTimeMillis()
+        ) > 0
+
     suspend fun deleteById(id: String) {
         dao.deleteById(id)
     }

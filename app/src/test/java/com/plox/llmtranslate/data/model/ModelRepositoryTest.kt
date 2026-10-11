@@ -9,7 +9,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -52,6 +54,42 @@ class ModelRepositoryTest {
             store[id] = existing.copy(
                 ramRequiredMb = ramRequiredMb,
                 recommendedRamMb = recommendedRamMb,
+                updatedAt = updatedAt
+            )
+            return 1
+        }
+
+        override suspend fun updateStatusById(id: String, status: String, updatedAt: Long): Int {
+            val existing = store[id] ?: return 0
+            store[id] = existing.copy(status = status, updatedAt = updatedAt)
+            return 1
+        }
+
+        override suspend fun updateProgressById(
+            id: String,
+            status: String,
+            progress: Int,
+            updatedAt: Long
+        ): Int {
+            val existing = store[id] ?: return 0
+            store[id] = existing.copy(status = status, progress = progress, updatedAt = updatedAt)
+            return 1
+        }
+
+        override suspend fun finalizeDownloadById(
+            id: String,
+            status: String,
+            progress: Int,
+            filePath: String,
+            bytesDone: Long,
+            updatedAt: Long
+        ): Int {
+            val existing = store[id] ?: return 0
+            store[id] = existing.copy(
+                status = status,
+                progress = progress,
+                filePath = filePath,
+                bytesDone = bytesDone,
                 updatedAt = updatedAt
             )
             return 1
@@ -211,4 +249,55 @@ class ModelRepositoryTest {
             assertEquals(100, dao.store.getValue("imported").ramRequiredMb)
             assertNull(dao.getById("missing"))
         }
+
+    @Test
+    fun `partial download updates do not overwrite catalog ram fields`() = runTest {
+        val dao = FakeDao()
+        dao.upsert(
+            entity(id = "m1", status = ModelStatus.DOWNLOADING.name)
+                .copy(progress = 0, filePath = null, bytesDone = 0)
+        )
+        val repo = ModelRepository(dao)
+
+        // Синхронизация каталога обновила оценки ОЗУ (свежие RAM-значения).
+        repo.syncCatalogRamFields(listOf(card("m1", 480, 800)))
+
+        // Прогресс воркера — точечный UPDATE: RAM-поля и описание не тронуты.
+        assertTrue(repo.updateDownloadProgress("m1", ModelStatus.DOWNLOADING, 42))
+        assertEquals(42, dao.store.getValue("m1").progress)
+        assertEquals(ModelStatus.DOWNLOADING.name, dao.store.getValue("m1").status)
+        assertEquals(480, dao.store.getValue("m1").ramRequiredMb)
+        assertEquals(800, dao.store.getValue("m1").recommendedRamMb)
+
+        // Ошибочный статус — тоже точечно, RAM-поля целиком сохранены.
+        assertTrue(repo.updateDownloadStatus("m1", ModelStatus.ERROR))
+        assertEquals(ModelStatus.ERROR.name, dao.store.getValue("m1").status)
+        assertEquals(480, dao.store.getValue("m1").ramRequiredMb)
+        assertEquals(800, dao.store.getValue("m1").recommendedRamMb)
+        assertEquals(42, dao.store.getValue("m1").progress)
+
+        // Завершение: READY/100/filePath/bytesDone — RAM-поля снова не тронуты.
+        assertTrue(repo.finalizeDownload("m1", "/files/m1-final", 1000))
+        val final = dao.store.getValue("m1")
+        assertEquals(ModelStatus.READY.name, final.status)
+        assertEquals(100, final.progress)
+        assertEquals("/files/m1-final", final.filePath)
+        assertEquals(1000L, final.bytesDone)
+        assertEquals(480, final.ramRequiredMb)
+        assertEquals(800, final.recommendedRamMb)
+        assertEquals("Тест m1", final.displayName)
+    }
+
+    @Test
+    fun `partial updates on missing record return false`() = runTest {
+        val dao = FakeDao()
+        dao.upsert(entity(id = "keep"))
+        val repo = ModelRepository(dao)
+        dao.deleteById("keep")
+
+        assertFalse(repo.updateDownloadStatus("keep", ModelStatus.ERROR))
+        assertFalse(repo.updateDownloadProgress("keep", ModelStatus.DOWNLOADING, 10))
+        assertFalse(repo.finalizeDownload("keep", "/files/keep", 5))
+        assertNull(dao.getById("keep"))
+    }
 }

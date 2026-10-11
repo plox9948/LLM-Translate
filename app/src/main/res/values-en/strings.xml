@@ -74,7 +74,10 @@
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_unload_models">Model unloading</string>
     <string name="settings_unload_now">Immediately</string>
-    <string name="settings_unload_after_default">After %1$d minutes (default)</string>
+    <plurals name="settings_unload_after_default">
+        <item quantity="one">After %1$d minute (default)</item>
+        <item quantity="other">After %1$d minutes (default)</item>
+    </plurals>
     <string name="settings_unload_after_15">After 15 minutes</string>
     <string name="settings_unload_after_30">After 30 minutes</string>
     <string name="settings_unload_never">Never unload</string>

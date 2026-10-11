@@ -38,13 +38,19 @@
         </activity>
 
         <!--
-            Отключаем ТОЛЬКО дефолтный WorkManagerInitializer (androidx.startup),
-            т.к. Application реализует Configuration.Provider — иначе
-            WorkManager инициализируется дважды. Сам InitializationProvider
-            удалять нельзя (tools:node="remove"): через него lifecycle-process
-            регистрирует ProcessLifecycleInitializer, без него
-            ProcessLifecycleOwner не attach-ится к приложению и не рассылает
-            ON_START/ON_STOP — фоновая выгрузка рантаймов не планировалась.
+            Отключаем ТОЛЬКО конкретные инициализаторы androidx.startup,
+            сам InitializationProvider удалять нельзя (tools:node="remove"):
+            через него lifecycle-process регистрирует
+            ProcessLifecycleInitializer, без него ProcessLifecycleOwner не
+            attach-ится к приложению и не рассылает ON_START/ON_STOP —
+            фоновая выгрузка рантаймов не планировалась.
+            - WorkManagerInitializer: Application реализует
+              Configuration.Provider — иначе WorkManager инициализируется
+              дважды.
+            - EmojiCompatInitializer: под Jetpack Compose no-op (Compose сам
+              рендерит эмодзи), но через provider становился живым и тратил
+              микросекунды старта. ProcessLifecycleInitializer и
+              ProfileInstallerInitializer остаются живыми.
         -->
         <provider
             android:name="androidx.startup.InitializationProvider"
@@ -53,6 +59,9 @@
             tools:node="merge">
             <meta-data
                 android:name="androidx.work.WorkManagerInitializer"
+                tools:node="remove" />
+            <meta-data
+                android:name="androidx.emoji2.text.EmojiCompatInitializer"
                 tools:node="remove" />
         </provider>
     </application>

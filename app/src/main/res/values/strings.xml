@@ -76,7 +76,12 @@
     <string name="settings_theme_dark">Тёмная</string>
     <string name="settings_unload_models">Выгрузка моделей</string>
     <string name="settings_unload_now">Сразу</string>
-    <string name="settings_unload_after_default">Через %1$d минут (по умолчанию)</string>
+    <plurals name="settings_unload_after_default">
+        <item quantity="one">Через %1$d минуту (по умолчанию)</item>
+        <item quantity="few">Через %1$d минуты (по умолчанию)</item>
+        <item quantity="many">Через %1$d минут (по умолчанию)</item>
+        <item quantity="other">Через %1$d минут (по умолчанию)</item>
+    </plurals>
     <string name="settings_unload_after_15">Через 15 минут</string>
     <string name="settings_unload_after_30">Через 30 минут</string>
     <string name="settings_unload_never">Не выгружать</string>
