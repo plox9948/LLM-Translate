@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.domain
 
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
@@ -22,6 +23,21 @@ class BackgroundUnloadSchedulerTest {
         override suspend fun timeoutMinutes(): Int {
             calls++
             return minutes
+        }
+    }
+
+    /** Поставщик, чьё чтение настройки никогда не завершается сам — висит до отмены. */
+    private class HangingTimeoutProvider : UnloadTimeoutProvider {
+        var started = false
+            private set
+        var cancelled = false
+            private set
+
+        override suspend fun timeoutMinutes(): Int = try {
+            started = true
+            awaitCancellation()
+        } finally {
+            cancelled = true
         }
     }
 
@@ -152,5 +168,24 @@ class BackgroundUnloadSchedulerTest {
         scheduler.cancel()
 
         assertEquals(1, unloads)
+    }
+
+    @Test
+    fun `cancel during timeout read aborts read and skips unload`() = runTest {
+        val provider = HangingTimeoutProvider()
+        val scheduler = BackgroundUnloadScheduler(backgroundScope, provider)
+        var unloads = 0
+
+        scheduler.schedule { unloads++ }
+        // Дать корутине дойти до подвески на чтении настройки.
+        runCurrent()
+        assertEquals(true, provider.started)
+
+        scheduler.cancel()
+        runCurrent()
+
+        // Чтение прервано отменой, обратного вызова не было.
+        assertEquals(true, provider.cancelled)
+        assertEquals(0, unloads)
     }
 }

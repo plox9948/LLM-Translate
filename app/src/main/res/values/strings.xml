@@ -54,7 +54,9 @@
     <string name="models_loaded_title">Загружено в память</string>
     <string name="models_loaded_estimate">Оценка потребления: ~%1$d МБ</string>
     <string name="models_loaded_process">Память процесса: %1$d МБ</string>
-    <string name="models_builtin">Встроенная модель — выбор в настройках</string>
+    <string name="models_loaded_cat_translation">Перевод</string>
+    <string name="models_loaded_cat_stt">Речь</string>
+    <string name="models_builtin">Встроенный движок — выберите кнопкой слева</string>
     <string name="models_cancel_download">Отменить</string>
     <string name="models_choose">Выбрать</string>
     <string name="models_export">Экспорт</string>
@@ -74,7 +76,7 @@
     <string name="settings_theme_dark">Тёмная</string>
     <string name="settings_unload_models">Выгрузка моделей</string>
     <string name="settings_unload_now">Сразу</string>
-    <string name="settings_unload_after_5">Через 5 минут (по умолчанию)</string>
+    <string name="settings_unload_after_default">Через %1$d минут (по умолчанию)</string>
     <string name="settings_unload_after_15">Через 15 минут</string>
     <string name="settings_unload_after_30">Через 30 минут</string>
     <string name="settings_unload_never">Не выгружать</string>

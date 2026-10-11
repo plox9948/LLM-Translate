@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.data.model
 
 import com.plox.llmtranslate.domain.model.InstalledModel
+import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
@@ -58,6 +59,44 @@ class ModelRepository @Inject constructor(
 
     suspend fun deleteById(id: String) {
         dao.deleteById(id)
+    }
+
+    /**
+     * Синхронизация полей ram_required_mb/recommended_ram_mb у существующих
+     * записей БД с актуальным каталогом по id.
+     *
+     * Поля копируются из каталога один раз при старте скачивания, поэтому
+     * ранее установленные модели хранят устаревшие оценки (карточка
+     * «Загружено в память» и предупреждение о ОЗУ показали бы старые значения).
+     * Вызывается при загрузке каталога на старте процесса (см. OfflineTranslatorApp).
+     *
+     * Обновляются только реально существующие встроенные записи, значение
+     * которых отличается от каталожного; импортированные модели не затрагиваются.
+     *
+     * @param catalog карточки актуального (объединённого) каталога.
+     * @return число обновлённых записей.
+     */
+    suspend fun syncCatalogRamFields(catalog: List<ModelCard>): Int {
+        var updated = 0
+        for (card in catalog) {
+            val existing = dao.getById(card.id) ?: continue
+            if (existing.ramRequiredMb == card.ramRequiredMb &&
+                existing.recommendedRamMb == card.recommendedRamMb
+            ) {
+                continue
+            }
+            val rows = dao.syncRamFields(
+                id = card.id,
+                ramRequiredMb = card.ramRequiredMb,
+                recommendedRamMb = card.recommendedRamMb,
+                updatedAt = System.currentTimeMillis()
+            )
+            updated += rows
+        }
+        if (updated > 0) {
+            Timber.d("Синхронизировано оценок ОЗУ с каталогом: $updated")
+        }
+        return updated
     }
 
     /**

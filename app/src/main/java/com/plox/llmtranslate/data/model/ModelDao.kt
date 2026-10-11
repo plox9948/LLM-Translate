@@ -34,6 +34,29 @@ interface ModelDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: ModelEntity)
 
+    /**
+     * Синхронизация оценок ОЗУ существующей встроенной записи с актуальным
+     * каталогом (значения в БД копируются из каталога один раз при старте
+     * скачивания и устаревают после его обновления).
+     *
+     * UPDATE по id: отсутствующая запись не создаётся; затрагиваются только
+     * каталожные записи (is_builtin = 1) — импортированные модели каталогу
+     * не принадлежат. Схема не меняется, миграция не требуется.
+     *
+     * @return число обновлённых строк (0 или 1).
+     */
+    @Query(
+        "UPDATE models SET ram_required_mb = :ramRequiredMb, " +
+            "recommended_ram_mb = :recommendedRamMb, updated_at = :updatedAt " +
+            "WHERE id = :id AND is_builtin = 1"
+    )
+    suspend fun syncRamFields(
+        id: String,
+        ramRequiredMb: Int,
+        recommendedRamMb: Int,
+        updatedAt: Long
+    ): Int
+
     @Delete
     suspend fun delete(entity: ModelEntity)
 

@@ -4,6 +4,7 @@ import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.plox.llmtranslate.domain.model.RuntimeError
+import com.plox.llmtranslate.domain.model.TtsEngines
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -98,7 +99,7 @@ class TtsRuntime @Inject constructor(
      * движка (Android < 11, не установлен) возвращает null — движок по умолчанию.
      */
     private fun resolveEnginePackage(engine: String): String? {
-        if (engine != "rhvoice" && engine != "espeak") return null
+        if (engine != TtsEngines.RHVOICE && engine != TtsEngines.ESPEAK) return null
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
             Timber.w("Выбор TTS-движка доступен с Android 11+, используем движок по умолчанию")
             return null

@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.TtsEngines
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,7 +55,7 @@ class ModelPreferences @Inject constructor(
     // --- Настройки приложения ---
 
     val ttsEngine: Flow<String> =
-        context.dataStore.data.map { it[stringPreferencesKey("tts_engine")] ?: "system" }
+        context.dataStore.data.map { it[stringPreferencesKey("tts_engine")] ?: TtsEngines.SYSTEM }
 
     suspend fun setTtsEngine(engine: String) {
         context.dataStore.edit { it[stringPreferencesKey("tts_engine")] = engine }

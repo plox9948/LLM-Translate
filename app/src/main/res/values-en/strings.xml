@@ -52,7 +52,9 @@
     <string name="models_loaded_title">Loaded into memory</string>
     <string name="models_loaded_estimate">Estimated usage: ~%1$d MB</string>
     <string name="models_loaded_process">Process memory: %1$d MB</string>
-    <string name="models_builtin">Built-in model — choose in Settings</string>
+    <string name="models_loaded_cat_translation">Translation</string>
+    <string name="models_loaded_cat_stt">Speech</string>
+    <string name="models_builtin">Built-in engine — select it with the button on the left</string>
     <string name="models_cancel_download">Cancel</string>
     <string name="models_choose">Select</string>
     <string name="models_export">Export</string>
@@ -72,7 +74,7 @@
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_unload_models">Model unloading</string>
     <string name="settings_unload_now">Immediately</string>
-    <string name="settings_unload_after_5">After 5 minutes (default)</string>
+    <string name="settings_unload_after_default">After %1$d minutes (default)</string>
     <string name="settings_unload_after_15">After 15 minutes</string>
     <string name="settings_unload_after_30">After 30 minutes</string>
     <string name="settings_unload_never">Never unload</string>

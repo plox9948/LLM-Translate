@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.data.model
 
+import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
@@ -38,6 +39,22 @@ class ModelRepositoryTest {
 
         override suspend fun upsert(entity: ModelEntity) {
             store[entity.id] = entity
+        }
+
+        override suspend fun syncRamFields(
+            id: String,
+            ramRequiredMb: Int,
+            recommendedRamMb: Int,
+            updatedAt: Long
+        ): Int {
+            val existing = store[id] ?: return 0
+            if (!existing.isBuiltin) return 0
+            store[id] = existing.copy(
+                ramRequiredMb = ramRequiredMb,
+                recommendedRamMb = recommendedRamMb,
+                updatedAt = updatedAt
+            )
+            return 1
         }
 
         override suspend fun delete(entity: ModelEntity) {
@@ -148,4 +165,50 @@ class ModelRepositoryTest {
         assertEquals(listOf("/models/GGUF/legacy1", "/models/VOSK/legacy2"), deleted)
         assertEquals(listOf("good"), dao.store.keys.toList())
     }
+
+    private fun card(id: String, ramRequiredMb: Int, recommendedRamMb: Int) = ModelCard(
+        id = id,
+        category = ModelCategory.TRANSLATION,
+        displayName = "Карточка $id",
+        description = "",
+        runtime = RuntimeType.MARIAN_ONNX,
+        sizeBytes = 1000,
+        ramRequiredMb = ramRequiredMb,
+        languages = listOf("ru", "en"),
+        quality = 3,
+        speed = 3,
+        url = "https://example.invalid/$id",
+        urls = emptyList(),
+        sha256 = null,
+        license = "MIT",
+        minAndroidSdk = 26,
+        recommendedRamMb = recommendedRamMb
+    )
+
+    @Test
+    fun `syncCatalogRamFields updates only existing builtin records with differing values`() =
+        runTest {
+            val dao = FakeDao()
+            dao.upsert(entity(id = "known")) // ramRequiredMb=100, recommendedRamMb=200
+            dao.upsert(entity(id = "same"))
+            dao.upsert(entity(id = "imported").copy(isBuiltin = false))
+            val repo = ModelRepository(dao)
+
+            val updated = repo.syncCatalogRamFields(
+                listOf(
+                    card("known", 480, 800),   // значения отличаются — обновится
+                    card("same", 100, 200),    // совпадают — пропускаем запись
+                    card("missing", 300, 500), // в БД нет — не создаём
+                    card("imported", 999, 999) // импортированная — не каталожная
+                )
+            )
+
+            assertEquals(1, updated)
+            assertEquals(480, dao.store.getValue("known").ramRequiredMb)
+            assertEquals(800, dao.store.getValue("known").recommendedRamMb)
+            assertEquals(100, dao.store.getValue("same").ramRequiredMb)
+            assertEquals(200, dao.store.getValue("same").recommendedRamMb)
+            assertEquals(100, dao.store.getValue("imported").ramRequiredMb)
+            assertNull(dao.getById("missing"))
+        }
 }

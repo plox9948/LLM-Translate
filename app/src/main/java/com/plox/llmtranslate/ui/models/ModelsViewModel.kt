@@ -13,16 +13,15 @@ import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.TtsEngines
 import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import com.plox.llmtranslate.domain.runtime.ProcessMemoryReader
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -68,27 +67,30 @@ class ModelsViewModel @Inject constructor(
     private val preferences: ModelPreferences
 ) : ViewModel() {
 
-    companion object {
-        /** Интервал опроса PSS процесса, пока в памяти есть загруженные модели. */
-        private const val PSS_POLL_INTERVAL_MS = 3_000L
+    internal companion object {
+        /** Интервал опроса PSS процесса, пока экран видим и в памяти есть загруженные модели. */
+        internal const val PSS_POLL_INTERVAL_MS = 3_000L
     }
 
     private val _deviceInfo = MutableStateFlow<DeviceInfo?>(null)
     val deviceInfo: StateFlow<DeviceInfo?> = _deviceInfo
 
     /**
-     * Фактический PSS процесса, МБ (AMS, учитывает native-память инференса).
-     * Опрашивается, только пока в ОЗУ есть загруженные модели; иначе null.
+     * Фактический PSS процесса, МБ (AMS, учитывает native-память инференса);
+     * null — нет загруженных моделей, экран скрыт или чтение AMS не удалось.
+     * Цикл опроса живёт в Compose (LaunchedEffect на экране «Модели»):
+     * UI вызывает [pollProcessPss] по таймеру, пока экран в composition,
+     * и [resetProcessPss] при уходе с экрана.
      */
     private val _processPssMb = MutableStateFlow<Int?>(null)
     val processPssMb: StateFlow<Int?> = _processPssMb
 
     /**
-     * Выбранный движок синтеза речи (настройка ttsEngine):
-     * "system" | "rhvoice" | "espeak". Реактивно обновляется при смене
-     * на экране «Настройки».
+     * Выбранный движок синтеза речи (настройка ttsEngine): идентификаторы
+     * из [TtsEngines]. Реактивно обновляется при смене на экране «Настройки»
+     * или выбором на экране «Модели».
      */
-    private val _ttsEngine = MutableStateFlow("system")
+    private val _ttsEngine = MutableStateFlow(TtsEngines.SYSTEM)
     val ttsEngine: StateFlow<String> = _ttsEngine
 
     private val activeIdsFlow: Flow<Map<ModelCategory, String?>> =
@@ -147,22 +149,23 @@ class ModelsViewModel @Inject constructor(
                 _ttsEngine.value = engine
             }
         }
-        viewModelScope.launch {
-            // Пока в ОЗУ есть модели — периодически читаем фактический PSS
-            // процесса; при разгрузке обнуляем и останавливаем опрос.
-            // collectLatest отменяет цикл опроса при каждом изменении списка
-            // и при уничтожении ViewModel (viewModelScope) — утечек нет.
-            modelManager.loadedModels.collectLatest { loaded ->
-                if (loaded.isEmpty()) {
-                    _processPssMb.value = null
-                } else {
-                    while (true) {
-                        _processPssMb.value = processMemoryReader.processPssMb()
-                        delay(PSS_POLL_INTERVAL_MS)
-                    }
-                }
-            }
-        }
+    }
+
+    /**
+     * Один замер фактического PSS процесса и запись в [processPssMb].
+     * Вызывается циклом опроса на экране «Модели» (LaunchedEffect):
+     * чтение AMS идёт на IO-диспетчере, при сбое — null.
+     */
+    suspend fun pollProcessPss() {
+        _processPssMb.value = processMemoryReader.processPssMb()
+    }
+
+    /**
+     * Обнулить PSS: цикл опроса остановлен (экран «Модели» убран из
+     * composition или модели выгружены из ОЗУ).
+     */
+    fun resetProcessPss() {
+        _processPssMb.value = null
     }
 
     val licenseConfirmModel = MutableStateFlow<ModelCard?>(null)

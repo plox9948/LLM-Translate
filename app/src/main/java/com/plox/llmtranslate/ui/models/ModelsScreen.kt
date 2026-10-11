@@ -2,6 +2,8 @@ package com.plox.llmtranslate.ui.models
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -14,6 +16,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
@@ -29,7 +33,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -42,7 +45,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -54,6 +59,7 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 /**
@@ -69,6 +75,28 @@ fun ModelsScreen(
     val blockedReason by viewModel.blockedReason.collectAsState()
     val processPssMb by viewModel.processPssMb.collectAsState()
     val ttsEngine by viewModel.ttsEngine.collectAsState()
+
+    // Опрос PSS процесса живёт здесь, а не в ViewModel: LaunchedEffect
+    // отменяется при выбросе экрана из composition (навигация с backstack) —
+    // это и есть гейт видимости, без обращения к AMS в фоне скрытого экрана.
+    // Первый замер — сразу при входе, далее раз в PSS_POLL_INTERVAL_MS;
+    // при уходе с экрана или разгрузке моделей значение обнуляется.
+    val hasLoadedModels = uiState.loadedModels.isNotEmpty()
+    LaunchedEffect(hasLoadedModels) {
+        if (!hasLoadedModels) {
+            viewModel.resetProcessPss()
+            return@LaunchedEffect
+        }
+        try {
+            while (true) {
+                viewModel.pollProcessPss()
+                delay(ModelsViewModel.PSS_POLL_INTERVAL_MS)
+            }
+        } finally {
+            // Отмена при выбросе composition — сбрасываем показ PSS.
+            viewModel.resetProcessPss()
+        }
+    }
 
     // SAF: импорт своего GGUF.
     val importLauncher = rememberLauncherForActivityResult(
@@ -347,7 +375,16 @@ private fun LoadedRamCard(models: List<LoadedModelInfo>, processPssMb: Int?) {
             )
             Spacer(modifier = Modifier.height(4.dp))
             models.forEach { model ->
-                Row {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Краткая категория модели как префикс строки — различение
+                    // «Перевод» / «Речь» в списке загруженного.
+                    Text(
+                        text = stringResource(loadedCategoryLabelRes(model.category)),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = model.displayName,
                         style = MaterialTheme.typography.bodySmall,
@@ -382,6 +419,16 @@ private fun LoadedRamCard(models: List<LoadedModelInfo>, processPssMb: Int?) {
     }
 }
 
+/**
+ * Краткая подпись категории для строк карточки «Загружено в память».
+ */
+@StringRes
+private fun loadedCategoryLabelRes(category: ModelCategory): Int = when (category) {
+    ModelCategory.TRANSLATION -> R.string.models_loaded_cat_translation
+    ModelCategory.STT -> R.string.models_loaded_cat_stt
+    ModelCategory.TTS -> R.string.models_category_tts
+}
+
 @Composable
 private fun ModelCardItem(
     card: ModelCard,
@@ -411,12 +458,23 @@ private fun ModelCardItem(
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Радиокнопка активной модели / выбранного TTS-движка.
-                IconButton(
-                    onClick = {
-                        if (isTtsEngine || installedModel?.isReady == true) onActive()
-                    },
-                    modifier = Modifier.size(24.dp)
+                // Радиокнопка активной модели / выбранного TTS-движка:
+                // selectable с ролью RadioButton — доступный переключатель
+                // (TalkBack объявляет состояние). Строка карточки не кликабельна
+                // (прошлый фикс радиокнопок), выбор — только этой кнопкой или
+                // кнопкой «Выбрать» ниже. Неактивная unavailable-модель — disabled.
+                val canSelect = isTtsEngine || installedModel?.isReady == true
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .selectable(
+                            selected = isActive,
+                            enabled = canSelect,
+                            role = Role.RadioButton,
+                            onClick = onActive
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = if (isActive) Icons.Filled.RadioButtonChecked

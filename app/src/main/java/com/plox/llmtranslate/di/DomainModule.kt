@@ -14,6 +14,7 @@ import dagger.hilt.android.components.ViewModelComponent
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -55,6 +56,10 @@ abstract class DomainModule {
         ): UnloadTimeoutProvider = UnloadTimeoutProvider {
             try {
                 preferences.unloadTimeoutMinutes.first()
+            } catch (e: CancellationException) {
+                // Отмену корутины не проглатываем — иначе scheduler решит,
+                // что настройка прочитана, и выгрузит по значению по умолчанию.
+                throw e
             } catch (e: Exception) {
                 Timber.w(e, "Не удалось прочитать тайм-аут выгрузки, беру значение по умолчанию")
                 ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES

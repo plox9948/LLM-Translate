@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.data.backup
 
+import com.plox.llmtranslate.domain.model.TtsEngines
 import kotlinx.serialization.Serializable
 
 /**
@@ -45,7 +46,7 @@ data class BackupSettings(
     val activeTranslation: String? = null,
     val activeStt: String? = null,
     val activeTts: String? = null,
-    val ttsEngine: String = "system",
+    val ttsEngine: String = TtsEngines.SYSTEM,
     val uiLanguage: String = "system",
     val theme: String = "system"
 )

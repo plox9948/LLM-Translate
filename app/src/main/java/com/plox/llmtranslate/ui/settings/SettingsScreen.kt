@@ -29,6 +29,7 @@ import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.BackgroundUnloadScheduler
+import com.plox.llmtranslate.domain.model.TtsEngines
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,7 +40,7 @@ import javax.inject.Inject
  * Состояние настроек.
  */
 data class SettingsUiState(
-    val ttsEngine: String = "system",
+    val ttsEngine: String = TtsEngines.SYSTEM,
     val uiLanguage: String = "system",
     val theme: String = "system",
     val unloadTimeoutMinutes: Int = ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES
@@ -130,9 +131,9 @@ fun SettingsScreen(
             selected = state.ttsEngine,
             onSelect = viewModel::onTtsEngineChange,
             options = listOf(
-                "system" to stringResource(R.string.settings_tts_system),
-                "rhvoice" to stringResource(R.string.settings_tts_rhvoice),
-                "espeak" to stringResource(R.string.settings_tts_espeak)
+                TtsEngines.SYSTEM to stringResource(R.string.settings_tts_system),
+                TtsEngines.RHVOICE to stringResource(R.string.settings_tts_rhvoice),
+                TtsEngines.ESPEAK to stringResource(R.string.settings_tts_espeak)
             )
         )
 
@@ -161,6 +162,9 @@ fun SettingsScreen(
         )
 
         // Выгрузка моделей при сворачивании.
+        // Опция «по умолчанию» собирает и значение, и подпись из одной
+        // константы, чтобы минуты в тексте не разъезжались с реальным значением.
+        val defaultUnloadMinutes = ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES
         OptionCard(
             titleRes = R.string.settings_unload_models,
             selected = state.unloadTimeoutMinutes.toString(),
@@ -168,8 +172,8 @@ fun SettingsScreen(
             options = listOf(
                 BackgroundUnloadScheduler.UNLOAD_IMMEDIATELY.toString() to
                     stringResource(R.string.settings_unload_now),
-                ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES.toString() to
-                    stringResource(R.string.settings_unload_after_5),
+                defaultUnloadMinutes.toString() to
+                    stringResource(R.string.settings_unload_after_default, defaultUnloadMinutes),
                 "15" to stringResource(R.string.settings_unload_after_15),
                 "30" to stringResource(R.string.settings_unload_after_30),
                 BackgroundUnloadScheduler.NEVER_UNLOAD.toString() to

@@ -23,13 +23,29 @@ enum class RuntimeType {
 }
 
 /**
+ * Канонические идентификаторы TTS-движков — значения настройки `tts_engine`
+ * (DataStore). Единственный источник строковых литералов для всех слоёв
+ * (настройки, экраны, рантайм, бэкап).
+ */
+object TtsEngines {
+    /** Системный Android TTS (движок по умолчанию). */
+    const val SYSTEM = "system"
+
+    /** RHVoice. */
+    const val RHVOICE = "rhvoice"
+
+    /** eSpeak NG. */
+    const val ESPEAK = "espeak"
+}
+
+/**
  * Идентификатор TTS-движка (настройка ttsEngine), сопоставленный этому рантайму,
  * или null, если рантайм не относится к TTS.
  */
 fun RuntimeType.ttsEngineId(): String? = when (this) {
-    RuntimeType.SYSTEM_TTS -> "system"
-    RuntimeType.RHVOICE -> "rhvoice"
-    RuntimeType.ESPEAK -> "espeak"
+    RuntimeType.SYSTEM_TTS -> TtsEngines.SYSTEM
+    RuntimeType.RHVOICE -> TtsEngines.RHVOICE
+    RuntimeType.ESPEAK -> TtsEngines.ESPEAK
     else -> null
 }
 

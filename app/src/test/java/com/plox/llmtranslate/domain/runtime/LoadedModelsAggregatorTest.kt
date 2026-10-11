@@ -9,6 +9,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -175,5 +178,41 @@ class LoadedModelsAggregatorTest {
 
         marian.release()
         assertEquals(emptyList<LoadedModelInfo>(), snapshot())
+    }
+
+    @Test
+    fun `flow re-emits snapshot when engine state changes`() = runTest {
+        val marianState = MutableStateFlow<LoadedModelInfo?>(null)
+        val sttState = MutableStateFlow<LoadedModelInfo?>(null)
+        val snapshots = mutableListOf<List<LoadedModelInfo>>()
+
+        // Живая подписка: каждый emit любого движка даёт новый снапшот потока.
+        val collector = launch {
+            LoadedModelsAggregator.merge(listOf(marianState, sttState)).toList(snapshots)
+        }
+        runCurrent()
+        assertEquals(listOf(emptyList<LoadedModelInfo>()), snapshots)
+
+        val opus = LoadedModelInfo(
+            "opus-ru-en", "Opus-MT Tiny (RU→EN)", ModelCategory.TRANSLATION, 480
+        )
+        marianState.value = opus
+        runCurrent()
+        assertEquals(2, snapshots.size)
+        assertEquals(listOf(opus), snapshots.last())
+
+        val zipformer = LoadedModelInfo(
+            "zipformer-ru", "Zipformer (RU)", ModelCategory.STT, 310
+        )
+        sttState.value = zipformer
+        runCurrent()
+        assertEquals(listOf(opus, zipformer), snapshots.last())
+
+        marianState.value = null
+        runCurrent()
+        assertEquals(listOf(zipformer), snapshots.last())
+        assertEquals(4, snapshots.size)
+
+        collector.cancel()
     }
 }
