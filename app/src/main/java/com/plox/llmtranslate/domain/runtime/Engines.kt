@@ -2,12 +2,21 @@ package com.plox.llmtranslate.domain.runtime
 
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.RuntimeError
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Общий интерфейс рантаймов перевода.
  * Реализации: MarianOnnxRuntime (Marian MT), IndicTransOnnxRuntime (IndicTrans2).
  */
 interface TranslationEngine {
+
+    /**
+     * Реактивное состояние: модель, загруженная в ОЗУ этим движком,
+     * или null (движок разгружен). Обновляется под мьютексом движка
+     * при загрузке/разгрузке.
+     */
+    val loadedModel: StateFlow<LoadedModelInfo?>
+
     /** Убедиться, что загружена модель [model]. */
     suspend fun ensureLoaded(model: InstalledModel): RuntimeError?
 
@@ -30,6 +39,14 @@ interface TranslationEngine {
  * Реализация: SherpaSttEngine (sherpa-onnx).
  */
 interface SttEngine {
+
+    /**
+     * Реактивное состояние: модель, загруженная в ОЗУ этим движком,
+     * или null (движок разгружен). Обновляется под мьютексом движка
+     * при загрузке/разгрузке.
+     */
+    val loadedModel: StateFlow<LoadedModelInfo?>
+
     /** Убедиться, что загружена модель [model]. */
     suspend fun ensureLoaded(model: InstalledModel): RuntimeError?
 

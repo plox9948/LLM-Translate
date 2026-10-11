@@ -7,9 +7,12 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.plox.llmtranslate.domain.model.InstalledModel
+import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.util.WavReader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -52,6 +55,11 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
      */
     private val recognizerMutex = Mutex()
 
+    private val _loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
+
+    /** Состояние загруженной модели; пишется только под [recognizerMutex]. */
+    override val loadedModel: StateFlow<LoadedModelInfo?> = _loadedModel
+
     val isLoaded: Boolean
         get() = recognizer != null
 
@@ -86,6 +94,12 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
                     whisperLanguage = if (info.type == TYPE_WHISPER) "auto" else null
                     recognizer = buildRecognizer(info, whisperLanguage)
                     loadedModelId = model.id
+                    _loadedModel.value = LoadedModelInfo(
+                        modelId = model.id,
+                        displayName = model.displayName,
+                        category = ModelCategory.STT,
+                        ramRequiredMb = model.ramRequiredMb
+                    )
                     Timber.d("Sherpa-модель загружена (${info.type}): $path")
                     null
                 } catch (e: Exception) {
@@ -124,6 +138,7 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
                         recognizer = null
                         whisperLanguage = null
                         loadedModelId = null
+                        _loadedModel.value = null
                         return@withContext Result.failure(
                             RuntimeError.LoadFailed(
                                 "sherpa",
@@ -192,6 +207,7 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
         modelInfo = null
         whisperLanguage = null
         loadedModelId = null
+        _loadedModel.value = null
     }
 
     /**

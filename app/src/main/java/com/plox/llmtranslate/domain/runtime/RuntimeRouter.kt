@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.domain.runtime
 
 import com.plox.llmtranslate.domain.model.RuntimeType
+import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -14,6 +15,19 @@ class RuntimeRouter @Inject constructor(
     private val indicTransOnnxRuntime: IndicTransOnnxRuntime,
     private val sherpaSttEngine: SherpaSttEngine
 ) {
+
+    /**
+     * Реактивный список моделей, загруженных в ОЗУ прямо сейчас:
+     * движки перевода (Marian, IndicTrans) + STT (Sherpa). Пуст, если
+     * всё разгружено; обновляется при каждой загрузке/разгрузке движка.
+     */
+    val loadedModels: Flow<List<LoadedModelInfo>> = LoadedModelsAggregator.merge(
+        listOf(
+            marianOnnxRuntime.loadedModel,
+            indicTransOnnxRuntime.loadedModel,
+            sherpaSttEngine.loadedModel
+        )
+    )
 
     /**
      * Движок перевода для типа модели.

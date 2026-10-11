@@ -5,9 +5,12 @@ import ai.onnxruntime.OnnxTensorLike
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.plox.llmtranslate.domain.model.InstalledModel
+import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.tokenizer.TokenizerJson
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -80,6 +83,11 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
      */
     private val sessionMutex = Mutex()
 
+    private val _loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
+
+    /** Состояние загруженной модели; пишется только под [sessionMutex]. */
+    override val loadedModel: StateFlow<LoadedModelInfo?> = _loadedModel
+
     val isLoaded: Boolean
         get() = encoderSession != null && decoderSession != null && decoderPastSession != null
 
@@ -140,6 +148,12 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
                     parseGenerationConfig(dir.resolve("generation_config.json"))
 
                     loadedModelId = modelInfo.id
+                    _loadedModel.value = LoadedModelInfo(
+                        modelId = modelInfo.id,
+                        displayName = modelInfo.displayName,
+                        category = ModelCategory.TRANSLATION,
+                        ramRequiredMb = modelInfo.ramRequiredMb
+                    )
                     null
                 } catch (e: Exception) {
                     Timber.e(e, "Не удалось загрузить Marian-модель $path")
@@ -296,6 +310,7 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
         decoderPastSession = null
         tokenizer = null
         loadedModelId = null
+        _loadedModel.value = null
     }
 
     /**

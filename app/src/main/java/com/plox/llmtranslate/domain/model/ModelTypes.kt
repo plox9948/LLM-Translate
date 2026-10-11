@@ -23,6 +23,17 @@ enum class RuntimeType {
 }
 
 /**
+ * Идентификатор TTS-движка (настройка ttsEngine), сопоставленный этому рантайму,
+ * или null, если рантайм не относится к TTS.
+ */
+fun RuntimeType.ttsEngineId(): String? = when (this) {
+    RuntimeType.SYSTEM_TTS -> "system"
+    RuntimeType.RHVOICE -> "rhvoice"
+    RuntimeType.ESPEAK -> "espeak"
+    else -> null
+}
+
+/**
  * Статус установки модели.
  */
 enum class ModelStatus {

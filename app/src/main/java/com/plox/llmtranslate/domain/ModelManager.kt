@@ -5,6 +5,7 @@ import com.plox.llmtranslate.domain.model.InstallCheck
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -26,6 +27,13 @@ interface ModelManager {
 
     /** Свободно место на диске под модели. */
     val diskUsage: Flow<DiskUsage>
+
+    /**
+     * Модели, загруженные в ОЗУ рантаймами в текущий момент
+     * (движки перевода + STT). Реактивно: новый список при каждой
+     * загрузке/разгрузке; пуст после [releaseAllRuntimes].
+     */
+    val loadedModels: Flow<List<LoadedModelInfo>>
 
     /**
      * Выбрать активную модель категории.
@@ -61,7 +69,9 @@ interface ModelManager {
     /**
      * Освободить память: разгрузить все рантаймы (включая активные —
      * они будут заново загружены при следующем инференсе).
-     * Вызывается при ON_STOP процесса. Асинхронно: разгрузка каждого
+     * Вызывается [com.plox.llmtranslate.domain.BackgroundUnloadScheduler]
+     * после ON_STOP процесса по истечении тайм-аута из настроек.
+     * Асинхронно: разгрузка каждого
      * движка ожидает окончания активного инференса.
      */
     fun releaseAllRuntimes()

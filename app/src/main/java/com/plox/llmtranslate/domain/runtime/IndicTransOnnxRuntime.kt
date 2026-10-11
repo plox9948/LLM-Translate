@@ -5,10 +5,13 @@ import ai.onnxruntime.OnnxTensorLike
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.plox.llmtranslate.domain.model.InstalledModel
+import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.tokenizer.IndicProcessorLite
 import com.plox.llmtranslate.domain.tokenizer.TokenizerJson
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -67,6 +70,11 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
      * это приемлемо, release() вызывается вне главного потока.
      */
     private val sessionMutex = Mutex()
+
+    private val _loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
+
+    /** Состояние загруженной модели; пишется только под [sessionMutex]. */
+    override val loadedModel: StateFlow<LoadedModelInfo?> = _loadedModel
 
     val isLoaded: Boolean
         get() = encoderSession != null && decoderSession != null && decoderPastSession != null
@@ -138,6 +146,12 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                     parseTokenizerMeta(metaFile)
 
                     loadedModelId = modelInfo.id
+                    _loadedModel.value = LoadedModelInfo(
+                        modelId = modelInfo.id,
+                        displayName = modelInfo.displayName,
+                        category = ModelCategory.TRANSLATION,
+                        ramRequiredMb = modelInfo.ramRequiredMb
+                    )
                     null
                 } catch (e: Exception) {
                     Timber.e(e, "Не удалось загрузить IndicTrans-модель $path")
@@ -288,6 +302,7 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
         srcTokenizer = null
         tgtTokenizer = null
         loadedModelId = null
+        _loadedModel.value = null
     }
 
     private fun parseGenerationConfig(file: File) {

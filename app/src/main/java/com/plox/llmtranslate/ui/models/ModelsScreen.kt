@@ -52,6 +52,8 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
+import com.plox.llmtranslate.domain.model.ttsEngineId
+import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import java.util.Locale
 
 /**
@@ -65,6 +67,8 @@ fun ModelsScreen(
     val deviceInfo by viewModel.deviceInfo.collectAsState()
     val licenseModel by viewModel.licenseConfirmModel.collectAsState()
     val blockedReason by viewModel.blockedReason.collectAsState()
+    val processPssMb by viewModel.processPssMb.collectAsState()
+    val ttsEngine by viewModel.ttsEngine.collectAsState()
 
     // SAF: импорт своего GGUF.
     val importLauncher = rememberLauncherForActivityResult(
@@ -197,6 +201,13 @@ fun ModelsScreen(
             }
         }
 
+        // Блок загруженных в ОЗУ моделей (пуст — блок скрыт).
+        if (uiState.loadedModels.isNotEmpty()) {
+            item(key = "loaded_ram") {
+                LoadedRamCard(models = uiState.loadedModels, processPssMb = processPssMb)
+            }
+        }
+
         ModelCategory.entries.forEach { category ->
             val cards = uiState.catalog.filter { it.category == category }
             val installed = uiState.installed.filter { it.category == category }
@@ -213,7 +224,13 @@ fun ModelsScreen(
 
             items(cards, key = { "card_${it.id}" }) { card ->
                 val installedModel = installed.firstOrNull { it.id == card.id }
-                val isActive = activeId == card.id
+                // Для TTS активная карточка — движок из настройки ttsEngine,
+                // а не activeModelId (выбор живёт в настройках).
+                val isActive = if (card.category == ModelCategory.TTS) {
+                    card.runtime.ttsEngineId() == ttsEngine
+                } else {
+                    activeId == card.id
+                }
                 val check = deviceInfo?.let { viewModel.checkInstall(card, it) }
 
                 ModelCardItem(
@@ -223,7 +240,13 @@ fun ModelsScreen(
                     check = check,
                     onDownload = { viewModel.onDownloadClick(card) },
                     onDelete = { installedModel?.let { viewModel.onDeleteClick(it) } },
-                    onActive = { installedModel?.let { viewModel.onActiveClick(it) } },
+                    onActive = {
+                        if (card.category == ModelCategory.TTS) {
+                            viewModel.onTtsEngineSelect(card)
+                        } else {
+                            installedModel?.let { viewModel.onActiveClick(it) }
+                        }
+                    },
                     onCancel = { installedModel?.let { viewModel.onCancelDownload(it) } },
                     onExport = { installedModel?.let { viewModel.onExportClick(it) } }
                 )
@@ -304,6 +327,61 @@ private fun ErrorBanner(text: String, onClick: (() -> Unit)? = null) {
     }
 }
 
+/**
+ * Блок «Загружено в память»: модели, находящиеся в ОЗУ сейчас,
+ * суммарная оценка потребления и фактический PSS процесса.
+ */
+@Composable
+private fun LoadedRamCard(models: List<LoadedModelInfo>, processPssMb: Int?) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = stringResource(R.string.models_loaded_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            models.forEach { model ->
+                Row {
+                    Text(
+                        text = model.displayName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    if (model.ramRequiredMb > 0) {
+                        Text(
+                            text = stringResource(R.string.models_ram_mb, model.ramRequiredMb),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                }
+            }
+            val totalMb = models.sumOf { it.ramRequiredMb }
+            if (totalMb > 0) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = stringResource(R.string.models_loaded_estimate, totalMb),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+            if (processPssMb != null) {
+                Text(
+                    text = stringResource(R.string.models_loaded_process, processPssMb),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun ModelCardItem(
     card: ModelCard,
@@ -316,6 +394,9 @@ private fun ModelCardItem(
     onCancel: () -> Unit,
     onExport: () -> Unit
 ) {
+    // TTS-карточки — встроенные движки: индикатор кликабелен без установки
+    // и выбирает движок (запись в настройку ttsEngine).
+    val isTtsEngine = card.runtime.ttsEngineId() != null
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -330,9 +411,11 @@ private fun ModelCardItem(
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Радиокнопка активной модели.
+                // Радиокнопка активной модели / выбранного TTS-движка.
                 IconButton(
-                    onClick = { if (installedModel?.isReady == true) onActive() },
+                    onClick = {
+                        if (isTtsEngine || installedModel?.isReady == true) onActive()
+                    },
                     modifier = Modifier.size(24.dp)
                 ) {
                     Icon(
@@ -354,6 +437,14 @@ private fun ModelCardItem(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (isTtsEngine && isActive) {
+                        Text(
+                            text = stringResource(R.string.models_selected),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
 
@@ -433,9 +524,9 @@ private fun ModelCardItem(
             Row {
                 when {
                     installedModel == null && card.sizeBytes == 0L -> {
-                        // Встроенные модели (системный TTS) не скачиваются и не
-                        // выбираются здесь: выбор TTS живёт в настройках,
-                        // кнопка «Выбрать» была бы no-op.
+                        // Встроенные модели (движки TTS) не скачиваются: кнопка
+                        // «Выбрать» не нужна — движок выбирается радиокнопкой
+                        // слева или в настройках.
                         Text(
                             text = stringResource(R.string.models_builtin),
                             style = MaterialTheme.typography.labelMedium,

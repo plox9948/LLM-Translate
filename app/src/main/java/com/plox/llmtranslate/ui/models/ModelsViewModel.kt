@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.data.backup.ModelBackupManager
+import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.DiskUsage
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.DeviceInfo
@@ -12,11 +13,16 @@ import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.ttsEngineId
+import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
+import com.plox.llmtranslate.domain.runtime.ProcessMemoryReader
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -43,6 +49,7 @@ data class ModelsUiState(
     val installed: List<InstalledModel> = emptyList(),
     val activeIds: Map<ModelCategory, String?> = emptyMap(),
     val diskUsage: DiskUsage? = null,
+    val loadedModels: List<LoadedModelInfo> = emptyList(),
     val deviceInfo: DeviceInfo? = null,
     val exportRequest: ExportRequest? = null,
     val backupExportRequest: BackupExportRequest? = null,
@@ -56,11 +63,33 @@ data class ModelsUiState(
 @HiltViewModel
 class ModelsViewModel @Inject constructor(
     private val modelManager: ModelManager,
-    private val backupManager: ModelBackupManager
+    private val backupManager: ModelBackupManager,
+    private val processMemoryReader: ProcessMemoryReader,
+    private val preferences: ModelPreferences
 ) : ViewModel() {
+
+    companion object {
+        /** Интервал опроса PSS процесса, пока в памяти есть загруженные модели. */
+        private const val PSS_POLL_INTERVAL_MS = 3_000L
+    }
 
     private val _deviceInfo = MutableStateFlow<DeviceInfo?>(null)
     val deviceInfo: StateFlow<DeviceInfo?> = _deviceInfo
+
+    /**
+     * Фактический PSS процесса, МБ (AMS, учитывает native-память инференса).
+     * Опрашивается, только пока в ОЗУ есть загруженные модели; иначе null.
+     */
+    private val _processPssMb = MutableStateFlow<Int?>(null)
+    val processPssMb: StateFlow<Int?> = _processPssMb
+
+    /**
+     * Выбранный движок синтеза речи (настройка ttsEngine):
+     * "system" | "rhvoice" | "espeak". Реактивно обновляется при смене
+     * на экране «Настройки».
+     */
+    private val _ttsEngine = MutableStateFlow("system")
+    val ttsEngine: StateFlow<String> = _ttsEngine
 
     private val activeIdsFlow: Flow<Map<ModelCategory, String?>> =
         combine(
@@ -86,13 +115,15 @@ class ModelsViewModel @Inject constructor(
                 modelManager.catalog,
                 modelManager.installedModels(null),
                 activeIdsFlow,
-                modelManager.diskUsage
-            ) { catalog, installed, activeIds, disk ->
+                modelManager.diskUsage,
+                modelManager.loadedModels
+            ) { catalog, installed, activeIds, disk, loaded ->
                 ModelsUiState(
                     catalog = catalog,
                     installed = installed,
                     activeIds = activeIds,
-                    diskUsage = disk
+                    diskUsage = disk,
+                    loadedModels = loaded
                 )
             }.collect { derived ->
                 // Сохраняем транзиентные поля (статус, экспорт, busy),
@@ -109,6 +140,28 @@ class ModelsViewModel @Inject constructor(
         viewModelScope.launch {
             // Устройство для проверки совместимости.
             _deviceInfo.value = modelManager.deviceInfo()
+        }
+        viewModelScope.launch {
+            // Движок TTS — та же настройка, что на экране «Настройки».
+            preferences.ttsEngine.collect { engine ->
+                _ttsEngine.value = engine
+            }
+        }
+        viewModelScope.launch {
+            // Пока в ОЗУ есть модели — периодически читаем фактический PSS
+            // процесса; при разгрузке обнуляем и останавливаем опрос.
+            // collectLatest отменяет цикл опроса при каждом изменении списка
+            // и при уничтожении ViewModel (viewModelScope) — утечек нет.
+            modelManager.loadedModels.collectLatest { loaded ->
+                if (loaded.isEmpty()) {
+                    _processPssMb.value = null
+                } else {
+                    while (true) {
+                        _processPssMb.value = processMemoryReader.processPssMb()
+                        delay(PSS_POLL_INTERVAL_MS)
+                    }
+                }
+            }
         }
     }
 
@@ -163,6 +216,15 @@ class ModelsViewModel @Inject constructor(
         viewModelScope.launch {
             modelManager.setActive(model.category, model.id)
         }
+    }
+
+    /**
+     * Выбрать TTS-движок по карточке секции TTS: запись в настройку ttsEngine
+     * (то же значение, что выбирается на экране «Настройки»).
+     */
+    fun onTtsEngineSelect(card: ModelCard) {
+        val engine = card.runtime.ttsEngineId() ?: return
+        viewModelScope.launch { preferences.setTtsEngine(engine) }
     }
 
     fun onCancelDownload(model: InstalledModel) {

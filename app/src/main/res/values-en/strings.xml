@@ -45,9 +45,13 @@
     <string name="models_license_title">Model license</string>
     <string name="models_license_text">Model \"%1$s\" is distributed under the %2$s license. Please confirm that you will use it only in accordance with the license terms.</string>
     <string name="models_active_cd">Active</string>
+    <string name="models_selected">Selected</string>
     <string name="models_quality">Quality</string>
     <string name="models_speed">Speed</string>
     <string name="models_ram_mb"> · ~%1$d MB RAM</string>
+    <string name="models_loaded_title">Loaded into memory</string>
+    <string name="models_loaded_estimate">Estimated usage: ~%1$d MB</string>
+    <string name="models_loaded_process">Process memory: %1$d MB</string>
     <string name="models_builtin">Built-in model — choose in Settings</string>
     <string name="models_cancel_download">Cancel</string>
     <string name="models_choose">Select</string>
@@ -66,4 +70,10 @@
     <string name="settings_theme">Theme</string>
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_dark">Dark</string>
+    <string name="settings_unload_models">Model unloading</string>
+    <string name="settings_unload_now">Immediately</string>
+    <string name="settings_unload_after_5">After 5 minutes (default)</string>
+    <string name="settings_unload_after_15">After 15 minutes</string>
+    <string name="settings_unload_after_30">After 30 minutes</string>
+    <string name="settings_unload_never">Never unload</string>
 </resources>

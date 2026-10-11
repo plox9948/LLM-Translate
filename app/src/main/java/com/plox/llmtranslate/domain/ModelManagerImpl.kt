@@ -16,6 +16,7 @@ import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +65,8 @@ class ModelManagerImpl @Inject constructor(
         combine(activeModelId(category), repository.observeAll()) { id, models ->
             models.firstOrNull { it.id == id && it.isReady }
         }
+
+    override val loadedModels: Flow<List<LoadedModelInfo>> = runtimeRouter.loadedModels
 
     override val diskUsage: Flow<DiskUsage> = repository.observeAll().map { _ ->
         withContext(Dispatchers.IO) {
