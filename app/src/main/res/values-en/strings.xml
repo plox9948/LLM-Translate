@@ -33,6 +33,7 @@
     <string name="translate_recording_hint">● Recording… Tap the microphone to stop</string>
     <string name="translate_select_language">Select language</string>
     <string name="translate_clear">Clear</string>
+    <string name="translate_cancel">Cancel</string>
     <string name="translate_history_clear">Clear</string>
     <string name="translate_history_delete_cd">Delete from history</string>
 

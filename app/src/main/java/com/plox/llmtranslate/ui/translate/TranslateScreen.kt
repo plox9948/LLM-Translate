@@ -172,6 +172,16 @@ fun TranslateScreen(
             ) {
                 Text(stringResource(R.string.translate_clear))
             }
+            // Во время длинного перевода — кнопка отмены инференса.
+            if (state.canCancelTranslation) {
+                OutlinedButton(
+                    onClick = viewModel::cancelTranslation
+                ) {
+                    Icon(Icons.Filled.Stop, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(stringResource(R.string.translate_cancel))
+                }
+            }
         }
 
         if (!state.hasTranslationModel) {

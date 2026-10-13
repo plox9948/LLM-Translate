@@ -1,10 +1,15 @@
 package com.plox.llmtranslate.data.download
 
 import com.plox.llmtranslate.domain.model.RuntimeType
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import timber.log.Timber
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.zip.GZIPInputStream
 import java.util.zip.ZipInputStream
 
@@ -71,7 +76,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         return InstallResult.Success(modelDir.absolutePath)
     }
 
-    private fun extractArchive(archiveFile: File, destDir: File, fileName: String): Boolean =
+    private suspend fun extractArchive(archiveFile: File, destDir: File, fileName: String): Boolean =
         when {
             fileName.endsWith(".tar.bz2") -> extractTar(archiveFile, destDir, bzip2 = true)
             fileName.endsWith(".tar.gz") -> extractTar(archiveFile, destDir, bzip2 = false)
@@ -79,7 +84,35 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             else -> false
         }
 
-    private fun extractTar(archiveFile: File, destDir: File, bzip2: Boolean): Boolean {
+    /**
+     * Копирование записи архива в файл с проверкой отмены корутины на каждом
+     * блоке — длинная распаковка прерывается сразу по cancel() воркера.
+     */
+    private suspend fun copyEntry(input: InputStream, output: OutputStream) {
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val read = input.read(buffer)
+            if (read < 0) break
+            output.write(buffer, 0, read)
+        }
+    }
+
+    /**
+     * Удалить файлы, созданные распаковкой до отмены — полу-распакованные
+     * файлы не должны оставаться мусором. Ранее скачанные файлы и .part
+     * архива не трогаются (докачка сохраняется).
+     */
+    private fun discardPartial(createdFiles: List<File>) {
+        for (file in createdFiles) {
+            if (!file.delete()) {
+                Timber.w("Не удалось удалить частично распакованный ${file.name}")
+            }
+        }
+    }
+
+    private suspend fun extractTar(archiveFile: File, destDir: File, bzip2: Boolean): Boolean {
+        val createdFiles = mutableListOf<File>()
         return try {
             archiveFile.inputStream().buffered().use { fileInput ->
                 val tarInput = if (bzip2) {
@@ -90,6 +123,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                 tarInput.use { tar ->
                     var entry = tar.nextEntry
                     while (entry != null) {
+                        currentCoroutineContext().ensureActive()
                         val outFile = File(destDir, entry.name)
                         if (!isSecurePath(destDir, outFile)) {
                             throw SecurityException("Небезопасный путь в архиве: ${entry.name}")
@@ -98,24 +132,31 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                             outFile.mkdirs()
                         } else {
                             outFile.parentFile?.mkdirs()
-                            outFile.outputStream().use { tar.copyTo(it) }
+                            createdFiles.add(outFile)
+                            outFile.outputStream().use { copyEntry(tar, it) }
                         }
                         entry = tar.nextEntry
                     }
                 }
             }
             true
+        } catch (e: CancellationException) {
+            // Отмена воркера: убираем полу-распакованные файлы и всплываем выше.
+            discardPartial(createdFiles)
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "Ошибка распаковки tar: ${archiveFile.name}")
             false
         }
     }
 
-    private fun extractZip(archiveFile: File, destDir: File): Boolean {
+    private suspend fun extractZip(archiveFile: File, destDir: File): Boolean {
+        val createdFiles = mutableListOf<File>()
         return try {
             ZipInputStream(archiveFile.inputStream().buffered()).use { zip ->
                 var entry = zip.nextEntry
                 while (entry != null) {
+                    currentCoroutineContext().ensureActive()
                     val outFile = File(destDir, entry.name)
                     if (!isSecurePath(destDir, outFile)) {
                         throw SecurityException("Небезопасный путь в архиве: ${entry.name}")
@@ -124,13 +165,18 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                         outFile.mkdirs()
                     } else {
                         outFile.parentFile?.mkdirs()
-                        outFile.outputStream().use { zip.copyTo(it) }
+                        createdFiles.add(outFile)
+                        outFile.outputStream().use { copyEntry(zip, it) }
                     }
                     zip.closeEntry()
                     entry = zip.nextEntry
                 }
             }
             true
+        } catch (e: CancellationException) {
+            // Отмена воркера: убираем полу-распакованные файлы и всплываем выше.
+            discardPartial(createdFiles)
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "Ошибка распаковки zip: ${archiveFile.name}")
             false

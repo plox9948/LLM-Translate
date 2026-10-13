@@ -3,6 +3,8 @@ package com.plox.llmtranslate.domain.runtime
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.nio.LongBuffer
 import java.util.Optional
 
@@ -37,11 +39,16 @@ import java.util.Optional
  * @param runStep сборка входов и запуск декодера: шаг, тензоры input_ids и
  *        encoder_attention_mask, результат первого шага и предыдущего шага
  *        (null до выполнения соответствующего шага).
+ * Отмена: на каждой итерации цикла проверяется отмена вызывающей корутины
+ * ([currentCoroutineContext] + ensureActive); при отмене нативные ресурсы
+ * закрываются в finally так же, как при исключении, и
+ * [kotlinx.coroutines.CancellationException] всплывает выше неглотаемой.
+ *
  * @return список сгенерированных id (вместе с [initialIds] и, при достижении,
  *         EOS).
  * @throws любое исключение из коллбэков пробрасывается вызывающему движку.
  */
-internal fun greedyDecode(
+internal suspend fun greedyDecode(
     ortEnv: OrtEnvironment,
     attentionMask: LongArray,
     startTokenId: Int,
@@ -56,21 +63,63 @@ internal fun greedyDecode(
         firstResult: OrtSession.Result?,
         prevResult: OrtSession.Result?
     ) -> OrtSession.Result
-): List<Int> {
-    val generated = initialIds.toMutableList()
-    var firstResult: OrtSession.Result? = null
-    var prevResult: OrtSession.Result? = null
-    try {
-        for (step in 0 until maxNewTokens) {
-            val feedToken = if (step == 0) startTokenId else generated.last()
-            val inputIds = OnnxTensor.createTensor(
+): List<Int> = greedyDecodeCore(
+    initialIds = initialIds,
+    startTokenId = startTokenId,
+    maxNewTokens = maxNewTokens,
+    eosTokenId = eosTokenId,
+    newStepInputs = { feedToken ->
+        Pair(
+            OnnxTensor.createTensor(
                 ortEnv, LongBuffer.wrap(longArrayOf(feedToken.toLong())), longArrayOf(1L, 1L)
-            )
-            val encoderAttentionMask = OnnxTensor.createTensor(
+            ),
+            OnnxTensor.createTensor(
                 ortEnv, LongBuffer.wrap(attentionMask),
                 longArrayOf(1L, attentionMask.size.toLong())
             )
-            val result: OrtSession.Result
+        )
+    },
+    pickToken = pickToken,
+    runStep = { step, inputIds, encoderAttentionMask, firstResult, prevResult ->
+        runStep(step, inputIds, encoderAttentionMask, firstResult, prevResult)
+    }
+)
+
+/**
+ * Ядро greedy-цикла, не зависящее от ONNX Runtime: типы входа шага и
+ * результата шага обобщены ([I]/[R]) и обязаны быть [AutoCloseable].
+ * [greedyDecode] — production-обёртка с ORT-типами; юнит-тесты прогоняют
+ * ядро с фейковыми ресурсами, поскольку классы ai.onnxruntime на JVM
+ * инициализируют нативную библиотеку (вне Android это невозможно).
+ *
+ * Вся логика владения ресурсами и проверок отмены — здесь.
+ */
+internal suspend fun <I : AutoCloseable, R : AutoCloseable> greedyDecodeCore(
+    initialIds: List<Int>,
+    startTokenId: Int,
+    maxNewTokens: Int,
+    eosTokenId: Int,
+    newStepInputs: (feedToken: Int) -> Pair<I, I>,
+    pickToken: (result: R, generated: List<Int>) -> Int,
+    runStep: (
+        step: Int,
+        inputIds: I,
+        encoderAttentionMask: I,
+        firstResult: R?,
+        prevResult: R?
+    ) -> R
+): List<Int> {
+    val generated = initialIds.toMutableList()
+    var firstResult: R? = null
+    var prevResult: R? = null
+    try {
+        for (step in 0 until maxNewTokens) {
+            // Отмена длинного инференса: проверка на каждой итерации,
+            // ресурсы открытых шагов закрывает внешний finally.
+            currentCoroutineContext().ensureActive()
+            val feedToken = if (step == 0) startTokenId else generated.last()
+            val (inputIds, encoderAttentionMask) = newStepInputs(feedToken)
+            val result: R
             try {
                 result = runStep(step, inputIds, encoderAttentionMask, firstResult, prevResult)
             } finally {

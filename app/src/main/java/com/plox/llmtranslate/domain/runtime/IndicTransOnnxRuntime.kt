@@ -9,6 +9,7 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.tokenizer.IndicProcessorLite
 import com.plox.llmtranslate.domain.tokenizer.TokenizerJson
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -301,6 +302,10 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                     } else {
                         Result.success(resultText)
                     }
+                } catch (e: CancellationException) {
+                    // Отмена инференса (кнопка «Отмена»/смена экрана) — не ошибка:
+                    // всплываем выше, чтобы UI различал отмену и сбой.
+                    throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Ошибка инференса IndicTrans")
                     Result.failure(RuntimeError.InferenceFailed("indictrans", e.message ?: "Неизвестная ошибка"))

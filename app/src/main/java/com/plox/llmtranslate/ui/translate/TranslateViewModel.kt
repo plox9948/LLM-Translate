@@ -19,6 +19,8 @@ import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.firstOrNull
@@ -45,6 +47,7 @@ data class TranslateUiState(
     val inputText: String = "",
     val resultText: String = "",
     val isTranslating: Boolean = false,
+    val canCancelTranslation: Boolean = false,
     val isRecording: Boolean = false,
     val isSpeaking: Boolean = false,
     val error: String? = null,
@@ -117,6 +120,17 @@ class TranslateViewModel @Inject constructor(
         update { it.copy(inputText = text, error = null) }
     }
 
+    // Job текущего перевода — отменяется кнопкой «Отмена».
+    private var translationJob: Job? = null
+
+    /**
+     * Отменить текущий перевод: long-инференс прерывается на ближайшей
+     * проверке отмены (greedyDecode), состояние возвращается в idle без ошибки.
+     */
+    fun cancelTranslation() {
+        translationJob?.cancel()
+    }
+
     /**
      * Перевести введённый текст.
      * Модель выбирается автоматически по направлению (sourceLang→targetLang);
@@ -137,64 +151,83 @@ class TranslateViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
-            update { it.copy(isTranslating = true, error = null, resultText = "") }
-
-            // Автовыбор цепочки моделей для направления.
-            val chain = TranslationModelSelector.selectChain(
-                translationModels, sourceLang.code, state.targetLang.code
-            )
-            if (chain.isNullOrEmpty()) {
+        translationJob = viewModelScope.launch {
+            try {
                 update {
                     it.copy(
-                        isTranslating = false,
-                        error = "Нет модели для направления ${sourceLang.code.uppercase()}→${state.targetLang.code.uppercase()}. Скачайте её на экране «Модели»."
+                        isTranslating = true,
+                        canCancelTranslation = true,
+                        error = null,
+                        resultText = ""
                     )
                 }
-                return@launch
-            }
 
-            // Последовательно прогоняем текст через каждую модель цепочки.
-            var text = state.inputText
-            var from = sourceLang.code
-            var failed: String? = null
-            for (model in chain) {
-                val dir = TranslationModelSelector.directionOf(model)
-                if (dir == null) {
-                    failed = "Не удалось определить направление модели ${model.displayName}"
-                    break
-                }
-                val engine = runtimeRouter.translationEngine(model.runtime)
-                val loadError = engine.ensureLoaded(model)
-                if (loadError != null) {
-                    failed = loadError.userMessage()
-                    break
-                }
-                translateSegments(engine, text, from, dir.second).fold(
-                    onSuccess = { translated ->
-                        text = translated
-                        from = dir.second
-                    },
-                    onFailure = { e ->
-                        failed = when (e) {
-                            is RuntimeError -> e.userMessage()
-                            else -> "Ошибка перевода"
-                        }
+                // Автовыбор цепочки моделей для направления.
+                val chain = TranslationModelSelector.selectChain(
+                    translationModels, sourceLang.code, state.targetLang.code
+                )
+                if (chain.isNullOrEmpty()) {
+                    update {
+                        it.copy(
+                            isTranslating = false,
+                            canCancelTranslation = false,
+                            error = "Нет модели для направления ${sourceLang.code.uppercase()}→${state.targetLang.code.uppercase()}. Скачайте её на экране «Модели»."
+                        )
                     }
-                )
-                if (failed != null) break
-            }
+                    return@launch
+                }
 
-            if (failed != null) {
-                update { it.copy(isTranslating = false, error = failed) }
-            } else {
-                update { it.copy(isTranslating = false, resultText = text) }
-                historyRepository.add(
-                    sourceLang = sourceLang.code,
-                    targetLang = state.targetLang.code,
-                    inputText = state.inputText,
-                    resultText = text
-                )
+                // Последовательно прогоняем текст через каждую модель цепочки.
+                var text = state.inputText
+                var from = sourceLang.code
+                var failed: String? = null
+                for (model in chain) {
+                    val dir = TranslationModelSelector.directionOf(model)
+                    if (dir == null) {
+                        failed = "Не удалось определить направление модели ${model.displayName}"
+                        break
+                    }
+                    val engine = runtimeRouter.translationEngine(model.runtime)
+                    val loadError = engine.ensureLoaded(model)
+                    if (loadError != null) {
+                        failed = loadError.userMessage()
+                        break
+                    }
+                    translateSegments(engine, text, from, dir.second).fold(
+                        onSuccess = { translated ->
+                            text = translated
+                            from = dir.second
+                        },
+                        onFailure = { e ->
+                            failed = when (e) {
+                                is RuntimeError -> e.userMessage()
+                                else -> "Ошибка перевода"
+                            }
+                        }
+                    )
+                    if (failed != null) break
+                }
+
+                if (failed != null) {
+                    update {
+                        it.copy(isTranslating = false, canCancelTranslation = false, error = failed)
+                    }
+                } else {
+                    update {
+                        it.copy(isTranslating = false, canCancelTranslation = false, resultText = text)
+                    }
+                    historyRepository.add(
+                        sourceLang = sourceLang.code,
+                        targetLang = state.targetLang.code,
+                        inputText = state.inputText,
+                        resultText = text
+                    )
+                }
+            } catch (e: CancellationException) {
+                // Отмена пользователем (кнопка «Отмена») — не ошибка:
+                // состояние возвращается в idle без показа ошибки.
+                Timber.d("Перевод отменён пользователем")
+                update { it.copy(isTranslating = false, canCancelTranslation = false) }
             }
         }
     }

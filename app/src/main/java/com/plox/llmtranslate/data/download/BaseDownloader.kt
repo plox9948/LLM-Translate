@@ -1,6 +1,9 @@
 package com.plox.llmtranslate.data.download
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
@@ -68,6 +71,10 @@ abstract class BaseDownloader {
                     val buffer = ByteArray(64 * 1024)
                     var received = 0L
                     while (true) {
+                        // Отмена WorkManager (cancelUniqueWork) прерывает цикл
+                        // на следующей итерации; частичный .part остаётся для
+                        // докачки — его чистит отмена скачивания в UI.
+                        currentCoroutineContext().ensureActive()
                         val read = input.read(buffer)
                         if (read < 0) break
                         os.write(buffer, 0, read)
@@ -87,6 +94,10 @@ abstract class BaseDownloader {
                 return@withContext null
             }
             doneFile
+        } catch (e: CancellationException) {
+            // Отмена воркера — не сетевая ошибка: всплываем в doWork,
+            // частичный .part для докачки не удаляем.
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "Ошибка скачивания $url")
             null
@@ -133,6 +144,9 @@ abstract class BaseDownloader {
             file.inputStream().buffered().use { input ->
                 val buffer = ByteArray(64 * 1024)
                 while (true) {
+                    // Хеширование больших файлов занимает десятки секунд —
+                    // отмена воркера должна прерывать и этот цикл.
+                    currentCoroutineContext().ensureActive()
                     val read = input.read(buffer)
                     if (read < 0) break
                     digest.update(buffer, 0, read)

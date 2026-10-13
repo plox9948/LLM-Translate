@@ -8,6 +8,7 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.tokenizer.TokenizerJson
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -288,6 +289,10 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
                     } finally {
                         encOutput.close()
                     }
+                } catch (e: CancellationException) {
+                    // Отмена инференса (кнопка «Отмена»/смена экрана) — не ошибка:
+                    // всплываем выше, чтобы UI различал отмену и сбой.
+                    throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Ошибка инференса Marian")
                     Result.failure(RuntimeError.InferenceFailed("marian", e.message ?: "Неизвестная ошибка"))
