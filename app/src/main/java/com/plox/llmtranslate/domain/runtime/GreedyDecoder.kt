@@ -69,15 +69,21 @@ internal suspend fun greedyDecode(
     maxNewTokens = maxNewTokens,
     eosTokenId = eosTokenId,
     newStepInputs = { feedToken ->
-        Pair(
-            OnnxTensor.createTensor(
-                ortEnv, LongBuffer.wrap(longArrayOf(feedToken.toLong())), longArrayOf(1L, 1L)
-            ),
-            OnnxTensor.createTensor(
+        // Первый тензор закрываем, если создание второго упадёт:
+        // иначе его нативная память утечёт (ядроPair ещё не получило).
+        val inputIds = OnnxTensor.createTensor(
+            ortEnv, LongBuffer.wrap(longArrayOf(feedToken.toLong())), longArrayOf(1L, 1L)
+        )
+        try {
+            val encoderAttentionMask = OnnxTensor.createTensor(
                 ortEnv, LongBuffer.wrap(attentionMask),
                 longArrayOf(1L, attentionMask.size.toLong())
             )
-        )
+            Pair(inputIds, encoderAttentionMask)
+        } catch (e: Exception) {
+            inputIds.close()
+            throw e
+        }
     },
     pickToken = pickToken,
     runStep = { step, inputIds, encoderAttentionMask, firstResult, prevResult ->

@@ -18,6 +18,7 @@ import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -124,6 +125,8 @@ class ModelManagerImpl @Inject constructor(
             try {
                 repository.upsert(model)
                 ModelDownloadWorker.schedule(context, model)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "Не удалось поставить на скачивание модель ${card.id}")
             }
@@ -143,6 +146,8 @@ class ModelManagerImpl @Inject constructor(
                     deleteOrphanParts(model)
                     repository.deleteById(modelId)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "Не удалось отменить скачивание модели $modelId")
             }
@@ -275,6 +280,8 @@ class ModelManagerImpl @Inject constructor(
                     preferences.setActiveModelId(model.category, fallback?.id)
                 }
                 Timber.d("Модель $modelId удалена")
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "Не удалось удалить модель $modelId")
             }
@@ -288,6 +295,8 @@ class ModelManagerImpl @Inject constructor(
             try {
                 runtimeRouter.releaseAll()
                 Timber.d("Рантаймы разгружены (ON_STOP)")
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка при разгрузке рантаймов")
             }

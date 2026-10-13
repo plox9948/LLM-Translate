@@ -13,6 +13,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -128,8 +130,14 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                     // нативный ресурс после всех createSession, в том числе при
                     // исключении на любом из них (иначе утечка native-памяти ORT).
                     try {
+                        // Границы отмены: само createSession (десятки секунд)
+                        // не прерываемо, но между ними отмена обязана срабатывать,
+                        // иначе «Отмена» не действует на загрузку модели.
+                        currentCoroutineContext().ensureActive()
                         encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
+                        currentCoroutineContext().ensureActive()
                         decoderSession = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
+                        currentCoroutineContext().ensureActive()
                         decoderPastSession = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
                     } finally {
                         sessionOpts.close()
@@ -160,6 +168,9 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                     srcTokenizer = srcTok
                     tgtTokenizer = tgtTok
 
+                    // Граница отмены после парсинга обоих токенизаторов (МБ JSON),
+                    // перед чтением конфигов.
+                    currentCoroutineContext().ensureActive()
                     parseGenerationConfig(genConfigFile)
                     parseTokenizerMeta(metaFile)
 
@@ -171,6 +182,13 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                         ramRequiredMb = modelInfo.ramRequiredMb
                     )
                     null
+                } catch (e: CancellationException) {
+                    // Отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
+                    // уже созданные сессии/токенизаторы и всплываем выше,
+                    // не конвертируя отмену в LoadFailed.
+                    Timber.d("Загрузка IndicTrans-модели отменена: $path")
+                    releaseUnlocked()
+                    throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Не удалось загрузить IndicTrans-модель $path")
                     releaseUnlocked()
@@ -235,13 +253,20 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                     val attentionMask = LongArray(inputIds.size) { 1L }
 
                     // Encoder. Входные тензоры закрываем сразу после run — на любом пути.
+                    // Если второй createTensor упадёт — первый закрываем сразу,
+                    // иначе его нативная память утечёт мимо внешнего finally.
                     val encInputIds = OnnxTensor.createTensor(
                         ortEnv, LongBuffer.wrap(inputIds), longArrayOf(1L, inputIds.size.toLong())
                     )
-                    val encAttnMask = OnnxTensor.createTensor(
-                        ortEnv, LongBuffer.wrap(attentionMask),
-                        longArrayOf(1L, attentionMask.size.toLong())
-                    )
+                    val encAttnMask = try {
+                        OnnxTensor.createTensor(
+                            ortEnv, LongBuffer.wrap(attentionMask),
+                            longArrayOf(1L, attentionMask.size.toLong())
+                        )
+                    } catch (e: Exception) {
+                        encInputIds.close()
+                        throw e
+                    }
                     val encOutput = try {
                         enc.run(mapOf("input_ids" to encInputIds, "attention_mask" to encAttnMask))
                     } finally {

@@ -3,6 +3,7 @@ package com.plox.llmtranslate.domain
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -65,6 +66,10 @@ class BackgroundUnloadScheduler @Inject constructor(
                 Timber.d("Истёк тайм-аут фонового простоя: выгружаем рантаймы")
                 try {
                     onUnload()
+                } catch (e: CancellationException) {
+                    // Отмена корутины планирования (возврат в foreground) —
+                    // не ошибка, всплываем выше.
+                    throw e
                 } catch (e: Exception) {
                     // Коллбэк выполняется в app-scope: ошибка не должна
                     // убивать корутину планирования без записи в лог.

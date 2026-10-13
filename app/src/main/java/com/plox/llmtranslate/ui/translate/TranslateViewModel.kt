@@ -120,12 +120,15 @@ class TranslateViewModel @Inject constructor(
         update { it.copy(inputText = text, error = null) }
     }
 
-    // Job текущего перевода — отменяется кнопкой «Отмена».
+    // Job текущей длительной операции (перевод ИЛИ распознавание) —
+    // отменяется кнопкой «Отмена»; обнуляется по завершении в finally.
     private var translationJob: Job? = null
 
     /**
-     * Отменить текущий перевод: long-инференс прерывается на ближайшей
-     * проверке отмены (greedyDecode), состояние возвращается в idle без ошибки.
+     * Отменить текущую операцию (перевод либо распознавание): долгий инференс
+     * прерывается на ближайшей проверке отмены (greedyDecode / границы STT),
+     * загрузка модели — на границах ensureLoaded; состояние возвращается
+     * в idle без ошибки.
      */
     fun cancelTranslation() {
         translationJob?.cancel()
@@ -228,57 +231,90 @@ class TranslateViewModel @Inject constructor(
                 // состояние возвращается в idle без показа ошибки.
                 Timber.d("Перевод отменён пользователем")
                 update { it.copy(isTranslating = false, canCancelTranslation = false) }
+            } finally {
+                translationJob = null
             }
         }
     }
 
     /**
      * Распознать записанный аудио-файл (WAV) активной STT-моделью.
+     * Операция идёт через тот же [translationJob], что и перевод: кнопка
+     * «Отмена» активна и во время распознавания; отмена — тихий возврат
+     * в idle без ошибки.
      */
     fun transcribeAudio(wavPath: String) {
         val state = _uiState.value
-        viewModelScope.launch {
-            update { it.copy(isTranslating = true, error = null) }
-
-            val model = modelManager.activeModel(ModelCategory.STT)
-                .firstOrNull()
-            if (model == null) {
+        translationJob = viewModelScope.launch {
+            try {
                 update {
                     it.copy(
-                        isTranslating = false,
-                        error = "Нет активной модели распознавания. Скачайте её на экране «Модели»."
+                        isTranslating = true,
+                        canCancelTranslation = true,
+                        error = null
                     )
                 }
-                return@launch
-            }
 
-            val engine = runtimeRouter.sttEngine()
-            val loadError = engine.ensureLoaded(model)
-            if (loadError != null) {
-                update { it.copy(isTranslating = false, error = loadError.userMessage()) }
-                return@launch
-            }
-
-            // Подсказка языка для STT: явный выбор или null (whisper определит сам).
-            val langHint = if (state.sourceLang != TranslateLanguage.AUTO) {
-                state.sourceLang.code
-            } else {
-                null
-            }
-
-            engine.transcribe(wavPath, language = langHint).fold(
-                onSuccess = { text ->
-                    update { it.copy(isTranslating = false, inputText = text) }
-                },
-                onFailure = { e ->
+                val model = modelManager.activeModel(ModelCategory.STT)
+                    .firstOrNull()
+                if (model == null) {
                     update {
                         it.copy(
                             isTranslating = false,
-                            error = (e as? RuntimeError)?.userMessage() ?: "Ошибка распознавания"
+                            canCancelTranslation = false,
+                            error = "Нет активной модели распознавания. Скачайте её на экране «Модели»."
                         )
                     }
+                    return@launch
                 }
-            )
+
+                val engine = runtimeRouter.sttEngine()
+                val loadError = engine.ensureLoaded(model)
+                if (loadError != null) {
+                    update {
+                        it.copy(
+                            isTranslating = false,
+                            canCancelTranslation = false,
+                            error = loadError.userMessage()
+                        )
+                    }
+                    return@launch
+                }
+
+                // Подсказка языка для STT: явный выбор или null (whisper определит сам).
+                val langHint = if (state.sourceLang != TranslateLanguage.AUTO) {
+                    state.sourceLang.code
+                } else {
+                    null
+                }
+
+                engine.transcribe(wavPath, language = langHint).fold(
+                    onSuccess = { text ->
+                        update {
+                            it.copy(
+                                isTranslating = false,
+                                canCancelTranslation = false,
+                                inputText = text
+                            )
+                        }
+                    },
+                    onFailure = { e ->
+                        update {
+                            it.copy(
+                                isTranslating = false,
+                                canCancelTranslation = false,
+                                error = (e as? RuntimeError)?.userMessage() ?: "Ошибка распознавания"
+                            )
+                        }
+                    }
+                )
+            } catch (e: CancellationException) {
+                // Отмена пользователем (кнопка «Отмена») — тихий возврат в idle.
+                Timber.d("Распознавание отменено пользователем")
+                update { it.copy(isTranslating = false, canCancelTranslation = false) }
+            } finally {
+                translationJob = null
+            }
         }
     }
 

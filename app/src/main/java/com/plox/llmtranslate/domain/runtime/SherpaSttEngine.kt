@@ -10,7 +10,10 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.util.WavReader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -92,6 +95,9 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
                     }
                     this@SherpaSttEngine.modelInfo = info
                     whisperLanguage = if (info.type == TYPE_WHISPER) "auto" else null
+                    // Граница отмены перед долгим нативным построением
+                    // распознавателя (секунды-десятки секунд, не прерываемо).
+                    currentCoroutineContext().ensureActive()
                     recognizer = buildRecognizer(info, whisperLanguage)
                     loadedModelId = model.id
                     _loadedModel.value = LoadedModelInfo(
@@ -102,6 +108,12 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
                     )
                     Timber.d("Sherpa-модель загружена (${info.type}): $path")
                     null
+                } catch (e: CancellationException) {
+                    // Отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
+                    // частично созданные ресурсы и всплываем выше.
+                    Timber.d("Загрузка sherpa-модели отменена: $path")
+                    releaseUnlocked()
+                    throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Не удалось загрузить sherpa-модель $path")
                     releaseUnlocked()
@@ -166,10 +178,17 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
                         )
                     }
 
+                    // Граница отмены между чтением WAV и нативным decode —
+                    // сам decode (десятки секунд) не прерываем, отмена срабатывает
+                    // на фазах вокруг него.
+                    currentCoroutineContext().ensureActive()
                     val stream = rec.createStream()
                     try {
                         stream.acceptWaveform(samples, SAMPLE_RATE)
                         rec.decode(stream)
+                        // Граница отмены после decode: отменённая операция
+                        // не отдаёт результат, stream освобождается в finally.
+                        currentCoroutineContext().ensureActive()
                         val text = rec.getResult(stream).text.trim()
                         if (text.isEmpty()) {
                             Result.failure(
@@ -181,6 +200,10 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
                     } finally {
                         stream.release()
                     }
+                } catch (e: CancellationException) {
+                    // Отмена распознавания кнопкой «Отмена» — не ошибка:
+                    // всплываем выше, чтобы UI возвращался в idle без ошибки.
+                    throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Ошибка распознавания sherpa")
                     Result.failure(
