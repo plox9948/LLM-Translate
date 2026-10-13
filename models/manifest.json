@@ -1,6 +1,6 @@
 {
-  "version": 6,
-  "comment": "Единственный источник правды о моделях. Из него генерируются scripts/download_models.* и assets/models_catalog.json. SHA-256 заполняются после первичного скачивания (скрипт печатает их).",
+  "version": 7,
+  "comment": "Единственный источник правды о моделях. Из него генерируются scripts/download_models.* и assets/models_catalog.json. SHA-256 заполняются после первичного скачивания (скрипт печатает их). Версия синхронна с version в assets/models_catalog.json: любое изменение моделей/файлов поднимает версию в обоих файлах одинаково.",
   "models": [
     {
       "id": "opus-mt-tiny-ru-en-int8-v2",

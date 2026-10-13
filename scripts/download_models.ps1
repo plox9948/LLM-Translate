@@ -5,6 +5,8 @@
     - Скачивание с докачкой (Range) — как BaseDownloader в приложении.
     - Проверка SHA-256 (если задан в манифесте).
     - Печатает SHA-256 всех скачанных файлов (для фиксации в манифесте/каталоге).
+    - Поле version манифеста синхронно с version в assets/models_catalog.json —
+      правки моделей поднимают версию в обоих файлах одинаково.
     Использование:
         .\scripts\download_models.ps1                 # скачать всё
         .\scripts\download_models.ps1 -Ids opus-mt-tiny-ru-en-int8
