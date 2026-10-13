@@ -7,6 +7,12 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+// Экспорт Room-схем в app/schemas/<database FQN>/<version>.json —
+// история схемы для будущих тестов миграций.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 // sherpa-onnx (KMP) тянет за собой sherpa-onnx-jvm с дублирующими классами —
 // исключаем JVM-артефакт глобально (по имени модуля, группа отличается),
 // оставляем только Android AAR.

@@ -35,8 +35,12 @@ class OnnxInstaller : ModelInstaller, BaseDownloader() {
                 is DownloadOutcome.NetworkError ->
                     InstallResult.Failure(outcome.message)
                 is DownloadOutcome.Mismatch ->
-                    // Файл повреждён на сервере — повторное скачивание не поможет.
-                    InstallResult.Failure(outcome.message, permanent = true)
+                    // Мismatch после докачки — часть могла быть битой, повтор с нуля
+                    // поможет; после свежей загрузки файл повреждён на сервере.
+                    InstallResult.Failure(
+                        outcome.message,
+                        permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
+                    )
             }
         }
 
@@ -46,8 +50,12 @@ class OnnxInstaller : ModelInstaller, BaseDownloader() {
             is DownloadOutcome.Success -> InstallResult.Success(outcome.file.absolutePath)
             is DownloadOutcome.NetworkError -> InstallResult.Failure(outcome.message)
             is DownloadOutcome.Mismatch ->
-                // Файл повреждён на сервере — повторное скачивание не поможет.
-                InstallResult.Failure(outcome.message, permanent = true)
+                // Мismatch после докачки — часть могла быть битой, повтор с нуля
+                // поможет; после свежей загрузки файл повреждён на сервере.
+                InstallResult.Failure(
+                    outcome.message,
+                    permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
+                )
         }
     }
 }

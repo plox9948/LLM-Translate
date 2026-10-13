@@ -42,7 +42,7 @@ class DownloadResumePolicyTest {
 
     @Test
     fun `resume confirmed when range matches part size and saved total`() {
-        val meta = DownloadResumePolicy.PartMeta("W/\"abc\"", 12345L)
+        val meta = DownloadResumePolicy.PartMeta("\"abc\"", 12345L)
         val range = DownloadResumePolicy.ContentRange(5000, 12344, 12345)
         assertEquals(
             DownloadResumePolicy.Decision.CONTINUE,
@@ -52,7 +52,7 @@ class DownloadResumePolicyTest {
 
     @Test
     fun `resume discarded when content-range start shifted`() {
-        val meta = DownloadResumePolicy.PartMeta("W/\"abc\"", 12345L)
+        val meta = DownloadResumePolicy.PartMeta("\"abc\"", 12345L)
         val shifted = DownloadResumePolicy.ContentRange(0, 12344, 12345)
         assertEquals(
             DownloadResumePolicy.Decision.DISCARD_RESTART,
@@ -62,7 +62,7 @@ class DownloadResumePolicyTest {
 
     @Test
     fun `resume discarded when server total size changed`() {
-        val meta = DownloadResumePolicy.PartMeta("W/\"abc\"", 12345L)
+        val meta = DownloadResumePolicy.PartMeta("\"abc\"", 12345L)
         val resized = DownloadResumePolicy.ContentRange(5000, 9999, 99999)
         assertEquals(
             DownloadResumePolicy.Decision.DISCARD_RESTART,
@@ -72,11 +72,41 @@ class DownloadResumePolicyTest {
 
     @Test
     fun `resume discarded when content-range header missing`() {
-        val meta = DownloadResumePolicy.PartMeta("W/\"abc\"", 12345L)
+        val meta = DownloadResumePolicy.PartMeta("\"abc\"", 12345L)
         assertEquals(
             DownloadResumePolicy.Decision.DISCARD_RESTART,
             DownloadResumePolicy.decideResume(5000L, null, meta)
         )
+    }
+
+    // --- слабый ETag (в If-Match не отправляется) ----------------------------
+
+    @Test
+    fun `weak etag detected case-insensitively`() {
+        assertTrue(DownloadResumePolicy.isWeakETag("W/\"abc\""))
+        assertTrue(DownloadResumePolicy.isWeakETag("w/\"abc\""))
+        assertTrue(DownloadResumePolicy.isWeakETag("  W/\"abc\""))
+    }
+
+    @Test
+    fun `strong etag not treated as weak`() {
+        assertFalse(DownloadResumePolicy.isWeakETag("\"abc\""))
+        assertFalse(DownloadResumePolicy.isWeakETag("*"))
+        assertFalse(DownloadResumePolicy.isWeakETag("Wabc"))
+    }
+
+    // --- постоянство SHA-mismatch --------------------------------------------
+
+    @Test
+    fun `mismatch after fresh full download is permanent`() {
+        assertTrue(DownloadResumePolicy.mismatchIsPermanent(partBytesReused = false))
+    }
+
+    @Test
+    fun `mismatch after resumed part is retryable from scratch`() {
+        // Байты докачанной части попали в итоговый файл и часть уже отброшена —
+        // повторное скачивание с нуля поможет, permanent=false.
+        assertFalse(DownloadResumePolicy.mismatchIsPermanent(partBytesReused = true))
     }
 
     @Test

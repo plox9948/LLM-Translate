@@ -10,9 +10,11 @@ sealed class InstallResult {
     data class Success(val path: String) : InstallResult()
     /**
      * Ошибка установки.
-     * @param permanent true — повторная попытка бессмысленна (например, не совпал
-     *        SHA-256: файл повреждён на сервере); воркер ставит модели ERROR
-     *        и не повторяет загрузку.
+     * @param permanent true — повторная попытка бессмысленна (SHA-256 не совпал
+     *        после СВЕЖЕЙ полной загрузки: файл повреждён на сервере); воркер
+     *        ставит модели ERROR и не повторяет загрузку. Mismatch после
+     *        докачки — permanent=false: часть уже отброшена, повтор с нуля
+     *        поможет (см. [DownloadResumePolicy.mismatchIsPermanent]).
      */
     data class Failure(val message: String, val permanent: Boolean = false) : InstallResult()
 }

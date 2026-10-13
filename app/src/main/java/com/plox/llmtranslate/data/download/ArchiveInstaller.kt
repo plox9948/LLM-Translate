@@ -17,8 +17,10 @@ import java.util.zip.ZipInputStream
  * Инсталлятор sherpa-onnx STT-моделей.
  *
  * Для каждого URL:
- * - файл-архив (.tar.bz2/.tar.gz/.zip) — скачивается и распаковывается в
- *   targetDir/<modelId> (tar.bz2 — Apache Commons Compress + XZ; защита от zip-slip);
+ * - файл-архив (.tar.bz2/.tar.gz/.zip) — скачивается в корень [targetDir] и
+ *   распаковывается в targetDir/<modelId> (tar.bz2 — Apache Commons Compress + XZ;
+ *   защита от zip-slip); скачанный архив удаляется сразу после распаковки
+ *   (в том числе при отмене), чтобы не оставлять сирот в корне каталога;
  * - обычный файл — скачивается как есть в targetDir/<modelId>.
  * Каждый файл сверяется со своим SHA-256 из [sha256s] (архив — хеш архива
  * до распаковки).
@@ -53,10 +55,23 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                 fileName.endsWith(".zip")
 
             if (isArchive) {
-                when (val outcome = downloadFile(url, targetDir, fileName, hashes[index], onProgress = onProgress)) {
+                when (val outcome = downloadFile(url, targetDir, fileName, hashes[index]) { fileProgress ->
+                    onProgress(scaleFileProgress(index, urls.size, fileProgress))
+                }) {
                     is DownloadOutcome.Success -> {
                         val archiveFile = outcome.file
-                        val extracted = extractArchive(archiveFile, modelDir, fileName)
+                        val extracted = try {
+                            extractArchive(archiveFile, modelDir, fileName)
+                        } catch (e: CancellationException) {
+                            // Отмена распаковки: скачанный архив лежит в КОРНЕ
+                            // каталога рантайма — без удаления он остался бы
+                            // сиротой навсегда; освобождаем место сразу
+                            // (deleteOrphanParts — страховка для старых установок).
+                            if (!archiveFile.delete()) {
+                                Timber.w("Не удалось удалить архив после отмены: ${archiveFile.name}")
+                            }
+                            throw e
+                        }
                         archiveFile.delete()
                         if (!extracted) {
                             return InstallResult.Failure("Ошибка распаковки: $fileName")
@@ -67,16 +82,27 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                     is DownloadOutcome.NetworkError ->
                         return InstallResult.Failure("Не удалось скачать архив: $fileName")
                     is DownloadOutcome.Mismatch ->
-                        // Файл повреждён на сервере — повторное скачивание не поможет.
-                        return InstallResult.Failure(outcome.message, permanent = true)
+                        // Мismatch после докачки — часть могла быть битой, повтор с нуля
+                        // поможет; после свежей загрузки архив повреждён на сервере.
+                        return InstallResult.Failure(
+                            outcome.message,
+                            permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
+                        )
                 }
             } else {
-                when (val outcome = downloadFile(url, modelDir, fileName, hashes[index], onProgress = onProgress)) {
+                when (val outcome = downloadFile(url, modelDir, fileName, hashes[index]) { fileProgress ->
+                    onProgress(scaleFileProgress(index, urls.size, fileProgress))
+                }) {
                     is DownloadOutcome.Success -> Unit
                     is DownloadOutcome.NetworkError ->
                         return InstallResult.Failure("Не удалось скачать: $fileName")
                     is DownloadOutcome.Mismatch ->
-                        return InstallResult.Failure(outcome.message, permanent = true)
+                        // Мismatch после докачки — часть могла быть битой, повтор с нуля
+                        // поможет; после свежей загрузки файл повреждён на сервере.
+                        return InstallResult.Failure(
+                            outcome.message,
+                            permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
+                        )
                 }
             }
         }

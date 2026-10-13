@@ -155,12 +155,17 @@ class ModelManagerImpl @Inject constructor(
     }
 
     /**
-     * Удалить недокачанные .part-файлы отменённой модели и их метаданные
+     * Удалить недокачанные .part-файлы отменённой модели, их метаданные
      * докачки (конвенция BaseDownloader: рядом с целевым файлом `<имя>.part`
-     * и `<имя>.part.meta`).
+     * и `<имя>.part.meta`) и осиротевшие целые архивы (ArchiveInstaller
+     * скачивает архив в корень каталога рантайма; при отмене распаковки он
+     * мог остаться до внедрения немедленного удаления).
      * Размещение повторяет логику инсталляторов (см. [ModelDownloadWorker]):
      * ONNX мультифайл и обычные файлы sherpa — в каталог модели,
      * одиночные ONNX-файлы и архивы — в корень каталога рантайма.
+     * Модель не READY (проверяется вызывающим кодом), поэтому файлы по её URL
+     * относятся только к её незавершённой загрузке — файлы READY-моделей
+     * не затрагиваются.
      */
     private fun deleteOrphanParts(model: InstalledModel) {
         val urls = model.downloadUrls()
@@ -180,6 +185,14 @@ class ModelManagerImpl @Inject constructor(
             listOf(File(dir, "$fileName.part"), File(dir, "$fileName.part.meta")).forEach { part ->
                 if (part.isFile && !part.delete()) {
                     Timber.w("Не удалось удалить осиротевший ${part.name}")
+                }
+            }
+            // Целой архив лежит только в корне каталога рантайма (см. ArchiveInstaller);
+            // для не READY-модели это остаток её же незавершённой распаковки.
+            if (isArchive && !inModelDir) {
+                val archiveFile = File(dir, fileName)
+                if (archiveFile.isFile && !archiveFile.delete()) {
+                    Timber.w("Не удалось удалить осиротевший архив ${archiveFile.name}")
                 }
             }
         }

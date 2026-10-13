@@ -102,7 +102,8 @@ class ModelDownloadWorker @AssistedInject constructor(
                     repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
                     return Result.failure(workDataOf(KEY_ERROR to result.message))
                 }
-                // Сетевая ошибка — повторяем (докачка продолжит с места обрыва).
+                // Сетевая ошибка или mismatch после докачки (часть уже отброшена) —
+                // повторяем: докачка продолжит с места обрыва либо начнётся с нуля.
                 repository.updateDownloadStatus(modelId, ModelStatus.DOWNLOADING)
                 Result.retry()
             }

@@ -24,10 +24,14 @@ sealed class DownloadOutcome {
     data class NetworkError(val message: String) : DownloadOutcome()
 
     /**
-     * Файл не совпал с ожидаемым SHA-256 — источник повреждён,
-     * повторное скачивание не поможет.
+     * Файл не совпал с ожидаемым SHA-256 — источник повреждён.
+     * @param wasResumed true — в финальный файл вошли байты докачанной части:
+     *        часть могла быть испорчена после обрыва, `.part` уже отброшен,
+     *        поэтому повторное скачивание с нуля поможет и повтор WorkManager
+     *        имеет смысл (permanent = false);
+     *        false — mismatch после свежей полной загрузки, повтор не поможет.
      */
-    data class Mismatch(val message: String) : DownloadOutcome()
+    data class Mismatch(val message: String, val wasResumed: Boolean = false) : DownloadOutcome()
 }
 
 /**
@@ -36,7 +40,8 @@ sealed class DownloadOutcome {
  *
  * Целостность докачки ([DownloadResumePolicy]): рядом с `<file>.part` держится
  * `<file>.part.meta` (ETag + полный размер файла по данным сервера). При
- * возобновлении Range уходит с If-Match, а ответ 206 дополнительно сверяется
+ * возобновлении Range уходит с If-Match (кроме слабого ETag `W/...` — он
+ * в If-Match не отправляется), а ответ 206 дополнительно сверяется
  * по Content-Range; при любом несоответствии .part отбрасывается и файл
  * качается заново — старые байты к перезаписанному на сервере файлу не дописываются.
  * Итоговый размер сверяется с полным размером, объявленным сервером.
@@ -69,6 +74,10 @@ abstract class BaseDownloader {
         var outcome: DownloadOutcome? = null
         for (attempt in 0..1) {
             val meta = readTrustedMeta(partFile, metaFile)
+            // readTrustedMeta возвращает null только при пустом/битом .part или
+            // отсутствии .part.meta — значит доверенная мета равносильна тому,
+            // что попытка реально дописывает существующие байты части.
+            val partBytesReused = meta != null
             val result = try {
                 transfer(url, partFile, metaFile, meta, onProgress)
             } catch (e: CancellationException) {
@@ -108,8 +117,13 @@ abstract class BaseDownloader {
                         break
                     }
                     if (!verifySha256(partFile, expectedSha256)) {
+                        // Часть отбрасываем в любом случае: повтор (если он имеет
+                        // смысл) обязан качать файл заново с нуля.
                         discardPart(partFile, metaFile)
-                        outcome = DownloadOutcome.Mismatch("SHA-256 не совпадает: $fileName")
+                        outcome = DownloadOutcome.Mismatch(
+                            "SHA-256 не совпадает: $fileName",
+                            wasResumed = partBytesReused
+                        )
                         break
                     }
                     metaFile.delete()
@@ -156,7 +170,18 @@ abstract class BaseDownloader {
             val resumeBytes = if (meta != null) partFile.length() else 0L
             if (resumeBytes > 0) {
                 urlConn.setRequestProperty("Range", "bytes=$resumeBytes-")
-                meta?.etag?.let { urlConn.setRequestProperty("If-Match", it) }
+                meta?.etag?.let { etag ->
+                    // Слабый ETag (W/...) в строгом If-Match никогда не совпадёт —
+                    // сервер ответил бы 412 и докачка потерялась бы зря.
+                    if (DownloadResumePolicy.isWeakETag(etag)) {
+                        Timber.d(
+                            "Слабый ETag не отправляем в If-Match — " +
+                                "целостность проверим по Content-Range, размеру и SHA-256"
+                        )
+                    } else {
+                        urlConn.setRequestProperty("If-Match", etag)
+                    }
+                }
             }
 
             var bytesDone: Long
@@ -272,6 +297,17 @@ abstract class BaseDownloader {
     }
 
     /**
+     * Масштабировать прогресс одного файла (0..100) в общий прогресс
+     * последовательности из [fileCount] файлов: каждый файл занимает свою
+     * равную долю диапозона (размеры файлов до загрузки неизвестны).
+     * Общий прирост монотонен — «прыжка» 0..100 на каждый файл нет.
+     */
+    protected fun scaleFileProgress(index: Int, fileCount: Int, fileProgress: Int): Int {
+        if (fileCount <= 1) return fileProgress.coerceIn(0, 100)
+        return ((index * 100 + fileProgress) / fileCount).coerceIn(0, 100)
+    }
+
+    /**
      * Скачать несколько файлов в каталог модели (прогресс суммируется).
      * Каждый файл сверяется со своим SHA-256 из [sha256s] (null — пропуск).
      * @return результат: [DownloadOutcome.Success] с путём к каталогу.
@@ -290,8 +326,7 @@ abstract class BaseDownloader {
             val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
             val fileOutcome = downloadFile(url, modelDir, fileName, sha256s.getOrNull(index)) { fileProgress ->
                 // Прогресс по всем файлам: вес каждого файла одинаков.
-                val total = ((index * 100 + fileProgress) / urls.size).toInt()
-                onProgress(total.coerceIn(0, 100))
+                onProgress(scaleFileProgress(index, urls.size, fileProgress))
             }
             when (fileOutcome) {
                 is DownloadOutcome.Success -> Unit
