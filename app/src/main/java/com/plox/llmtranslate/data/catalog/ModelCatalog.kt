@@ -30,6 +30,8 @@ data class CatalogModelDto(
     val url: String = "",
     val urls: List<String>? = null,
     val sha256: String? = null,
+    /** Контрольные суммы по индексам urls (null-элемент — проверка пропускается). */
+    val sha256s: List<String?>? = null,
     val license: String = "Apache-2.0",
     val minAndroidSdk: Int = 26,
     val recommendedRamMb: Int = 0
@@ -100,11 +102,23 @@ private fun CatalogModelDto.toCard(): ModelCard {
         url = url,
         urls = urls ?: emptyList(),
         sha256 = sha256,
+        sha256s = resolveSha256s(sha256, sha256s),
         license = license,
         minAndroidSdk = minAndroidSdk,
         recommendedRamMb = recommendedRamMb
     )
 }
+
+/**
+ * Контрольные суммы по URL: явный список [rawList] как есть; если он пуст —
+ * единственный [single] как хеш первого (одиночного) файла.
+ */
+private fun resolveSha256s(single: String?, rawList: List<String?>?): List<String?> =
+    if (!rawList.isNullOrEmpty()) {
+        rawList
+    } else {
+        listOfNotNull(single?.takeIf { it.isNotBlank() })
+    }
 
 /**
  * Провайдер каталога моделей.

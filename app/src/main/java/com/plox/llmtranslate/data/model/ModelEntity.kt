@@ -25,6 +25,10 @@ data class ModelEntity(
     @ColumnInfo(name = "urls", defaultValue = "")
     val urls: String,
     @ColumnInfo(name = "sha256") val sha256: String?,
+    // CSV контрольных сумм по индексам urls; defaultValue совпадает с
+    // DEFAULT '' в MIGRATION_3_4 (identity hash схемы при апгрейде).
+    @ColumnInfo(name = "sha256s", defaultValue = "")
+    val sha256s: String = "",
     @ColumnInfo(name = "license") val license: String,
     @ColumnInfo(name = "min_android_sdk") val minAndroidSdk: Int,
     @ColumnInfo(name = "recommended_ram_mb") val recommendedRamMb: Int,

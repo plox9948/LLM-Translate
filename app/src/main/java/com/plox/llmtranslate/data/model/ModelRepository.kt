@@ -5,6 +5,8 @@ import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.sha256sFromCsv
+import com.plox.llmtranslate.domain.model.sha256sToCsv
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -203,6 +205,7 @@ internal fun ModelEntity.toDomainOrNull(): InstalledModel? {
         url = url,
         urls = urls.split(',').filter { it.isNotBlank() },
         sha256 = sha256,
+        sha256s = sha256sFromCsv(sha256s),
         license = license,
         minAndroidSdk = minAndroidSdk,
         recommendedRamMb = recommendedRamMb,
@@ -229,6 +232,7 @@ private fun InstalledModel.toEntity(createdAt: Long, updatedAt: Long): ModelEnti
         url = url,
         urls = urls.joinToString(","),
         sha256 = sha256,
+        sha256s = sha256sToCsv(sha256s),
         license = license,
         minAndroidSdk = minAndroidSdk,
         recommendedRamMb = recommendedRamMb,

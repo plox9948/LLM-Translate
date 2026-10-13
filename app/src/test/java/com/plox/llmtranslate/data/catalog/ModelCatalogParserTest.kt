@@ -194,6 +194,88 @@ class ModelCatalogParserTest {
         assertEquals("ok", cards[0].id)
     }
 
+    @Test
+    fun `parses per-url sha256s list`() {
+        val json = """
+            {
+              "version": 7,
+              "models": [
+                {
+                  "id": "nllb",
+                  "category": "TRANSLATION",
+                  "displayName": "NLLB",
+                   "runtime": "MARIAN_ONNX",
+                  "sizeBytes": 100,
+                  "url": "",
+                  "urls": [
+                    "https://example.com/encoder.onnx",
+                    "https://example.com/decoder.onnx",
+                    "https://example.com/tokenizer.json"
+                  ],
+                  "sha256s": ["aa", null, "cc"]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val card = parser.parse(json)[0]
+        assertEquals(listOf("aa", null, "cc"), card.sha256s)
+        assertEquals(3, card.downloadUrls().size)
+    }
+
+    @Test
+    fun `legacy single sha256 becomes single-element list`() {
+        val json = """
+            {
+              "version": 1,
+              "models": [
+                {
+                  "id": "x",
+                  "category": "STT",
+                  "displayName": "X",
+                  "runtime": "SHERPA",
+                  "sizeBytes": 10,
+                  "url": "https://example.com/x.tar.bz2",
+                  "sha256": "beef"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val card = parser.parse(json)[0]
+        assertEquals("beef", card.sha256)
+        assertEquals(listOf("beef"), card.sha256s)
+    }
+
+    @Test
+    fun `shipping assets catalog parses with per-url hashes for every download url`() {
+        // Реальный каталог из assets: парсер не должен его отбраковать,
+        // и каждое downloadUrls() должно иметь непустой SHA-256.
+        val candidates = listOf(
+            java.io.File("src/main/assets/models_catalog.json"),
+            java.io.File("app/src/main/assets/models_catalog.json")
+        )
+        val file = candidates.firstOrNull { it.isFile }
+        assertTrue("models_catalog.json не найден относительно $candidates", file != null)
+
+        val cards = parser.parse(file!!.readText(Charsets.UTF_8))
+        assertEquals(12, cards.size)
+        for (card in cards.filter { it.downloadUrls().isNotEmpty() }) {
+            val urls = card.downloadUrls()
+            assertEquals("${card.id}: sha256s != urls", urls.size, card.sha256s.size)
+            for (hash in card.sha256s) {
+                assertTrue(
+                    "${card.id}: пустой SHA-256",
+                    hash != null && hash.matches(Regex("[0-9a-f]{64}"))
+                )
+            }
+        }
+        // TTS-модели файлов не имеют.
+        for (card in cards.filter { it.category == ModelCategory.TTS }) {
+            assertTrue(card.downloadUrls().isEmpty())
+        }
+    }
+
     @Test(expected = Exception::class)
     fun `throws on invalid json`() {
         parser.parse("{ invalid json")

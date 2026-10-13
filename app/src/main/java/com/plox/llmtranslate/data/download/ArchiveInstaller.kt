@@ -20,6 +20,8 @@ import java.util.zip.ZipInputStream
  * - файл-архив (.tar.bz2/.tar.gz/.zip) — скачивается и распаковывается в
  *   targetDir/<modelId> (tar.bz2 — Apache Commons Compress + XZ; защита от zip-slip);
  * - обычный файл — скачивается как есть в targetDir/<modelId>.
+ * Каждый файл сверяется со своим SHA-256 из [sha256s] (архив — хеш архива
+ * до распаковки).
  *
  * Возвращает путь к каталогу модели.
  */
@@ -31,6 +33,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
     override suspend fun install(
         urls: List<String>,
         sha256: String?,
+        sha256s: List<String?>,
         targetDir: File,
         modelId: String,
         onProgress: suspend (Int) -> Unit
@@ -38,6 +41,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         if (urls.isEmpty()) {
             return InstallResult.Failure("Нет URL для скачивания")
         }
+        val hashes = perUrlSha256s(urls.size, sha256s, sha256)
 
         val modelDir = File(targetDir, modelId)
         modelDir.mkdirs()
@@ -49,25 +53,30 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                 fileName.endsWith(".zip")
 
             if (isArchive) {
-                val archiveFile = downloadFile(url, targetDir, fileName, onProgress)
-                    ?: return InstallResult.Failure("Не удалось скачать архив: $fileName")
-
-                if (index == 0 && !verifySha256(archiveFile, sha256)) {
-                    archiveFile.delete()
-                    // Файл повреждён на сервере — повторное скачивание не поможет.
-                    return InstallResult.Failure("SHA-256 не совпадает", permanent = true)
+                when (val outcome = downloadFile(url, targetDir, fileName, hashes[index], onProgress = onProgress)) {
+                    is DownloadOutcome.Success -> {
+                        val archiveFile = outcome.file
+                        val extracted = extractArchive(archiveFile, modelDir, fileName)
+                        archiveFile.delete()
+                        if (!extracted) {
+                            return InstallResult.Failure("Ошибка распаковки: $fileName")
+                        }
+                        // Архивы sherpa содержат единственный подкаталог — подтягиваем его наверх.
+                        flattenModelDir(modelDir)
+                    }
+                    is DownloadOutcome.NetworkError ->
+                        return InstallResult.Failure("Не удалось скачать архив: $fileName")
+                    is DownloadOutcome.Mismatch ->
+                        // Файл повреждён на сервере — повторное скачивание не поможет.
+                        return InstallResult.Failure(outcome.message, permanent = true)
                 }
-
-                val extracted = extractArchive(archiveFile, modelDir, fileName)
-                archiveFile.delete()
-                if (!extracted) {
-                    return InstallResult.Failure("Ошибка распаковки: $fileName")
-                }
-                // Архивы sherpa содержат единственный подкаталог — подтягиваем его наверх.
-                flattenModelDir(modelDir)
             } else {
-                if (downloadFile(url, modelDir, fileName, onProgress) == null) {
-                    return InstallResult.Failure("Не удалось скачать: $fileName")
+                when (val outcome = downloadFile(url, modelDir, fileName, hashes[index], onProgress = onProgress)) {
+                    is DownloadOutcome.Success -> Unit
+                    is DownloadOutcome.NetworkError ->
+                        return InstallResult.Failure("Не удалось скачать: $fileName")
+                    is DownloadOutcome.Mismatch ->
+                        return InstallResult.Failure(outcome.message, permanent = true)
                 }
             }
         }

@@ -29,8 +29,10 @@ interface ModelInstaller {
     /**
      * Установить модель: скачать (с докачкой) и проверить целостность.
      * @param urls адреса файлов (один — одиночный файл, несколько — мультифайловая модель)
-     * @param sha256 контрольная сумма первого файла (null — проверка пропускается;
-     *               для мультифайловых моделей не проверяется)
+     * @param sha256 контрольная сумма единственного файла (legacy; применяется,
+     *        только если [sha256s] пуст — старые строки БД и импортированные модели)
+     * @param sha256s контрольные суммы по индексам [urls] (null в элементе —
+     *        проверка файла пропускается)
      * @param targetDir каталог для моделей
      * @param modelId id модели (имя файла/каталога)
      * @param onProgress прогресс в процентах 0..100
@@ -39,6 +41,7 @@ interface ModelInstaller {
     suspend fun install(
         urls: List<String>,
         sha256: String?,
+        sha256s: List<String?> = emptyList(),
         targetDir: java.io.File,
         modelId: String,
         onProgress: suspend (Int) -> Unit

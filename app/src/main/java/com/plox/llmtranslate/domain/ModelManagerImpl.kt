@@ -110,6 +110,7 @@ class ModelManagerImpl @Inject constructor(
             url = card.url,
             urls = card.urls,
             sha256 = card.sha256,
+            sha256s = card.sha256s,
             license = card.license,
             minAndroidSdk = card.minAndroidSdk,
             recommendedRamMb = card.recommendedRamMb,
@@ -149,8 +150,9 @@ class ModelManagerImpl @Inject constructor(
     }
 
     /**
-     * Удалить недокачанные .part-файлы отменённой модели
-     * (конвенция BaseDownloader: рядом с целевым файлом `<имя>.part`).
+     * Удалить недокачанные .part-файлы отменённой модели и их метаданные
+     * докачки (конвенция BaseDownloader: рядом с целевым файлом `<имя>.part`
+     * и `<имя>.part.meta`).
      * Размещение повторяет логику инсталляторов (см. [ModelDownloadWorker]):
      * ONNX мультифайл и обычные файлы sherpa — в каталог модели,
      * одиночные ONNX-файлы и архивы — в корень каталога рантайма.
@@ -169,9 +171,11 @@ class ModelManagerImpl @Inject constructor(
             } else {
                 urls.size > 1
             }
-            val part = File(if (inModelDir) File(runtimeDir, model.id) else runtimeDir, "$fileName.part")
-            if (part.isFile && !part.delete()) {
-                Timber.w("Не удалось удалить осиротевший ${part.name}")
+            val dir = if (inModelDir) File(runtimeDir, model.id) else runtimeDir
+            listOf(File(dir, "$fileName.part"), File(dir, "$fileName.part.meta")).forEach { part ->
+                if (part.isFile && !part.delete()) {
+                    Timber.w("Не удалось удалить осиротевший ${part.name}")
+                }
             }
         }
     }

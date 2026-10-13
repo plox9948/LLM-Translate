@@ -111,6 +111,7 @@ class ModelRepositoryTest {
         status: String = ModelStatus.READY.name,
         languages: String = "ru,en",
         urls: String = "",
+        sha256s: String = "",
         filePath: String? = "/files/m1"
     ) = ModelEntity(
         id = id,
@@ -126,6 +127,7 @@ class ModelRepositoryTest {
         url = "https://example.invalid/m1",
         urls = urls,
         sha256 = null,
+        sha256s = sha256s,
         license = "MIT",
         minAndroidSdk = 26,
         recommendedRamMb = 200,
@@ -154,8 +156,25 @@ class ModelRepositoryTest {
     }
 
     @Test
-    fun `unknown category returns null`() {
-        // Символ-заглушка не допускает случайного совпадения с реальным enum.
+    fun `sha256s csv keeps positional nulls and roundtrips via upsert`() = runTest {
+        // Позиционные пустые элементы — «хеш неизвестен», не склеиваются.
+        val model = entity(sha256s = "aa,,cc").toDomainOrNull()
+        requireNotNull(model)
+        assertEquals(listOf("aa", null, "cc"), model.sha256s)
+
+        val dao = FakeDao()
+        val repo = ModelRepository(dao)
+        repo.upsert(model.copy(sha256s = listOf("dd", "ee")))
+        val restored = repo.getById("m1")
+        assertEquals(listOf("dd", "ee"), restored?.sha256s)
+        assertEquals("dd,ee", dao.store.getValue("m1").sha256s)
+
+        // Пустая колонка — пустой список (старые строки после миграции).
+        assertEquals(emptyList<String?>(), entity(sha256s = "").toDomainOrNull()?.sha256s)
+    }
+
+    @Test
+    fun `unknown category returns null`() {        // Символ-заглушка не допускает случайного совпадения с реальным enum.
         assertNull(entity(category = "\u041d\u0415\u0412\u0415\u0421\u0422\u0418").toDomainOrNull())
     }
 

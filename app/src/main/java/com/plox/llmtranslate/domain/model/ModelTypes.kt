@@ -75,6 +75,8 @@ data class ModelCard(
     val url: String,
     val urls: List<String>,
     val sha256: String?,
+    /** Контрольные суммы по индексам [urls]; пустой список — только [sha256] для одиночного файла. */
+    val sha256s: List<String?> = emptyList(),
     val license: String,
     val minAndroidSdk: Int,
     val recommendedRamMb: Int
@@ -98,6 +100,17 @@ private fun resolveDownloadUrls(url: String, urls: List<String>): List<String> =
     if (urls.isNotEmpty()) urls else listOfNotNull(url.takeIf { it.isNotBlank() })
 
 /**
+ * Кодирование списка по-URL SHA-256 в CSV-колонку БД: пустой элемент —
+ * хеш неизвестен, пустая строка — пустой список.
+ */
+internal fun sha256sToCsv(sha256s: List<String?>): String =
+    sha256s.joinToString(",") { it?.takeIf { value -> value.isNotBlank() }.orEmpty() }
+
+/** Обратное к [sha256sToCsv] декодирование (пустая строка — пустой список). */
+internal fun sha256sFromCsv(raw: String): List<String?> =
+    if (raw.isEmpty()) emptyList() else raw.split(',').map { it.takeIf { value -> value.isNotBlank() } }
+
+/**
  * Установленная модель (каталожная или импортированная).
  */
 data class InstalledModel(
@@ -114,6 +127,8 @@ data class InstalledModel(
     val url: String,
     val urls: List<String>,
     val sha256: String?,
+    /** Контрольные суммы по индексам [urls] (пустой список — legacy [sha256] для одного файла). */
+    val sha256s: List<String?> = emptyList(),
     val license: String,
     val minAndroidSdk: Int,
     val recommendedRamMb: Int,

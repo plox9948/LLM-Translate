@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "models": [
     {
       "id": "opus-mt-tiny-ru-en-int8-v2",
@@ -24,6 +24,13 @@
         "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/generation_config.json"
       ],
       "sha256": null,
+      "sha256s": [
+        "0bfecc740d205185d1def9929bd6376c41937eb8668380649e8a09530353cabf",
+        "a8c423be98cb14e92024c7ee0d96ea79c12443a70e655904139885ccd270ac33",
+        "3c28760bc59095a71c266affc92563f4d7bea9b705ffee415d541e4bd4971b82",
+        "919338d006828f146b4f81de714c29ab6fa3f28bf55c26f903ec6b95a7b2e0db",
+        "68e3e0677a3852008c48716deb2b498ab259eb824f7225c834c967a0eecdaf2c"
+      ],
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
       "recommendedRamMb": 2048
@@ -51,6 +58,13 @@
         "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/generation_config.json"
       ],
       "sha256": null,
+      "sha256s": [
+        "e228c6ec1d03f95e7aa6c2e4817b0f8b4c4fd46fada673f0fdf6b7da8e629aae",
+        "e8a7edf94148152d2f891fe8daf0cac790bb5715762514d39d86ed65e9b0da4a",
+        "bab6fc8d398fef2e5685aa06a94989913a2ac2871e1ace75161bd904c5896412",
+        "97a0b6d5e2dd24c37aaf8e881a2d0db8382e729cf8e7659e7b6ba960b8375fde",
+        "68e3e0677a3852008c48716deb2b498ab259eb824f7225c834c967a0eecdaf2c"
+      ],
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
       "recommendedRamMb": 2048
@@ -83,6 +97,18 @@
         "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/config.json"
       ],
       "sha256": null,
+      "sha256s": [
+        "79dd1c3d9f90f8bbd48effcc2d150616ac3a97525c8081481f14cd5095567ca6",
+        "6c402df00dfc45a69607e0231e1e5fd884508b19ca664836c94dd61bfa1ba137",
+        "845cdbaf0ee97d3c8ddff249a2e2d6e475d7ae1781157fcc6d0d651405bb8dd6",
+        "bcc818db56bc681fab2d50ca31b99dbcb5f82abbce4dccc92946edf5906fa86e",
+        "abe939ce4d60bcbb9744790640188686c8af084083eb50d63bdbb7266a325d9a",
+        "d15ba1265a61b3b66122aab74e888442093a2c711f51b0f9896108661e1d346c",
+        "053e948b03403ad9adc43a08e7e5c5d83854fffeddf1aae85e3ca82258698575",
+        "3e4a3e3131ae95cfd8a84d0de5ca1b00a06752fcebae44b3e641c909166d7d1d",
+        "6c8b29ae72e680d5a2d9e849567f6f556d3f4e9bbd42434964a646f49b556972",
+        "7268e8cc0fb12d2791d5380595eb44039d03a2066c995f99a1bcc9da8d1100a6"
+      ],
       "license": "MIT",
       "minAndroidSdk": 26,
       "recommendedRamMb": 3072
@@ -115,6 +141,18 @@
         "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/config.json"
       ],
       "sha256": null,
+      "sha256s": [
+        "87c3d6c6fbc48d9d7081927f3bd59915d5443a06cb63460e0d3705bae74de5a9",
+        "71a4d119514411a3cb3f9d76d2d88d5c4eac7c8e907397d62d5b29e2468a0c16",
+        "58c0fafb7ba0f343acba8643a386fab08143d49ef24472cefaecc87080f44e75",
+        "a2e9a87ff7563f5fc87fe8102188be37fb66771cf30970e649ca67be7f895497",
+        "902314746ac629ae2ff584709c03eecdb0b3f7be4fb70ce0ff1bfbe66f14e574",
+        "ac1930c411028ba3a7929f35bc7f62d2e5e837ca24150b661de4f4606469eeca",
+        "51b05cd37636765e158146534d54452be558df32c6ab06ba4caeecdd0266a580",
+        "9f18574a040d815695f98ac53e7d8ca18ae38b90a339eb59301690fccfc62437",
+        "6c8b29ae72e680d5a2d9e849567f6f556d3f4e9bbd42434964a646f49b556972",
+        "1429519f3b36f8bab631ed632b328a3422c19c4225c825dcde27c545746f475e"
+      ],
       "license": "MIT",
       "minAndroidSdk": 26,
       "recommendedRamMb": 3072
@@ -136,7 +174,7 @@
       "urls": [
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ru-2024-09-18.tar.bz2"
       ],
-      "sha256": null,
+      "sha256": "7659a018a61d9774672720ce653a253e97e707d8bb7ccabd44a80e992d4ab121",
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
       "recommendedRamMb": 2048
@@ -158,7 +196,7 @@
       "urls": [
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19.tar.bz2"
       ],
-      "sha256": null,
+      "sha256": "777be8717d8aaf04861823671290f7687f7579fd9ac63a2124955573f920caf5",
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
       "recommendedRamMb": 2560
@@ -180,7 +218,7 @@
       "urls": [
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8.tar.bz2"
       ],
-      "sha256": null,
+      "sha256": "17f945007b52ccd8b7200ffc7c5652e9e8e961dfdf479cefcabd06cf5703630b",
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
       "recommendedRamMb": 2048
@@ -204,6 +242,10 @@
         "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt"
       ],
       "sha256": null,
+      "sha256s": [
+        "fbbc564e369046fd788d4150192a7e47c4e675346ec3f1b78002937fb3ccfb56",
+        "ee60967630213f31951817ac8b402b92ec18cce80718a24a49b388e56672dfb2"
+      ],
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
       "recommendedRamMb": 2560
@@ -230,6 +272,11 @@
         "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/whisper-multilingual-swift/tokens.txt"
       ],
       "sha256": null,
+      "sha256s": [
+        "c4cd5d7edac73d7f2630706b8890d148321a7174085b83d11167838432866ed7",
+        "193508bf805c3fb0212836c49515a4aad3465bf25afcaa069d745490a3d932ce",
+        "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126"
+      ],
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
       "recommendedRamMb": 3072

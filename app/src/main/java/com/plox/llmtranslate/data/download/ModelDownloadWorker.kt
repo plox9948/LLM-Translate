@@ -15,6 +15,8 @@ import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.sha256sFromCsv
+import com.plox.llmtranslate.domain.model.sha256sToCsv
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import timber.log.Timber
@@ -37,6 +39,7 @@ class ModelDownloadWorker @AssistedInject constructor(
         val modelId = inputData.getString(KEY_MODEL_ID) ?: return Result.failure()
         val urlsCsv = inputData.getString(KEY_URLS)
         val sha256 = inputData.getString(KEY_SHA256)
+        val sha256s = sha256sFromCsv(inputData.getString(KEY_SHA256S) ?: "")
         val runtimeName = inputData.getString(KEY_RUNTIME)
         val sizeBytes = inputData.getLong(KEY_SIZE_BYTES, 0L)
 
@@ -67,7 +70,7 @@ class ModelDownloadWorker @AssistedInject constructor(
         // каталожные поля (ram_required_mb и др.), обновлённые
         // syncCatalogRamFields параллельно на старте процесса.
         var lastSavedPercent = -1
-        val result = installer.install(urls, sha256, modelsDir, modelId) { progress ->
+        val result = installer.install(urls, sha256, sha256s, modelsDir, modelId) { progress ->
             setProgress(workDataOf(KEY_PROGRESS to progress))
             if (progress != lastSavedPercent) {
                 lastSavedPercent = progress
@@ -118,6 +121,7 @@ class ModelDownloadWorker @AssistedInject constructor(
         const val KEY_MODEL_ID = "key_model_id"
         const val KEY_URLS = "key_urls"
         const val KEY_SHA256 = "key_sha256"
+        const val KEY_SHA256S = "key_sha256s"
         const val KEY_RUNTIME = "key_runtime"
         const val KEY_SIZE_BYTES = "key_size_bytes"
         const val KEY_PROGRESS = "key_progress"
@@ -140,6 +144,7 @@ class ModelDownloadWorker @AssistedInject constructor(
                         KEY_MODEL_ID to model.id,
                         KEY_URLS to model.downloadUrls().joinToString(","),
                         KEY_SHA256 to (model.sha256 ?: ""),
+                        KEY_SHA256S to sha256sToCsv(model.sha256s),
                         KEY_RUNTIME to model.runtime.name,
                         KEY_SIZE_BYTES to model.sizeBytes
                     )

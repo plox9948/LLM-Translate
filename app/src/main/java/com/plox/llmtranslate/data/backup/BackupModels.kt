@@ -21,6 +21,7 @@ data class BackupModelEntry(
     val url: String,
     val urls: List<String>,
     val sha256: String?,
+    val sha256s: List<String?> = emptyList(),
     val license: String,
     val minAndroidSdk: Int,
     val recommendedRamMb: Int,

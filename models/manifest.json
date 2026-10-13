@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "comment": "Единственный источник правды о моделях. Из него генерируются scripts/download_models.* и assets/models_catalog.json. SHA-256 заполняются после первичного скачивания (скрипт печатает их).",
   "models": [
     {
@@ -104,52 +104,52 @@
         {
           "name": "encoder_model.onnx",
           "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/encoder_model.onnx",
-          "sha256": null
+          "sha256": "79dd1c3d9f90f8bbd48effcc2d150616ac3a97525c8081481f14cd5095567ca6"
         },
         {
           "name": "encoder_model.onnx.data",
           "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/encoder_model.onnx.data",
-          "sha256": null
+          "sha256": "6c402df00dfc45a69607e0231e1e5fd884508b19ca664836c94dd61bfa1ba137"
         },
         {
           "name": "decoder_model.onnx",
           "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/decoder_model.onnx",
-          "sha256": null
+          "sha256": "845cdbaf0ee97d3c8ddff249a2e2d6e475d7ae1781157fcc6d0d651405bb8dd6"
         },
         {
           "name": "decoder_with_past_model.onnx",
           "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/decoder_with_past_model.onnx",
-          "sha256": null
+          "sha256": "bcc818db56bc681fab2d50ca31b99dbcb5f82abbce4dccc92946edf5906fa86e"
         },
         {
           "name": "decoder_shared.onnx.data",
           "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/decoder_shared.onnx.data",
-          "sha256": null
+          "sha256": "abe939ce4d60bcbb9744790640188686c8af084083eb50d63bdbb7266a325d9a"
         },
         {
           "name": "tokenizer_src.json",
           "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/tokenizer_src.json",
-          "sha256": null
+          "sha256": "d15ba1265a61b3b66122aab74e888442093a2c711f51b0f9896108661e1d346c"
         },
         {
           "name": "tokenizer_tgt.json",
           "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/tokenizer_tgt.json",
-          "sha256": null
+          "sha256": "053e948b03403ad9adc43a08e7e5c5d83854fffeddf1aae85e3ca82258698575"
         },
         {
           "name": "tokenizer_meta.json",
           "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/tokenizer_meta.json",
-          "sha256": null
+          "sha256": "3e4a3e3131ae95cfd8a84d0de5ca1b00a06752fcebae44b3e641c909166d7d1d"
         },
         {
           "name": "generation_config.json",
           "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/generation_config.json",
-          "sha256": null
+          "sha256": "6c8b29ae72e680d5a2d9e849567f6f556d3f4e9bbd42434964a646f49b556972"
         },
         {
           "name": "config.json",
           "url": "https://huggingface.co/hari31416/indictrans2-indic-en-dist-200M-ONNX-int8/resolve/main/config.json",
-          "sha256": null
+          "sha256": "7268e8cc0fb12d2791d5380595eb44039d03a2066c995f99a1bcc9da8d1100a6"
         }
       ]
     },
@@ -171,52 +171,52 @@
         {
           "name": "encoder_model.onnx",
           "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/encoder_model.onnx",
-          "sha256": null
+          "sha256": "87c3d6c6fbc48d9d7081927f3bd59915d5443a06cb63460e0d3705bae74de5a9"
         },
         {
           "name": "encoder_model.onnx.data",
           "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/encoder_model.onnx.data",
-          "sha256": null
+          "sha256": "71a4d119514411a3cb3f9d76d2d88d5c4eac7c8e907397d62d5b29e2468a0c16"
         },
         {
           "name": "decoder_model.onnx",
           "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/decoder_model.onnx",
-          "sha256": null
+          "sha256": "58c0fafb7ba0f343acba8643a386fab08143d49ef24472cefaecc87080f44e75"
         },
         {
           "name": "decoder_with_past_model.onnx",
           "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/decoder_with_past_model.onnx",
-          "sha256": null
+          "sha256": "a2e9a87ff7563f5fc87fe8102188be37fb66771cf30970e649ca67be7f895497"
         },
         {
           "name": "decoder_shared.onnx.data",
           "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/decoder_shared.onnx.data",
-          "sha256": null
+          "sha256": "902314746ac629ae2ff584709c03eecdb0b3f7be4fb70ce0ff1bfbe66f14e574"
         },
         {
           "name": "tokenizer_src.json",
           "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/tokenizer_src.json",
-          "sha256": null
+          "sha256": "ac1930c411028ba3a7929f35bc7f62d2e5e837ca24150b661de4f4606469eeca"
         },
         {
           "name": "tokenizer_tgt.json",
           "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/tokenizer_tgt.json",
-          "sha256": null
+          "sha256": "51b05cd37636765e158146534d54452be558df32c6ab06ba4caeecdd0266a580"
         },
         {
           "name": "tokenizer_meta.json",
           "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/tokenizer_meta.json",
-          "sha256": null
+          "sha256": "9f18574a040d815695f98ac53e7d8ca18ae38b90a339eb59301690fccfc62437"
         },
         {
           "name": "generation_config.json",
           "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/generation_config.json",
-          "sha256": null
+          "sha256": "6c8b29ae72e680d5a2d9e849567f6f556d3f4e9bbd42434964a646f49b556972"
         },
         {
           "name": "config.json",
           "url": "https://huggingface.co/hari31416/indictrans2-en-indic-dist-200M-ONNX-int8/resolve/main/config.json",
-          "sha256": null
+          "sha256": "1429519f3b36f8bab631ed632b328a3422c19c4225c825dcde27c545746f475e"
         }
       ]
     },
@@ -238,7 +238,7 @@
         {
           "name": "sherpa-onnx-zipformer-ru-2024-09-18.tar.bz2",
           "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ru-2024-09-18.tar.bz2",
-          "sha256": null
+          "sha256": "7659a018a61d9774672720ce653a253e97e707d8bb7ccabd44a80e992d4ab121"
         }
       ]
     },
@@ -260,7 +260,7 @@
         {
           "name": "sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19.tar.bz2",
           "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19.tar.bz2",
-          "sha256": null
+          "sha256": "777be8717d8aaf04861823671290f7687f7579fd9ac63a2124955573f920caf5"
         }
       ]
     },
@@ -282,7 +282,7 @@
         {
           "name": "sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8.tar.bz2",
           "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8.tar.bz2",
-          "sha256": null
+          "sha256": "17f945007b52ccd8b7200ffc7c5652e9e8e961dfdf479cefcabd06cf5703630b"
         }
       ]
     },
@@ -304,12 +304,12 @@
         {
           "name": "model.int8.onnx",
           "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/ne/model.int8.onnx",
-          "sha256": null
+          "sha256": "fbbc564e369046fd788d4150192a7e47c4e675346ec3f1b78002937fb3ccfb56"
         },
         {
           "name": "tokens.txt",
           "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt",
-          "sha256": null
+          "sha256": "ee60967630213f31951817ac8b402b92ec18cce80718a24a49b388e56672dfb2"
         }
       ]
     },
@@ -331,17 +331,17 @@
         {
           "name": "encoder.int8.onnx",
           "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/whisper-multilingual-swift/encoder.int8.onnx",
-          "sha256": null
+          "sha256": "c4cd5d7edac73d7f2630706b8890d148321a7174085b83d11167838432866ed7"
         },
         {
           "name": "decoder.int8.onnx",
           "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/whisper-multilingual-swift/decoder.int8.onnx",
-          "sha256": null
+          "sha256": "193508bf805c3fb0212836c49515a4aad3465bf25afcaa069d745490a3d932ce"
         },
         {
           "name": "tokens.txt",
           "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/whisper-multilingual-swift/tokens.txt",
-          "sha256": null
+          "sha256": "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126"
         }
       ]
     },
