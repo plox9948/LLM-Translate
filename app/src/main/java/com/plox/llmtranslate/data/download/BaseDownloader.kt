@@ -74,10 +74,6 @@ abstract class BaseDownloader {
         var outcome: DownloadOutcome? = null
         for (attempt in 0..1) {
             val meta = readTrustedMeta(partFile, metaFile)
-            // readTrustedMeta возвращает null только при пустом/битом .part или
-            // отсутствии .part.meta — значит доверенная мета равносильна тому,
-            // что попытка реально дописывает существующие байты части.
-            val partBytesReused = meta != null
             val result = try {
                 transfer(url, partFile, metaFile, meta, onProgress)
             } catch (e: CancellationException) {
@@ -98,7 +94,11 @@ abstract class BaseDownloader {
                     outcome = DownloadOutcome.NetworkError(result.message)
                     break
                 }
-                TransferOutcome.Complete -> {
+                is TransferOutcome.Complete -> {
+                    // Докачанные байты реально вошли в итоговый файл, только если
+                    // сервер подтвердил Range (206) и файл открывался на append;
+                    // при 200 часть перезаписывалась с нуля — байты не переиспользовались.
+                    val reusedPartBytes = result.reusedPartBytes
                     // Итоговый размер сверяется с полным размером, объявленным
                     // сервером (и с expectedSizeBytes, если он известен).
                     val expected = maxOf(
@@ -122,7 +122,7 @@ abstract class BaseDownloader {
                         discardPart(partFile, metaFile)
                         outcome = DownloadOutcome.Mismatch(
                             "SHA-256 не совпадает: $fileName",
-                            wasResumed = partBytesReused
+                            wasResumed = reusedPartBytes
                         )
                         break
                     }
@@ -144,7 +144,13 @@ abstract class BaseDownloader {
 
     /** Результат одной HTTP-попытки передачи. */
     private sealed class TransferOutcome {
-        object Complete : TransferOutcome()
+        /**
+         * Передача завершилась в .part.
+         * @param reusedPartBytes true — ответ 206 append подтверждён и байты
+         *        существующей части реально вошли в файл; false — файл
+         *        перезаписывался с нуля (ответ 200).
+         */
+        data class Complete(val reusedPartBytes: Boolean) : TransferOutcome()
         object Restart : TransferOutcome()
         data class Network(val message: String) : TransferOutcome()
     }
@@ -186,6 +192,9 @@ abstract class BaseDownloader {
 
             var bytesDone: Long
             var announcedTotal: Long
+            // Байты существующей части реально переиспользуются только при
+            // подтверждённом 206 (append); при 200 файл перезаписывается с нуля.
+            var reusedPartBytes = false
             when (val code = urlConn.responseCode) {
                 HttpURLConnection.HTTP_OK -> {
                     // Сервер не поддержал Range — начинаем заново.
@@ -205,6 +214,7 @@ abstract class BaseDownloader {
                     }
                     Timber.d("Докачка с байта $resumeBytes")
                     bytesDone = resumeBytes
+                    reusedPartBytes = true
                     announcedTotal = if (range != null && range.total > 0) {
                         range.total
                     } else {
@@ -261,7 +271,7 @@ abstract class BaseDownloader {
                     }
                 }
             }
-            TransferOutcome.Complete
+            TransferOutcome.Complete(reusedPartBytes)
         } finally {
             connection?.disconnect()
         }

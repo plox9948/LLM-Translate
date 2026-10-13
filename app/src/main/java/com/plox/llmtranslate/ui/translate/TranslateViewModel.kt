@@ -245,6 +245,10 @@ class TranslateViewModel @Inject constructor(
      */
     fun transcribeAudio(wavPath: String) {
         val state = _uiState.value
+        // Симметрично guard в translate(): пока идёт перевод или распознавание,
+        // не перезаписываем translationJob — иначе быстрый тап «Перевести» в окне
+        // stopRecording() порождает гонку двух задач на один Job.
+        if (state.isTranslating) return
         translationJob = viewModelScope.launch {
             try {
                 update {
