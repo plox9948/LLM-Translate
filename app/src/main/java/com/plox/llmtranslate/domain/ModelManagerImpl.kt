@@ -120,20 +120,58 @@ class ModelManagerImpl @Inject constructor(
             isBuiltin = true
         )
         scope.launch {
-            repository.upsert(model)
-            ModelDownloadWorker.schedule(context, model)
+            try {
+                repository.upsert(model)
+                ModelDownloadWorker.schedule(context, model)
+            } catch (e: Exception) {
+                Timber.e(e, "Не удалось поставить на скачивание модель ${card.id}")
+            }
         }
     }
 
     override fun cancelDownload(modelId: String) {
         ModelDownloadWorker.cancel(context, modelId)
         scope.launch {
-            val model = repository.getById(modelId) ?: return@launch
-            if (model.status != ModelStatus.READY) {
-                // Незавершённую запись удаляем, чтобы UI снова показал «Скачать».
-                // Файл .part остаётся на диске — при повторном скачивании
-                // докачка продолжится по Range.
-                repository.deleteById(modelId)
+            try {
+                val model = repository.getById(modelId) ?: return@launch
+                if (model.status != ModelStatus.READY) {
+                    // Незавершённую запись удаляем, чтобы UI снова показал «Скачать».
+                    // При явной отмене пользователем удаляем и осиротевшие
+                    // .part-файлы: частичная загрузка этой модели не нужна,
+                    // при повторном скачивании начнётся заново.
+                    deleteOrphanParts(model)
+                    repository.deleteById(modelId)
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Не удалось отменить скачивание модели $modelId")
+            }
+        }
+    }
+
+    /**
+     * Удалить недокачанные .part-файлы отменённой модели
+     * (конвенция BaseDownloader: рядом с целевым файлом `<имя>.part`).
+     * Размещение повторяет логику инсталляторов (см. [ModelDownloadWorker]):
+     * ONNX мультифайл и обычные файлы sherpa — в каталог модели,
+     * одиночные ONNX-файлы и архивы — в корень каталога рантайма.
+     */
+    private fun deleteOrphanParts(model: InstalledModel) {
+        val urls = model.downloadUrls()
+        if (urls.isEmpty()) return
+        val runtimeDir = File(modelsDir, model.runtime.name)
+        urls.forEachIndexed { index, url ->
+            val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
+            val isArchive = fileName.endsWith(".tar.bz2") ||
+                fileName.endsWith(".tar.gz") ||
+                fileName.endsWith(".zip")
+            val inModelDir = if (model.runtime == RuntimeType.SHERPA) {
+                !isArchive
+            } else {
+                urls.size > 1
+            }
+            val part = File(if (inModelDir) File(runtimeDir, model.id) else runtimeDir, "$fileName.part")
+            if (part.isFile && !part.delete()) {
+                Timber.w("Не удалось удалить осиротевший ${part.name}")
             }
         }
     }
@@ -214,24 +252,28 @@ class ModelManagerImpl @Inject constructor(
         // Отменяем возможную загрузку, чтобы воркер не воскресил удалённую запись.
         ModelDownloadWorker.cancel(context, modelId)
         scope.launch {
-            val model = repository.getById(modelId) ?: return@launch
-            val path = model.filePath
-            if (!path.isNullOrBlank()) {
-                val file = File(path)
-                if (file.isDirectory) file.deleteRecursively() else file.delete()
-            }
-            repository.deleteById(modelId)
-            // Если удалена активная модель — переключаемся на первую доступную.
-            if (preferences.getActiveModelId(model.category) == modelId) {
-                val fallback = repository.getFirstReady(model.category)
-                if (fallback != null) {
-                    Timber.d("Переключаемся на ${fallback.id} (категория ${model.category})")
-                } else {
-                    Timber.d("Нет доступных моделей категории ${model.category}")
+            try {
+                val model = repository.getById(modelId) ?: return@launch
+                val path = model.filePath
+                if (!path.isNullOrBlank()) {
+                    val file = File(path)
+                    if (file.isDirectory) file.deleteRecursively() else file.delete()
                 }
-                preferences.setActiveModelId(model.category, fallback?.id)
+                repository.deleteById(modelId)
+                // Если удалена активная модель — переключаемся на первую доступную.
+                if (preferences.getActiveModelId(model.category) == modelId) {
+                    val fallback = repository.getFirstReady(model.category)
+                    if (fallback != null) {
+                        Timber.d("Переключаемся на ${fallback.id} (категория ${model.category})")
+                    } else {
+                        Timber.d("Нет доступных моделей категории ${model.category}")
+                    }
+                    preferences.setActiveModelId(model.category, fallback?.id)
+                }
+                Timber.d("Модель $modelId удалена")
+            } catch (e: Exception) {
+                Timber.e(e, "Не удалось удалить модель $modelId")
             }
-            Timber.d("Модель $modelId удалена")
         }
     }
 
@@ -239,8 +281,12 @@ class ModelManagerImpl @Inject constructor(
         // release() внутри каждого движка ждёт окончания активного инференса
         // (десятки секунд), поэтому уходим с главного потока в app-scope.
         scope.launch(Dispatchers.IO) {
-            runtimeRouter.releaseAll()
-            Timber.d("Рантаймы разгружены (ON_STOP)")
+            try {
+                runtimeRouter.releaseAll()
+                Timber.d("Рантаймы разгружены (ON_STOP)")
+            } catch (e: Exception) {
+                Timber.e(e, "Ошибка при разгрузке рантаймов")
+            }
         }
     }
 
@@ -278,14 +324,16 @@ class ModelManagerImpl @Inject constructor(
         }
     }
 
-    override fun deviceInfo(): DeviceInfo = deviceInfoProvider.get()
+    override suspend fun deviceInfo(): DeviceInfo = deviceInfoProvider.get()
 }
 
 /**
  * Провайдер информации об устройстве (ОЗУ, диск, SDK).
  */
 interface DeviceInfoProvider {
-    fun get(): DeviceInfo
+
+    /** Сбор данных блокирует (binder-вызовы AMS, StatFs) — реализация на IO. */
+    suspend fun get(): DeviceInfo
 }
 
 /**
@@ -296,7 +344,7 @@ class AndroidDeviceInfoProvider @Inject constructor(
     @ApplicationContext private val context: Context
 ) : DeviceInfoProvider {
 
-    override fun get(): DeviceInfo {
+    override suspend fun get(): DeviceInfo = withContext(Dispatchers.IO) {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
         val memInfo = android.app.ActivityManager.MemoryInfo()
         am.getMemoryInfo(memInfo)
@@ -306,7 +354,7 @@ class AndroidDeviceInfoProvider @Inject constructor(
         val stat = StatFs(modelsDir.absolutePath)
         val freeBytes = stat.availableBlocksLong * stat.blockSizeLong
 
-        return DeviceInfo(
+        DeviceInfo(
             sdkInt = android.os.Build.VERSION.SDK_INT,
             totalRamMb = memInfo.totalMem / 1024 / 1024,
             availableRamMb = memInfo.availMem / 1024 / 1024,

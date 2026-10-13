@@ -9,8 +9,10 @@ import android.media.MediaRecorder
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -212,26 +214,30 @@ class AudioRecorder @Inject constructor(
 
         val record = audioRecord
         audioRecord = null
-        try {
-            record?.stop()
-        } catch (e: IllegalStateException) {
-            // Буфер мог быть пуст — не критично.
-        }
-        record?.release()
 
-        val pcm = synchronized(pcmBuffer) { pcmBuffer.toByteArray() }
-        if (pcm.isEmpty()) {
-            Timber.w("Пустая запись: PCM-данных нет")
-            return null
-        }
+        // Блокирующие вызовы (AudioRecord.stop/release, запись WAV) — на IO.
+        return withContext(Dispatchers.IO) {
+            try {
+                record?.stop()
+            } catch (e: IllegalStateException) {
+                // Буфер мог быть пуст — не критично.
+            }
+            record?.release()
 
-        val audioDir = context.getExternalFilesDir("audio")
-            ?: context.filesDir
-        val file = File(audioDir, "recording_${System.currentTimeMillis()}.wav")
-        return if (WavWriter.writeWav(file, pcm, SAMPLE_RATE, CHANNELS, BITS_PER_SAMPLE)) {
-            file.absolutePath
-        } else {
-            null
+            val pcm = synchronized(pcmBuffer) { pcmBuffer.toByteArray() }
+            if (pcm.isEmpty()) {
+                Timber.w("Пустая запись: PCM-данных нет")
+                return@withContext null
+            }
+
+            val audioDir = context.getExternalFilesDir("audio")
+                ?: context.filesDir
+            val file = File(audioDir, "recording_${System.currentTimeMillis()}.wav")
+            if (WavWriter.writeWav(file, pcm, SAMPLE_RATE, CHANNELS, BITS_PER_SAMPLE)) {
+                file.absolutePath
+            } else {
+                null
+            }
         }
     }
 

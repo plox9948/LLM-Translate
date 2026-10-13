@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="app_name">LLM Translate</string>
+
     <!-- Нижняя навигация -->
     <string name="nav_translate">Translate</string>
     <string name="nav_history">History</string>

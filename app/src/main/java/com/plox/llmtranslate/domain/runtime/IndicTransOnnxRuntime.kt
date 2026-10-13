@@ -123,9 +123,16 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                         setIntraOpNumThreads(INTRA_OP_THREADS)
                         setInterOpNumThreads(INTER_OP_THREADS)
                     }
-                    encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
-                    decoderSession = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
-                    decoderPastSession = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
+                    // SessionOptions нужны только на создание сессий — закрываем
+                    // нативный ресурс после всех createSession, в том числе при
+                    // исключении на любом из них (иначе утечка native-памяти ORT).
+                    try {
+                        encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
+                        decoderSession = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
+                        decoderPastSession = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
+                    } finally {
+                        sessionOpts.close()
+                    }
 
                     // numLayers = (число выходов декодера - 1) / 4.
                     val decOutputs = decoderSession!!.outputNames.size
@@ -137,9 +144,19 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
 
                     val srcTok = TokenizerJson()
                     srcTok.load(srcTokFile.absolutePath)
-                    srcTokenizer = srcTok
                     val tgtTok = TokenizerJson()
                     tgtTok.load(tgtTokFile.absolutePath)
+                    if (!srcTok.isLoaded || !tgtTok.isLoaded) {
+                        // Без проверки токенизаторы молча деградировали:
+                        // encode() возвращал пустой список и инференс падал
+                        // с «Пустой вход» вместо явной ошибки загрузки.
+                        Timber.e("IndicTrans: не удалось загрузить токенизаторы в $path")
+                        releaseUnlocked()
+                        return@withContext RuntimeError.LoadFailed(
+                            "indictrans", "Не удалось загрузить токенизаторы"
+                        )
+                    }
+                    srcTokenizer = srcTok
                     tgtTokenizer = tgtTok
 
                     parseGenerationConfig(genConfigFile)
@@ -185,10 +202,24 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
 
                 try {
                     // Flores-коды языков (по схеме IndicTransToolkit).
-                    val srcLang =
-                        if (from == "ne") IndicProcessorLite.NEPALI else IndicProcessorLite.ENGLISH
-                    val tgtLang =
-                        if (to == "ne") IndicProcessorLite.NEPALI else IndicProcessorLite.ENGLISH
+                    // Неизвестный язык подменяется английским — подмена явна в логе,
+                    // чтобы тихая подстановка не выглядела как корректный перевод.
+                    val srcLang = when (from) {
+                        "ne" -> IndicProcessorLite.NEPALI
+                        "en" -> IndicProcessorLite.ENGLISH
+                        else -> {
+                            Timber.w("IndicTrans: неизвестный язык источника \"$from\" — подмена на английский")
+                            IndicProcessorLite.ENGLISH
+                        }
+                    }
+                    val tgtLang = when (to) {
+                        "ne" -> IndicProcessorLite.NEPALI
+                        "en" -> IndicProcessorLite.ENGLISH
+                        else -> {
+                            Timber.w("IndicTrans: неизвестный язык цели \"$to\" — подмена на английский")
+                            IndicProcessorLite.ENGLISH
+                        }
+                    }
 
                     // Языковой префикс вставляется в текст до токенизации.
                     val prompt = IndicProcessorLite.preprocess(text, srcLang, tgtLang)

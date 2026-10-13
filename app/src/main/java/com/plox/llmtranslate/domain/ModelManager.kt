@@ -76,8 +76,11 @@ interface ModelManager {
      */
     fun releaseAllRuntimes()
 
-    /** Информация об устройстве для проверки совместимости. */
-    fun deviceInfo(): DeviceInfo
+    /**
+     * Информация об устройстве для проверки совместимости.
+     * Чтение ActivityManager/StatFs блокирует — только на IO-диспетчере.
+     */
+    suspend fun deviceInfo(): DeviceInfo
 }
 
 /**

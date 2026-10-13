@@ -38,7 +38,10 @@ class TokenizerJson {
     private var addedSpecialIds: Set<Int> = emptySet()
     private var unkId: Int? = null
     private var eosId: Int? = null
-    private var loaded = false
+
+    /** true — tokenizer.json успешно разобран; false — загрузка не удалась (см. лог). */
+    var isLoaded: Boolean = false
+        private set
 
     // Модель.
     private var modelType: String = ""
@@ -57,9 +60,10 @@ class TokenizerJson {
 
     /**
      * Загрузить tokenizer.json из файла.
+     * При неудаче [isLoaded] остаётся false — вызывающий обязан проверить статус.
      */
     fun load(tokenizerJsonPath: String) {
-        if (loaded) return
+        if (isLoaded) return
         try {
             val file = File(tokenizerJsonPath)
             val root = Json.parseToJsonElement(file.readText(StandardCharsets.UTF_8)).jsonObject
@@ -68,7 +72,7 @@ class TokenizerJson {
             parsePreTokenizer(root)
             parseDecoder(root)
             parseModel(root)
-            loaded = true
+            isLoaded = true
             Timber.d("TokenizerJson загружен: ${vocab.size} токенов, модель=$modelType")
         } catch (e: Exception) {
             Timber.e(e, "Не удалось загрузить tokenizer.json: $tokenizerJsonPath")
@@ -79,7 +83,7 @@ class TokenizerJson {
      * Токенизировать текст в token-id.
      */
     fun encode(text: String): List<Int> {
-        if (!loaded) return emptyList()
+        if (!isLoaded) return emptyList()
         val normalized = normalizer?.normalize(text) ?: text
         val words = normalized.split(Regex("\\s+")).filter { it.isNotEmpty() }
         val ids = ArrayList<Int>(words.size * 2)
@@ -103,7 +107,7 @@ class TokenizerJson {
      * Детокенизировать token-id в текст (skip-специальные).
      */
     fun decode(ids: List<Int>): String {
-        if (!loaded) return ""
+        if (!isLoaded) return ""
         val tokens = ids.mapNotNull { id ->
             if (addedSpecialIds.contains(id)) return@mapNotNull null
             val tok = invVocab[id] ?: return@mapNotNull null

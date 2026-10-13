@@ -15,8 +15,10 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import timber.log.Timber
@@ -39,11 +41,19 @@ abstract class DomainModule {
     companion object {
         /**
          * Среда исполнения для фоновых операций жизненного цикла приложения.
+         * SupervisorJob: падение одной корутины не отменяет остальные;
+         * CoroutineExceptionHandler: необработанная ошибка логируется,
+         * а не роняет процесс.
          */
         @Provides
         @Singleton
         fun provideAppScope(): CoroutineScope =
-            CoroutineScope(Dispatchers.IO)
+            CoroutineScope(
+                SupervisorJob() + Dispatchers.IO +
+                    CoroutineExceptionHandler { _, e ->
+                        Timber.e(e, "Необработанная ошибка в app-scope")
+                    }
+            )
 
         /**
          * Поставщик тайм-аута выгрузки: читает настройку из DataStore

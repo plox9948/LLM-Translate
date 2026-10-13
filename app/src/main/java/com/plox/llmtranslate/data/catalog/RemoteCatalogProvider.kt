@@ -8,6 +8,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
@@ -48,6 +50,13 @@ class RemoteCatalogProvider @Inject constructor(
     private var mergedCache: List<ModelCard>? = null
 
     /**
+     * Замок сборки каталога: проверяет кэш и публикует результат атомарно,
+     * чтобы параллельные подписки не гоняли check-then-act и не ходили в сеть
+     * несколько раз (запись в кэш под замком идемпотентна).
+     */
+    private val catalogMutex = Mutex()
+
+    /**
      * Применялась ли удалённая часть каталога в итоговой эмиссии [catalog].
      * false при первом чтении означает «удалённых данных нет» (пустой URL без
      * кэша, сеть недоступна и кэш потерян/стар). Признак используется очисткой
@@ -59,27 +68,29 @@ class RemoteCatalogProvider @Inject constructor(
         private set
 
     override val catalog: Flow<List<ModelCard>> = flow {
-        // Повторная подписка — без сети, из памяти.
-        mergedCache?.let {
-            emit(it)
-            return@flow
-        }
+        catalogMutex.withLock {
+            // Повторная подписка — без сети, из памяти.
+            mergedCache?.let {
+                emit(it)
+                return@withLock
+            }
 
-        // 1. Сначала assets (мгновенно, офлайн).
-        val assetsModels = assetsProvider.catalog.first()
-        emit(assetsModels)
+            // 1. Сначала assets (мгновенно, офлайн).
+            val assetsModels = assetsProvider.catalog.first()
+            emit(assetsModels)
 
-        // 2. Пытаемся получить удалённый каталог (новый или из кэша).
-        val remoteModels = fetchRemoteCatalog()
-        if (!remoteModels.isNullOrEmpty()) {
-            // 3. Объединяем: удалённый переопределяет assets по id.
-            val merged = mergeCatalogs(assetsModels, remoteModels)
-            mergedCache = merged
-            remotePartApplied = true
-            emit(merged)
-        } else {
-            // Удалённой части нет — кэшируем assets, чтобы не ходить в сеть.
-            mergedCache = assetsModels
+            // 2. Пытаемся получить удалённый каталог (новый или из кэша).
+            val remoteModels = fetchRemoteCatalog()
+            if (!remoteModels.isNullOrEmpty()) {
+                // 3. Объединяем: удалённый переопределяет assets по id.
+                val merged = mergeCatalogs(assetsModels, remoteModels)
+                mergedCache = merged
+                remotePartApplied = true
+                emit(merged)
+            } else {
+                // Удалённой части нет — кэшируем assets, чтобы не ходить в сеть.
+                mergedCache = assetsModels
+            }
         }
     }
 

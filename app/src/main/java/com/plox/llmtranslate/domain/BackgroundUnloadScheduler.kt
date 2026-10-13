@@ -63,7 +63,13 @@ class BackgroundUnloadScheduler @Inject constructor(
                     delay(TimeUnit.MINUTES.toMillis(minutes.toLong()))
                 }
                 Timber.d("Истёк тайм-аут фонового простоя: выгружаем рантаймы")
-                onUnload()
+                try {
+                    onUnload()
+                } catch (e: Exception) {
+                    // Коллбэк выполняется в app-scope: ошибка не должна
+                    // убивать корутину планирования без записи в лог.
+                    Timber.e(e, "Ошибка при отложенной выгрузке рантаймов")
+                }
             }
         }
     }

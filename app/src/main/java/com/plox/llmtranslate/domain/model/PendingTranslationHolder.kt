@@ -11,8 +11,8 @@ import kotlinx.coroutines.flow.asStateFlow
  * вкладке. Используется как сигнал для экрана «Перевод»: при появлении записи
  * он подставляет её в поля ввода/результата и очищает хранилище.
  *
- * Нужен потому, что экраны работают в разных_nav backstack_записях и не имеют
- * общего ViewModel.
+ * Нужен потому, что экраны работают в отдельных записях навигационного
+ * backstack и не имеют общего ViewModel.
  */
 @Singleton
 class PendingTranslationHolder @Inject constructor() {

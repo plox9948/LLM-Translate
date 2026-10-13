@@ -41,7 +41,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.InstallCheck
@@ -72,12 +72,12 @@ import java.util.Locale
 fun ModelsScreen(
     viewModel: ModelsViewModel = hiltViewModel()
 ) {
-    val uiState by viewModel.uiState.collectAsState()
-    val deviceInfo by viewModel.deviceInfo.collectAsState()
-    val licenseModel by viewModel.licenseConfirmModel.collectAsState()
-    val blockedReason by viewModel.blockedReason.collectAsState()
-    val processPssMb by viewModel.processPssMb.collectAsState()
-    val ttsEngine by viewModel.ttsEngine.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val deviceInfo by viewModel.deviceInfo.collectAsStateWithLifecycle()
+    val licenseModel by viewModel.licenseConfirmModel.collectAsStateWithLifecycle()
+    val blockedReason by viewModel.blockedReason.collectAsStateWithLifecycle()
+    val processPssMb by viewModel.processPssMb.collectAsStateWithLifecycle()
+    val ttsEngine by viewModel.ttsEngine.collectAsStateWithLifecycle()
 
     // Опрос PSS процесса живёт здесь, а не в ViewModel: цикл остановлен,
     // пока экран убран из composition (навигация с backstack) ИЛИ приложение

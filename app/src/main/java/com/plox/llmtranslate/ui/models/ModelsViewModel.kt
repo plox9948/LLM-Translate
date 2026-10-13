@@ -18,6 +18,7 @@ import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import com.plox.llmtranslate.domain.runtime.ProcessMemoryReader
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -139,8 +140,9 @@ class ModelsViewModel @Inject constructor(
                 )
             }
         }
-        viewModelScope.launch {
-            // Устройство для проверки совместимости.
+        viewModelScope.launch(Dispatchers.IO) {
+            // Устройство для проверки совместимости: чтение ActivityManager/StatFs
+            // блокирует, выполняется на IO-диспетчере.
             _deviceInfo.value = modelManager.deviceInfo()
         }
         viewModelScope.launch {

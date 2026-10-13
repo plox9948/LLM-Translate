@@ -132,9 +132,16 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
                         setIntraOpNumThreads(INTRA_OP_THREADS)
                         setInterOpNumThreads(INTER_OP_THREADS)
                     }
-                    encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
-                    decoderSession = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
-                    decoderPastSession = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
+                    // SessionOptions нужны только на создание сессий — закрываем
+                    // нативный ресурс после всех createSession, в том числе при
+                    // исключении на любом из них (иначе утечка native-памяти ORT).
+                    try {
+                        encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
+                        decoderSession = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
+                        decoderPastSession = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
+                    } finally {
+                        sessionOpts.close()
+                    }
 
                     // numLayers = (число выходов декодера - 1) / 4
                     // (выходы: logits + present.{layer}.{decoder,encoder}.{key,value}).
@@ -143,6 +150,16 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
 
                     val tok = TokenizerJson()
                     tok.load(tokenizerFile.absolutePath)
+                    if (!tok.isLoaded) {
+                        // Без проверки токенizer молча деградировал: encode()
+                        // возвращал пустой список и инференс падал с
+                        // «Пустой ввод» вместо явной ошибки загрузки.
+                        Timber.e("Marian: не удалось загрузить tokenizer.json в $path")
+                        releaseUnlocked()
+                        return@withContext RuntimeError.LoadFailed(
+                            "marian", "Не удалось загрузить tokenizer"
+                        )
+                    }
                     tokenizer = tok
 
                     parseGenerationConfig(dir.resolve("generation_config.json"))

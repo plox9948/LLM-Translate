@@ -48,7 +48,7 @@ class ModelManagerTest {
         mockkStatic(WorkManager::class)
         every { WorkManager.getInstance(any()) } returns mockk(relaxed = true)
         every { catalogProvider.catalog } returns flowOf(emptyList())
-        every { deviceInfoProvider.get() } returns DeviceInfo(34, 8192, 6000, 10_000_000_000L)
+        coEvery { deviceInfoProvider.get() } returns DeviceInfo(34, 8192, 6000, 10_000_000_000L)
         manager = ModelManagerImpl(
             context,
             catalogProvider,
