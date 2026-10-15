@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <exception>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -118,6 +119,53 @@ jstring utf8_to_jstr(JNIEnv *env, const std::string &text) {
                           static_cast<jsize>(units.size()));
 }
 
+// slimt v1 bin: количество слоёв берётся из имён тензоров в заголовке
+// (encoder_lN_* / decoder_lN_*), а не из пресета: у модели en-ru
+// (retrain_base-memory) dec-depth=4 и dim-emb=384, тогда как preset::tiny()
+// задаёт 2 decoder-слоя — лишние слои молча игнорируются и декодер даёт
+// вырожденный вывод. Имена тензоров идут в начале файла plaintext, поэтому
+// достаточно разобрать первые байты.
+Model::Config detect_config(const std::string &model_path) {
+    Model::Config config = preset::tiny();
+    std::ifstream file(model_path, std::ios::binary);
+    if (!file) {
+        return config;
+    }
+    std::string head(65536, '\0');
+    file.read(head.data(), static_cast<std::streamsize>(head.size()));
+    head.resize(static_cast<size_t>(file.gcount()));
+
+    auto max_layer = [&head](const char *prefix) -> size_t {
+        const std::string needle(prefix);
+        size_t best = 0;
+        for (size_t pos = head.find(needle); pos != std::string::npos;
+             pos = head.find(needle, pos + 1)) {
+            size_t i = pos + needle.size();
+            size_t num = 0;
+            bool any = false;
+            while (i < head.size() && head[i] >= '0' && head[i] <= '9') {
+                num = num * 10 + static_cast<size_t>(head[i] - '0');
+                ++i;
+                any = true;
+            }
+            if (any && i < head.size() && head[i] == '_' && num > best) {
+                best = num;
+            }
+        }
+        return best;
+    };
+
+    const size_t encoder_layers = max_layer("encoder_l");
+    const size_t decoder_layers = max_layer("decoder_l");
+    if (encoder_layers > 0) {
+        config.encoder_layers = encoder_layers;
+    }
+    if (decoder_layers > 0) {
+        config.decoder_layers = decoder_layers;
+    }
+    return config;
+}
+
 }  // namespace
 
 extern "C" {
@@ -137,7 +185,8 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeCreate(
 
     try {
         auto session = std::make_unique<Session>();
-        session->model = std::make_shared<Model>(preset::tiny(), package);
+        session->model =
+            std::make_shared<Model>(detect_config(package.model), package);
         Config frontend_config;
         frontend_config.workers = 1;
         session->frontend = std::make_unique<Async>(frontend_config);
