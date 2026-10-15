@@ -6,7 +6,7 @@
 ## Возможности
 
 - **Перевод текста** между русским, английским и непальским через локальные ONNX-модели
-  (Marian opus-mt_tiny RU⇄EN, IndicTrans2 для непальского).
+  (языковые паки Firefox Translations / Bergamot RU⇄EN, IndicTrans2 для непальского).
 - **Распознавание речи** (STT) через sherpa-onnx: Zipformer/GigaAM (ru), Parakeet (en),
   IndicConformer (ne), Whisper Small (мультиязычный).
 - **Синтез речи** (TTS) через системный Android TextToSpeech
@@ -28,8 +28,10 @@
 - MVVM + Clean Architecture (data / domain / ui)
 - Hilt (DI), Coroutines + Flow
 - Room (метаданные моделей), DataStore (выбор), WorkManager (скачивание)
-- ONNX Runtime (перевод), sherpa-onnx (STT) — inference AAR, без нативной сборки с нуля
+- ONNX Runtime (перевод IndicTrans2), sherpa-onnx (STT) — inference AAR
   (библиотека STT вендорится патченой — см. «Вендореные нативные библиотеки»)
+- Нативный слой: C++-движок slimt (Bergamot / Firefox Translations, RU⇄EN) —
+  git submodule `app/third_party/slimt`, сборка NDK + CMake, JNI-мост `app/src/main/cpp`
 
 ## Структура
 
@@ -45,13 +47,15 @@ app/src/main/java/com/plox/llmtranslate/
 ├── domain/
 │   ├── ModelManager.kt      # интерфейс + ModelManagerImpl — единая точка входа для UI
 │   ├── model/               # типы моделей, InstallCheckLogic, детектор языка, выбор модели перевода
-│   ├── runtime/             # MarianOnnxRuntime, IndicTransOnnxRuntime, GreedyDecoder,
+│   ├── runtime/             # SlimtRuntime, IndicTransOnnxRuntime, GreedyDecoder,
 │   │                        # SherpaSttEngine, TtsRuntime, RuntimeRouter
 │   └── tokenizer/           # инференс-токенизаторы (TokenizerJson, IndicProcessorLite)
 ├── util/                    # WavReader
 ├── ui/                      # экраны: Перевод, История, Модели, Настройки
 └── di/                      # Hilt-модули
 app/src/main/assets/         # models_catalog.json (с SHA-256 по каждому URL)
+app/src/main/cpp/            # JNI-мост slimt_jni (CMakeLists.txt)
+app/third_party/slimt/       # C++-движок slimt (git submodule, Bergamot)
 app/schemas/                 # экспортированные Room-схемы
 models/                    # манифест моделей для скриптов скачивания
 scripts/                   # download_models.ps1 / .sh (с проверкой SHA-256)
@@ -68,9 +72,13 @@ scripts/                   # download_models.ps1 / .sh (с проверкой SH
 1. Клонировать репозиторий:
 
    ```bash
-   git clone http://31.44.89.204:3000/plox/LLM-Translate.git
+   git clone --recursive http://31.44.89.204:3000/plox/LLM-Translate.git
    cd LLM-Translate
    ```
+
+   `--recursive` обязателен: движок slimt подключён как git submodule
+   (`app/third_party/slimt`); без него CMake-сборка нативной библиотеки не соберётся.
+   Если клонирование уже сделано без ключа — `git submodule update --init --recursive`.
 
 2. Создать `local.properties` с указанием пути к Android SDK:
 
@@ -120,7 +128,7 @@ ORT их нужно выставить актуальными). Результа
 
 ## Жизненный цикл моделей
 
-Модели (ONNX-сессии перевода и STT) живут только в ОЗУ процесса и загружаются
+Модели (движки перевода slimt/ONNX и STT-сессии) живут только в ОЗУ процесса и загружаются
 **лениво** — приложения держит в памяти лишь те модели, которые реально используются.
 
 ### Запуск приложения
@@ -145,8 +153,8 @@ ORT их нужно выставить актуальными). Результа
 ### Сворачивание приложения
 
 По сворачивании (все активности остановлены — Home, переход в другое приложение)
-срабатывает `ON_STOP` процесса: **все рантаймы выгружаются из ОЗУ** — сессии ONNX
-перевода (Marian, IndicTrans) и распознаватель sherpa. Выгрузка асинхронная (не
+срабатывает `ON_STOP` процесса: **все рантаймы выгружаются из ОЗУ** — движки перевода
+(slimt, IndicTrans) и распознаватель sherpa. Выгрузка асинхронная (не
 блокирует UI) и синхронизирована с инференсом: если перевод/распознавание ещё идёт,
 выгрузка **ждёт его окончания** (инференс может занимать десятки секунд) — сессии
 не закрываются посреди работы.
@@ -162,7 +170,7 @@ ORT их нужно выставить актуальными). Результа
 вся память процесса освобождается системой. Никакого состояния моделей на диске нет:
 метаданные хранятся в Room, выбор — в DataStore, файлы моделей не затрагиваются.
 
-> 💡 Управление памятью остаётся предсказуемым: до запуска — ~145 МБ, при переводе —
+> 💡 Управление памятью остаётся предсказуемым: до запуска — ~126 МБ, при переводе —
 > дельта загруженной модели (см. таблицу RAM выше), после сворачивания — память
 > освобождается. Часть ONNX-арен может возвращаться ОС с задержкой (см. примечания
 > к таблице).
@@ -182,6 +190,9 @@ ORT их нужно выставить актуальными). Результа
   ETag (`W/...`) If-Match не отправляется (RFC), целостность держится на SHA-256.
 - Отмена скачивания удаляет осиротевшие `.part`/`.part.meta` и недокачанные архивы;
   отмена распаковки удаляет файлы этой распаковки и сам архив (zip-slip-защита на месте).
+- Языковые паки Firefox Translations (Bergamot) CDN Mozilla отдаёт сжатыми gzip: SHA-256
+  проверяется по байтам `.gz`-архива, после чего инсталлятор распаковывает (gunzip) файл
+  и удаляет архив — на диске в каталоге модели лежат `*.bin`/`*.spm` без `.gz`.
 - Локальный набор моделей для сети не обязателен: `scripts/download_models.ps1` / `.sh`
   качают модели в `models/<id>/` с проверкой хешей манифеста.
 
@@ -193,7 +204,7 @@ ORT их нужно выставить актуальными). Результа
 - **Загрузка моделей** — «Отменить» на экране «Модели»: воркер WorkManager прерывается
   немедленно (циклы чтения/распаковки проверяют отмену), файлы чистятся.
 - **Загрузка модели в ОЗУ** (создание ONNX-сессий) — отмена действует на границах фаз:
-  нативные шаги ONNX/sherpa (создание сессии, один шаг декода) прервать нельзя, отмена
+  нативные шаги ONNX/sherpa/slimt (создание сессии, один шаг декода) прервать нельзя, отмена
   сработает сразу после них.
 
 ## Тесты
@@ -211,8 +222,8 @@ ORT их нужно выставить актуальными). Результа
 
 | Модель | Категория | Языки | Размер на диске | Требуется RAM | Рекоменд. RAM устройства |
 |--------|-----------|-------|-----------------|---------------|--------------------------|
-| Opus-MT Tiny (RU→EN, int8) | Перевод | ru⇄en | 107 МБ | 1500 МБ | 3 ГБ |
-| Opus-MT Tiny (EN→RU, int8) | Перевод | ru⇄en | 107 МБ | 1500 МБ | 3 ГБ |
+| Firefox Translations EN→RU (Bergamot/slimt, int8 intgemm) | Перевод | ru⇄en | 34 МБ | 350 МБ | 2 ГБ |
+| Firefox Translations RU→EN (Bergamot/slimt, int8 intgemm) | Перевод | ru⇄en | 21 МБ | 300 МБ | 2 ГБ |
 | IndicTrans2 (Indic→EN, int8) | Перевод | ne→en | ~250 МБ | 2500 МБ | 4 ГБ |
 | IndicTrans2 (EN→Indic, int8) | Перевод | en→ne | ~295 МБ | 2500 МБ | 4 ГБ |
 | Zipformer RU (sherpa-onnx) | STT | ru | ~90 МБ (int8) | 600 МБ | 2 ГБ |
@@ -227,12 +238,14 @@ ORT их нужно выставить актуальными). Результа
 Замеры выполнены на телефоне OnePlus (Android 9, 5738 МБ ОЗУ): инструментационный
 тест `ModelRamProfileTest` загружает модель и выполняет инференс, а скрипт
 `tools/ramprof.sh` периодически снимает PSS процесса через `dumpsys meminfo`.
-Baseline пустого приложения — около **145 МБ**; в таблице указана дельта PSS к нему.
+Baseline свежего приложения — около **126 МБ**; в таблице указана дельта PSS к нему
+(в более ранней серии замеров baseline был ~145 МБ — дельты остальных моделей
+рассчитаны относительно него).
 
 | Модель | Steady RAM | Пик RAM | После выгрузки |
 |--------|-----------|---------|----------------|
-| Opus-MT Tiny RU→EN (int8) | ~210 МБ | ~400 МБ | освобождается полностью |
-| Opus-MT Tiny EN→RU (int8) | ~210 МБ | ~430 МБ | освобождается полностью |
+| Firefox Translations EN→RU (Bergamot/slimt) | ~180 МБ (306 МБ процесса) | ~180 МБ | освобождается полностью (mmap) |
+| Firefox Translations RU→EN (Bergamot/slimt) | ~118 МБ (244 МБ процесса) | ~118 МБ | освобождается полностью (mmap) |
 | IndicTrans2 indic→EN (int8) | ~340 МБ | ~420 МБ | остаток ~240 МБ (арены ONNX) |
 | IndicTrans2 EN→indic (int8) | ~435 МБ | ~520 МБ | освобождается полностью |
 | Zipformer RU int8 | ~110…205 МБ | ~275 МБ | частичный остаток |
@@ -253,13 +266,28 @@ Baseline пустого приложения — около **145 МБ**; в т�
   для распознавания лучше использовать Zipformer/GigaAM, Whisper — при 6 ГБ.
 - Zipformer: если в каталоге модели лежат и fp32-, и int8-файлы, приложение может
   выбрать fp32 (порядок файлов не детерминирован) — RAM выше в 2–3 раза.
+- slimt (Bergamot): файл модели отображается в память через **mmap**, поэтому
+  `Debug.MemoryInfo` в `ModelRamProfileTest` показывает дельту 0 (mmap-страницы
+  в него не входят). Честные числа даёт только **TOTAL PSS из `dumpsys meminfo`
+  после инференса**: страницы модели прогреваются при переводе, поэтому RSS
+  растёт в процессе перевода, а не при загрузке сессии.
+- Цепочка NE→RU (одновременно slimt RU→EN + IndicTrans2 EN→Indic) —
+  ~719 МБ на уровне процесса; при составных направлениях складываются дельты
+  всех моделей цепочки.
 
-> 💡 **Рекомендуемая RAM устройства**: для перевода — от 3 ГБ, для Whisper STT — 6 ГБ,
+> 💡 **Рекомендуемая RAM устройства**: для прямого перевода RU⇄EN (Firefox Translations)
+> достаточно 2 ГБ; для перевода с непальским (IndicTrans2) — от 4 ГБ, цепочки с
+> непальским (две модели перевода одновременно) — 3–4 ГБ; для Whisper STT — 6 ГБ,
 > для остальных STT-моделей — от 2 ГБ.
 
 ## Лицензии моделей
 
-Некоторые модели распространяются по некоммерческим лицензиям (CC-BY-NC и др.).
+Языковые паки Firefox Translations (Bergamot, RU⇄EN) и модели IndicTrans2 — под лицензией
+MIT (паки скачиваются из публичного хранилища GCS проекта Mozilla Firefox Translations;
+нативный движок slimt — тоже MIT). Инференс-движок slimt подключён как git submodule
+`app/third_party/slimt`.
+
+Некоторые STT-модели распространяются по некоммерческим лицензиям (CC-BY-NC и др.).
 При скачивании таких моделей приложение запрашивает подтверждение условий лицензии.
 
 ## Резервное копирование и перенос на другое устройство
@@ -289,10 +317,11 @@ llm_translate_backup.zip
 ├── manifest.json          # метаданные моделей (обязательно)
 ├── settings.json          # настройки (опционально)
 └── models/                # файлы моделей
-    ├── MARIAN_ONNX/
-    │   └── opus-mt-tiny-ru-en-int8-v2/
-    │       ├── encoder_model.onnx
-    │       └── decoder_model.onnx
+    ├── MARIAN_SLIMT/
+    │   └── firefox-bergamot-ru-en/
+    │       ├── model.ruen.intgemm.alphas.bin
+    │       ├── lex.50.50.ruen.s2t.bin
+    │       └── vocab.ruen.spm
     └── SHERPA/
         └── stt-ru-zipformer-2024-09-18/
             ├── encoder.int8.onnx
@@ -308,13 +337,13 @@ llm_translate_backup.zip
   "exportedAt": 1700000000000,
   "models": [
     {
-      "id": "opus-mt-tiny-ru-en-int8-v2",
+      "id": "firefox-bergamot-ru-en",
       "category": "TRANSLATION",
-      "displayName": "Opus-MT Tiny (RU→EN, int8)",
-      "description": "Marian MT opus-mt_tiny int8",
-      "runtime": "MARIAN_ONNX",
-      "sizeBytes": 112367622,
-      "ramRequiredMb": 1500,
+      "displayName": "Firefox Translations (RU→EN)",
+      "description": "Bergamot/Firefox (slimt, int8 intgemm, tiny), 21 МБ, ru→en",
+      "runtime": "MARIAN_SLIMT",
+      "sizeBytes": 22530152,
+      "ramRequiredMb": 300,
       "languages": ["ru", "en"],
       "quality": 4,
       "speed": 5,
@@ -322,10 +351,10 @@ llm_translate_backup.zip
       "urls": [],
       "sha256": null,
       "sha256s": [],
-      "license": "Apache-2.0",
+      "license": "MIT",
       "minAndroidSdk": 26,
-      "recommendedRamMb": 3072,
-      "relativePath": "models/MARIAN_ONNX/opus-mt-tiny-ru-en-int8-v2/encoder_model.onnx",
+      "recommendedRamMb": 2048,
+      "relativePath": "models/MARIAN_SLIMT/firefox-bergamot-ru-en/model.ruen.intgemm.alphas.bin",
       "isBuiltin": true
     }
   ]
@@ -336,7 +365,7 @@ llm_translate_backup.zip
 
 ```json
 {
-  "activeTranslation": "opus-mt-tiny-ru-en-int8-v2",
+  "activeTranslation": "firefox-bergamot-ru-en",
   "activeStt": "stt-ru-zipformer-2024-09-18",
   "activeTts": "tts-system",
   "ttsEngine": "system",
@@ -347,8 +376,8 @@ llm_translate_backup.zip
 
 **Пошагово:**
 
-1. Скачайте нужные модели (ONNX-каталоги, sherpa-модели).
-2. Создайте папку `models/` с подкаталогами runtime (`MARIAN_ONNX`, `INDICTRANS_ONNX`, `SHERPA`).
+1. Скачайте нужные модели (пачки Bergamot из каталога, ONNX-модели IndicTrans, sherpa-модели).
+2. Создайте папку `models/` с подкаталогами runtime (`MARIAN_SLIMT`, `INDICTRANS_ONNX`, `SHERPA`).
 3. Разместите файлы моделей.
 4. Создайте `manifest.json` с записью на каждую модель (поле `relativePath` — путь к файлу внутри архива).
 5. При желании создайте `settings.json`.
