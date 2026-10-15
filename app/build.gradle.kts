@@ -35,10 +35,20 @@ android {
         vectorDrawables { useSupportLibrary = true }
 
         // Целевые ABI: arm64-v8a — устройство, x86_64 — эмулятор.
-        // Нативный код (llama/whisper) больше не собирается; фильтры оставлены
-        // для корректной упаковки AAR-библиотек (sherpa-onnx, onnxruntime).
+        // Нативный код: slimt (движок Firefox Translations, app/third_party/slimt)
+        // собирается через externalNativeBuild; фильтры также обеспечивают
+        // корректную упаковку AAR-библиотек (sherpa-onnx, onnxruntime).
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+
+        externalNativeBuild {
+            cmake {
+                // c++_static: самодостаточный libslimt_jni.so без libc++_shared.so
+                // (конфликта с AAR-библиотеками нет).
+                arguments += listOf("-DANDROID_STL=c++_static")
+                cppFlags += "-std=c++20"
+            }
         }
     }
 
@@ -53,6 +63,13 @@ android {
         }
         debug {
             isMinifyEnabled = false
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 

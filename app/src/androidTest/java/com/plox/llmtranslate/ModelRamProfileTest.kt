@@ -14,6 +14,7 @@ import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.runtime.IndicTransOnnxRuntime
 import com.plox.llmtranslate.domain.runtime.MarianOnnxRuntime
 import com.plox.llmtranslate.domain.runtime.SherpaSttEngine
+import com.plox.llmtranslate.domain.runtime.SlimtRuntime
 import com.plox.llmtranslate.domain.runtime.SttEngine
 import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import kotlinx.coroutines.runBlocking
@@ -46,8 +47,8 @@ class ModelRamProfileTest {
     )
 
     private val targets: Map<String, Target> = listOf(
-        Target("opus-mt-tiny-ru-en-int8-v2", "MARIAN_ONNX", ModelCategory.TRANSLATION, RuntimeType.MARIAN_ONNX),
-        Target("opus-mt-tiny-en-ru-int8-v2", "MARIAN_ONNX", ModelCategory.TRANSLATION, RuntimeType.MARIAN_ONNX),
+        Target("firefox-bergamot-ru-en", "MARIAN_SLIMT", ModelCategory.TRANSLATION, RuntimeType.MARIAN_SLIMT),
+        Target("firefox-bergamot-en-ru", "MARIAN_SLIMT", ModelCategory.TRANSLATION, RuntimeType.MARIAN_SLIMT),
         Target("indictrans2-indic-en-int8", "INDICTRANS_ONNX", ModelCategory.TRANSLATION, RuntimeType.INDICTRANS_ONNX),
         Target("indictrans2-en-indic-int8", "INDICTRANS_ONNX", ModelCategory.TRANSLATION, RuntimeType.INDICTRANS_ONNX),
         Target("stt-ru-zipformer-2024-09-18", "SHERPA", ModelCategory.STT, RuntimeType.SHERPA),
@@ -126,7 +127,7 @@ class ModelRamProfileTest {
     @Test
     fun ramProfile() {
         val id = InstrumentationRegistry.getArguments().getString("model")
-            ?: "opus-mt-tiny-ru-en-int8-v2"
+            ?: "firefox-bergamot-ru-en"
         val target = targets[id]
         assertTrue("Неизвестная модель: $id", target != null)
         val t = target!!
@@ -149,6 +150,7 @@ class ModelRamProfileTest {
 
         val engine: Any = when (t.runtime) {
             RuntimeType.MARIAN_ONNX -> MarianOnnxRuntime()
+            RuntimeType.MARIAN_SLIMT -> SlimtRuntime()
             RuntimeType.INDICTRANS_ONNX -> IndicTransOnnxRuntime()
             // Дублирующая libonnxruntime из androidTest jniLibs больше не нужна:
             // в APK одна библиотека 1.30.0, патченый libsherpa-onnx-jni требует её же
@@ -169,11 +171,11 @@ class ModelRamProfileTest {
 
         runBlocking {
             when (engine) {
-                is MarianOnnxRuntime -> {
+                is MarianOnnxRuntime, is SlimtRuntime -> {
                     val from = if (id.contains("ru-en")) "ru" else "en"
                     val to = if (from == "ru") "en" else "ru"
                     val text = if (from == "ru") "Привет, как дела?" else "Hello, how are you?"
-                    engine.translate(text, from, to)
+                    (engine as TranslationEngine).translate(text, from, to)
                 }
                 is IndicTransOnnxRuntime -> {
                     if (id.contains("indic-en")) {

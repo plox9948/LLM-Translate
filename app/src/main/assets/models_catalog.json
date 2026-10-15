@@ -1,14 +1,14 @@
 {
-  "version": 7,
+  "version": 8,
   "models": [
     {
-      "id": "opus-mt-tiny-ru-en-int8-v2",
+      "id": "firefox-bergamot-en-ru",
       "category": "TRANSLATION",
-      "displayName": "Opus-MT Tiny (RU→EN, int8)",
-      "description": "Marian MT (Helsinki-NLP opus-mt_tiny), Optimum ONNX + int8 per-channel, 107 МБ, ru→en",
-      "runtime": "MARIAN_ONNX",
-      "sizeBytes": 112367622,
-      "ramRequiredMb": 480,
+      "displayName": "Firefox Translations (EN→RU)",
+      "description": "Bergamot/Firefox (slimt, int8 intgemm, base-memory), 34 МБ, en→ru",
+      "runtime": "MARIAN_SLIMT",
+      "sizeBytes": 35240782,
+      "ramRequiredMb": 350,
       "languages": [
         "ru",
         "en"
@@ -17,32 +17,28 @@
       "speed": 5,
       "url": "",
       "urls": [
-        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/encoder_model.onnx",
-        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/decoder_model.onnx",
-        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/decoder_with_past_model.onnx",
-        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/tokenizer.json",
-        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/rus-eng/generation_config.json"
+        "https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/models/en-ru/retrain_base-memory_KJ23-iDVTcymG1ZldWY17w/exported/model.enru.intgemm.alphas.bin.gz",
+        "https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/models/en-ru/retrain_base-memory_KJ23-iDVTcymG1ZldWY17w/exported/lex.50.50.enru.s2t.bin.gz",
+        "https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/models/en-ru/retrain_base-memory_KJ23-iDVTcymG1ZldWY17w/exported/vocab.enru.spm.gz"
       ],
       "sha256": null,
       "sha256s": [
-        "0bfecc740d205185d1def9929bd6376c41937eb8668380649e8a09530353cabf",
-        "a8c423be98cb14e92024c7ee0d96ea79c12443a70e655904139885ccd270ac33",
-        "3c28760bc59095a71c266affc92563f4d7bea9b705ffee415d541e4bd4971b82",
-        "919338d006828f146b4f81de714c29ab6fa3f28bf55c26f903ec6b95a7b2e0db",
-        "68e3e0677a3852008c48716deb2b498ab259eb824f7225c834c967a0eecdaf2c"
+        "e766bc83434f4a9ff4110abe5450043a62cd402c6a7a8bca5e3e4d83b408dcb4",
+        "9c111984d8207f8dc6b9dd5c17ab4d18042f7c0e34105a09a35909538facc958",
+        "9aa498dce5d27c02ac998c646c51a7475a421500ecdbbd1dff9ff3e77e64b21c"
       ],
-      "license": "Apache-2.0",
+      "license": "MIT",
       "minAndroidSdk": 26,
       "recommendedRamMb": 2048
     },
     {
-      "id": "opus-mt-tiny-en-ru-int8-v2",
+      "id": "firefox-bergamot-ru-en",
       "category": "TRANSLATION",
-      "displayName": "Opus-MT Tiny (EN→RU, int8)",
-      "description": "Marian MT (Helsinki-NLP opus-mt_tiny), Optimum ONNX + int8 per-channel, 107 МБ, en→ru",
-      "runtime": "MARIAN_ONNX",
-      "sizeBytes": 112368070,
-      "ramRequiredMb": 480,
+      "displayName": "Firefox Translations (RU→EN)",
+      "description": "Bergamot/Firefox (slimt, int8 intgemm, tiny), 21 МБ, ru→en",
+      "runtime": "MARIAN_SLIMT",
+      "sizeBytes": 22530152,
+      "ramRequiredMb": 300,
       "languages": [
         "ru",
         "en"
@@ -51,21 +47,17 @@
       "speed": 5,
       "url": "",
       "urls": [
-        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/encoder_model.onnx",
-        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/decoder_model.onnx",
-        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/decoder_with_past_model.onnx",
-        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/tokenizer.json",
-        "https://huggingface.co/plox99/opus-mt-tiny-onnx-int8/resolve/main/eng-rus/generation_config.json"
+        "https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/models/ru-en/spring-2024_QrcdYgbwS7e7xbhtOSdoNQ/exported/model.ruen.intgemm.alphas.bin.gz",
+        "https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/models/ru-en/spring-2024_QrcdYgbwS7e7xbhtOSdoNQ/exported/lex.50.50.ruen.s2t.bin.gz",
+        "https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/models/ru-en/spring-2024_QrcdYgbwS7e7xbhtOSdoNQ/exported/vocab.ruen.spm.gz"
       ],
       "sha256": null,
       "sha256s": [
-        "e228c6ec1d03f95e7aa6c2e4817b0f8b4c4fd46fada673f0fdf6b7da8e629aae",
-        "e8a7edf94148152d2f891fe8daf0cac790bb5715762514d39d86ed65e9b0da4a",
-        "bab6fc8d398fef2e5685aa06a94989913a2ac2871e1ace75161bd904c5896412",
-        "97a0b6d5e2dd24c37aaf8e881a2d0db8382e729cf8e7659e7b6ba960b8375fde",
-        "68e3e0677a3852008c48716deb2b498ab259eb824f7225c834c967a0eecdaf2c"
+        "4a8a7b9b07c9e06a167ec5bf2542528817321516db4edf614fda45011fa8e5d1",
+        "6524f5c898f1fef52992bd2565a6d4acfafb6a4e8dcd6aef237bd888239418a0",
+        "cd70b828e99e4d0c79d48cd56d8579d656c87c1db20bf88883da3085dcbfef75"
       ],
-      "license": "Apache-2.0",
+      "license": "MIT",
       "minAndroidSdk": 26,
       "recommendedRamMb": 2048
     },

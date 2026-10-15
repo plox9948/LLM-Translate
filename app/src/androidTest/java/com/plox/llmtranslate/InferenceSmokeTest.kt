@@ -8,8 +8,8 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.runtime.IndicTransOnnxRuntime
-import com.plox.llmtranslate.domain.runtime.MarianOnnxRuntime
 import com.plox.llmtranslate.domain.runtime.SherpaSttEngine
+import com.plox.llmtranslate.domain.runtime.SlimtRuntime
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -63,41 +63,41 @@ class InferenceSmokeTest {
     )
 
     @Test
-    fun marianRuEnTranslation() {
-        val dir = modelDir("MARIAN_ONNX", "opus-mt-tiny-ru-en-int8-v2")
+    fun slimtRuEnTranslation() {
+        val dir = modelDir("MARIAN_SLIMT", "firefox-bergamot-ru-en")
         assertTrue("Каталог модели не найден: $dir", dir.exists())
         val model = readyModel(
-            "opus-mt-tiny-ru-en-int8-v2", ModelCategory.TRANSLATION,
-            RuntimeType.MARIAN_ONNX, dir.absolutePath
+            "firefox-bergamot-ru-en", ModelCategory.TRANSLATION,
+            RuntimeType.MARIAN_SLIMT, dir.absolutePath
         )
-        val engine = MarianOnnxRuntime()
+        val engine = SlimtRuntime()
         val error = runBlocking { engine.ensureLoaded(model) }
         assertNull("ensureLoaded вернул ошибку: $error", error)
 
         val result = runBlocking { engine.translate("Привет, как дела?", "ru", "en") }
         assertTrue("Ошибка перевода: ${result.exceptionOrNull()}", result.isSuccess)
         val text = result.getOrThrow()
-        println("MARIAN RU->EN: «Привет, как дела?» => $text")
+        println("SLIMT RU->EN: «Привет, как дела?» => $text")
         assertTrue("Пустой перевод", text.isNotBlank())
         runBlocking { engine.release() }
     }
 
     @Test
-    fun marianEnRuTranslation() {
-        val dir = modelDir("MARIAN_ONNX", "opus-mt-tiny-en-ru-int8-v2")
+    fun slimtEnRuTranslation() {
+        val dir = modelDir("MARIAN_SLIMT", "firefox-bergamot-en-ru")
         assertTrue("Каталог модели не найден: $dir", dir.exists())
         val model = readyModel(
-            "opus-mt-tiny-en-ru-int8-v2", ModelCategory.TRANSLATION,
-            RuntimeType.MARIAN_ONNX, dir.absolutePath
+            "firefox-bergamot-en-ru", ModelCategory.TRANSLATION,
+            RuntimeType.MARIAN_SLIMT, dir.absolutePath
         )
-        val engine = MarianOnnxRuntime()
+        val engine = SlimtRuntime()
         val error = runBlocking { engine.ensureLoaded(model) }
         assertTrue("Ошибка загрузки: $error", error == null)
 
         val result = runBlocking { engine.translate("Hello, how are you?", "en", "ru") }
         assertTrue("Ошибка перевода: ${result.exceptionOrNull()}", result.isSuccess)
         val text = result.getOrThrow()
-        println("MARIAN EN->RU: «Hello, how are you?» => $text")
+        println("SLIMT EN->RU: «Hello, how are you?» => $text")
         assertTrue("Пустой перевод", text.isNotBlank())
         runBlocking { engine.release() }
     }

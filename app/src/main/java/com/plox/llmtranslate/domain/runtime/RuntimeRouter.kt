@@ -13,6 +13,7 @@ import javax.inject.Singleton
 class RuntimeRouter @Inject constructor(
     private val marianOnnxRuntime: MarianOnnxRuntime,
     private val indicTransOnnxRuntime: IndicTransOnnxRuntime,
+    private val slimtRuntime: SlimtRuntime,
     private val sherpaSttEngine: SherpaSttEngine
 ) {
 
@@ -25,17 +26,20 @@ class RuntimeRouter @Inject constructor(
         listOf(
             marianOnnxRuntime.loadedModel,
             indicTransOnnxRuntime.loadedModel,
+            slimtRuntime.loadedModel,
             sherpaSttEngine.loadedModel
         )
     )
 
     /**
      * Движок перевода для типа модели.
-     * Marian — по умолчанию (fallback), IndicTrans — для ne.
+     * Marian — по умолчанию (fallback), IndicTrans — для ne,
+     * slimt — для паков Firefox Translations (RU⇄EN).
      */
     fun translationEngine(runtime: RuntimeType): TranslationEngine = when (runtime) {
         RuntimeType.MARIAN_ONNX -> marianOnnxRuntime
         RuntimeType.INDICTRANS_ONNX -> indicTransOnnxRuntime
+        RuntimeType.MARIAN_SLIMT -> slimtRuntime
         else -> marianOnnxRuntime // fallback
     }
 
@@ -53,6 +57,7 @@ class RuntimeRouter @Inject constructor(
     suspend fun releaseAll() {
         marianOnnxRuntime.release()
         indicTransOnnxRuntime.release()
+        slimtRuntime.release()
         sherpaSttEngine.release()
     }
 }

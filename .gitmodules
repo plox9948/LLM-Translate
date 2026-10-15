@@ -1,0 +1,3 @@
+[submodule "app/third_party/slimt"]
+	path = app/third_party/slimt
+	url = https://github.com/DavidVentura/slimt

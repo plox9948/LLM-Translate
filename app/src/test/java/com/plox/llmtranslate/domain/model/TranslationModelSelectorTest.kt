@@ -10,8 +10,8 @@ import org.junit.Test
 class TranslationModelSelectorTest {
 
     // Модели, повторяющие каталог (models_catalog.json).
-    private val ruEn = model("opus-mt-tiny-ru-en-int8", "Opus-MT Tiny (RU→EN, int8)", listOf("ru", "en"))
-    private val enRu = model("opus-mt-tiny-en-ru-int8", "Opus-MT Tiny (EN→RU, int8)", listOf("ru", "en"))
+    private val ruEn = model("firefox-bergamot-ru-en", "Firefox Translations (RU→EN)", listOf("ru", "en"))
+    private val enRu = model("firefox-bergamot-en-ru", "Firefox Translations (EN→RU)", listOf("ru", "en"))
     private val neEn = model("indictrans2-indic-en-int8", "IndicTrans2 (Indic→EN, int8)", listOf("ne", "en"))
     private val enNe = model("indictrans2-en-indic-int8", "IndicTrans2 (EN→Indic, int8)", listOf("ne", "en"))
     private val all = listOf(ruEn, enRu, neEn, enNe)
@@ -26,6 +26,14 @@ class TranslationModelSelectorTest {
     fun `direction for indictrans via id`() {
         assertEquals("ne" to "en", TranslationModelSelector.directionOf(neEn))
         assertEquals("en" to "ne", TranslationModelSelector.directionOf(enNe))
+    }
+
+    @Test
+    fun `direction from id pair adjacency without arrow in name`() {
+        val noArrow = model("firefox-bergamot-ru-en", "Firefox Translations pack", listOf("ru", "en"))
+        assertEquals("ru" to "en", TranslationModelSelector.directionOf(noArrow))
+        val noArrowEn = model("firefox-bergamot-en-ru", "Firefox Translations pack", listOf("ru", "en"))
+        assertEquals("en" to "ru", TranslationModelSelector.directionOf(noArrowEn))
     }
 
     @Test

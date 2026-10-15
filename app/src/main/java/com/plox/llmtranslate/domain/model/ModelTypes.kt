@@ -17,6 +17,9 @@ enum class RuntimeType {
     SHERPA,
     MARIAN_ONNX,
     INDICTRANS_ONNX,
+
+    // Языковые паки Firefox Translations (Bergamot .bin) через slimt (C++/JNI).
+    MARIAN_SLIMT,
     SYSTEM_TTS,
     RHVOICE,
     ESPEAK
