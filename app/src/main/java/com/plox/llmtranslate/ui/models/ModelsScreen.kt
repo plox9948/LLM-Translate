@@ -287,6 +287,12 @@ fun ModelsScreen(
                 }
                 val sttAssignedLanguages =
                     sttChips.filter { sttByLanguage[it] == card.id }.toSet()
+                // Issue #31: на время экспорта модели кнопки «Экспорт»/«Удалить»
+                // этой карточки заблокированы (иначе удаление mid-экспорта даёт
+                // обрезанный ZIP). Общий экспорт/импорт бэкапа (isBusy)
+                // блокирует действия всех карточек.
+                val exportingId = uiState.exportRequest?.modelId ?: uiState.exportingModelId
+                val actionsLocked = uiState.isBusy || exportingId == card.id
 
                 ModelCardItem(
                     card = card,
@@ -295,6 +301,7 @@ fun ModelsScreen(
                     check = check,
                     sttChips = sttChips,
                     sttAssignedLanguages = sttAssignedLanguages,
+                    actionsLocked = actionsLocked,
                     onDownload = { viewModel.onDownloadClick(card) },
                     onImport = {
                         importLauncher.launch(
@@ -472,6 +479,7 @@ private fun ModelCardItem(
     check: InstallCheck?,
     sttChips: List<String>,
     sttAssignedLanguages: Set<String>,
+    actionsLocked: Boolean,
     onDownload: () -> Unit,
     onImport: () -> Unit,
     onDelete: () -> Unit,
@@ -666,13 +674,21 @@ private fun ModelCardItem(
                             if (card.category == ModelCategory.TTS) {
                                 Spacer(modifier = Modifier.width(8.dp))
                             }
-                            OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
+                            OutlinedButton(
+                                onClick = onExport,
+                                enabled = !actionsLocked,
+                                modifier = Modifier.weight(1f)
+                            ) {
                                 Icon(Icons.Filled.FileUpload, contentDescription = null)
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(stringResource(R.string.models_export))
                             }
                             Spacer(modifier = Modifier.width(8.dp))
-                            OutlinedButton(onClick = onDelete, modifier = Modifier.weight(1f)) {
+                            OutlinedButton(
+                                onClick = onDelete,
+                                enabled = !actionsLocked,
+                                modifier = Modifier.weight(1f)
+                            ) {
                                 Icon(Icons.Filled.Delete, contentDescription = null)
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(stringResource(R.string.models_delete))

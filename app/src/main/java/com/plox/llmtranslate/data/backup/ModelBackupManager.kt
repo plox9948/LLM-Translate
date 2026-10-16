@@ -176,10 +176,12 @@ class ModelBackupManager @Inject constructor(
                     skipped++
                     return@forEach
                 }
-                val tempPath = MODELS_PREFIX + entry.relativePath
-                val tempFile = File(tempDir, tempPath)
+                // relativePath в манифестах текущей версии уже начинается с
+                // MODELS_PREFIX (см. toRelativePath); вариант с префиксом —
+                // fallback для манифестов, где путь записан без него.
+                val tempFile = findExtractedEntry(tempDir, entry.relativePath)
 
-                if (!tempFile.exists()) {
+                if (tempFile == null) {
                     Timber.w("Файл модели не найден в архиве: ${entry.relativePath}")
                     skipped++
                     return@forEach
@@ -308,6 +310,23 @@ class ModelBackupManager @Inject constructor(
         preferences.setTtsEngine(settings.ttsEngine)
         preferences.setUiLanguage(settings.uiLanguage)
         preferences.setTheme(settings.theme)
+    }
+
+    /**
+     * Найти распакованную запись модели во временном каталоге: сначала по
+     * точному relativePath из манифеста (текущий формат уже содержит
+     * "models/"), затем — с префиксом MODELS_PREFIX (обратная совместимость
+     * с манифестами, где путь записан без префикса).
+     * @return файл/каталог во временном каталоге или null, если записи нет.
+     */
+    private fun findExtractedEntry(tempDir: File, relativePath: String): File? {
+        val direct = File(tempDir, relativePath)
+        if (direct.exists()) return direct
+        if (!relativePath.startsWith(MODELS_PREFIX)) {
+            val legacy = File(tempDir, MODELS_PREFIX + relativePath)
+            if (legacy.exists()) return legacy
+        }
+        return null
     }
 
     /**

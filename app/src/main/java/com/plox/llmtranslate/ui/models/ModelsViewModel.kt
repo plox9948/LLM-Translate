@@ -55,6 +55,8 @@ data class ModelsUiState(
     val exportRequest: ExportRequest? = null,
     val backupExportRequest: BackupExportRequest? = null,
     val isBusy: Boolean = false,
+    /** Id модели, для которой идёт запись экспорта (SAF-копирование/zip). */
+    val exportingModelId: String? = null,
     val statusMessage: String? = null
 )
 
@@ -144,6 +146,7 @@ class ModelsViewModel @Inject constructor(
                     exportRequest = current.exportRequest,
                     backupExportRequest = current.backupExportRequest,
                     isBusy = current.isBusy,
+                    exportingModelId = current.exportingModelId,
                     statusMessage = current.statusMessage
                 )
             }
@@ -295,8 +298,12 @@ class ModelsViewModel @Inject constructor(
         val request = uiState.value.exportRequest
         _uiState.value = _uiState.value.copy(exportRequest = null)
         if (uri == null || request == null) return
+        // Пока идёт запись ZIP, карточка этой модели блокируется (issue #31):
+        // удаление mid-экспорта обрезает архив, и импорт даёт неполную модель.
+        _uiState.value = _uiState.value.copy(exportingModelId = request.modelId)
         viewModelScope.launch {
             modelManager.exportToUri(request.modelId, uri)
+            _uiState.value = _uiState.value.copy(exportingModelId = null)
         }
     }
 
