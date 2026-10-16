@@ -8,9 +8,11 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.runtime.IndicTransOnnxRuntime
+import com.plox.llmtranslate.domain.runtime.RepetitionTrimmer
 import com.plox.llmtranslate.domain.runtime.SherpaSttEngine
 import com.plox.llmtranslate.domain.runtime.SlimtRuntime
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -121,6 +123,33 @@ class InferenceSmokeTest {
         val text = result.getOrThrow()
         println("INDICTRANS NE->EN: «$neText» => $text")
         assertTrue("Пустой перевод", text.isNotBlank())
+        runBlocking { engine.release() }
+    }
+
+    @Test
+    fun indicTransEnNeWelcomeTranslation() {
+        val dir = modelDir("INDICTRANS_ONNX", "indictrans2-en-indic-int8")
+        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        val model = readyModel(
+            "indictrans2-en-indic-int8", ModelCategory.TRANSLATION,
+            RuntimeType.INDICTRANS_ONNX, dir.absolutePath
+        )
+        val engine = IndicTransOnnxRuntime()
+        val error = runBlocking { engine.ensureLoaded(model) }
+        assertTrue("Ошибка загрузки: $error", error == null)
+
+        // Диагностика бага issue #28: перевод дублируется ("स्वागत छ स्वागत छ ।").
+        val result = runBlocking { engine.translate("Welcome", "en", "ne") }
+        assertTrue("Ошибка перевода: ${result.exceptionOrNull()}", result.isSuccess)
+        val text = result.getOrThrow()
+        println("INDICTRANS EN->NE: «Welcome» => $text")
+        assertTrue("Пустой перевод", text.isNotBlank())
+        // Артефакт «स्वागत छ स्वागत छ ।» должен быть схлопнут триммером.
+        assertEquals(
+            "Остался повтор в выводе: «$text»",
+            text,
+            RepetitionTrimmer.trim(text)
+        )
         runBlocking { engine.release() }
     }
 
