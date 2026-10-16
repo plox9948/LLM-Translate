@@ -206,10 +206,11 @@ class RoomMigration3To4Test {
         insertLegacyModelRow(legacyDb, "room-legacy", null)
         helper.close()
 
-        // Room открывает v3-базу и сам прогоняет добавленную миграцию до v4;
-        // при расхождении схемы миграции со схемой сущностей build() упадёт.
+        // Room открывает v3-базу и сам прогоняет цепочку миграций 3→4→5
+        // (текущая версия схемы — 5); при расхождении схемы миграции со
+        // схемой сущностей build() упадёт.
         val db = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_3_4)
+            .addMigrations(AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5)
             .build()
         try {
             runBlocking {
@@ -246,10 +247,16 @@ class RoomMigration3To4Test {
                 assertEquals("", cursor.getString(0))
             }
 
-            // Версия БД после апгрейда — 4.
+            // Сквозная цепочка 3→4→5 достраивает и таблицу favorites.
+            assertTrue(
+                "favorites не появилась после цепочки 3→4→5",
+                columnNames(db.openHelper.readableDatabase, "favorites").isNotEmpty()
+            )
+
+            // Версия БД после апгрейда — 5 (цепочка 3→4→5).
             db.openHelper.readableDatabase.query("PRAGMA user_version").use { cursor ->
                 assertTrue(cursor.moveToFirst())
-                assertEquals(4, cursor.getInt(0))
+                assertEquals(5, cursor.getInt(0))
             }
         } finally {
             db.close()

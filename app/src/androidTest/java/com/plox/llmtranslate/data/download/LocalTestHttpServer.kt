@@ -9,7 +9,10 @@ import java.net.Socket
  * Тестовый mini-HTTP-сервер (только loopback 127.0.0.1): раздаёт фикстуры из
  * памяти по GET — INSTRUMENTATION-тесты инсталляторов работают без внешней
  * сети и без реальных моделей. Трафик на loopback не подпадает под
- * ограничение cleartext (targetSdk 28+).
+ * ограничение cleartext — для localhost/127.0.0.1 в network_security_config.xml
+ * есть исключение cleartextTrafficPermitted (на устройствах с targetSdk 28+
+ * http по умолчанию запрещён и загрузки падали с "Cleartext HTTP traffic to
+ * 127.0.0.1 not permitted").
  *
  * Отвечает только 200 + Content-Length: [.part] в тестовых каталогах
  * изначально нет, поэтому запрос Range [BaseDownloader] не отправляет.

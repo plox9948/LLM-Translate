@@ -6,6 +6,11 @@
     оставлено на случай http-зеркал). Остальной трафик — только HTTPS.
     При включении REMOTE_CATALOG_URL (RemoteCatalogProvider) его хост нужно
     добавить в этот список.
+
+    localhost/127.0.0.1 — loopback: на устройствах с targetSdk 28+ открытый
+    трафик запрещён политиками по умолчанию, а instrumentation-тесты
+    инсталляторов раздают фикстуры по http на loopback (LocalTestHttpServer).
+    Исключение только для петлевого адреса, внешний трафик остаётся HTTPS-only.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
@@ -13,5 +18,7 @@
         <domain includeSubdomains="true">github.com</domain>
         <domain includeSubdomains="true">huggingface.co</domain>
         <domain includeSubdomains="true">storage.googleapis.com</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
     </domain-config>
 </network-security-config>
