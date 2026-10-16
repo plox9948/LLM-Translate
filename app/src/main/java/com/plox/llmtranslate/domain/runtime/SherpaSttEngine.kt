@@ -6,6 +6,7 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
+import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
@@ -34,40 +35,78 @@ import javax.inject.Singleton
  *
  * Для whisper-моделей язык распознавания задаётся в [transcribe]; при его смене
  * распознаватель пересоздаётся.
+ *
+ * Модели хранятся LRU-кэшем пучков (issue #37, по образцу #36): при настройке
+ * keep движок удерживает загруженные STT-модели и повторный выбор модели
+ * не выполняет загрузку заново (быстрый путь [ensureLoaded]); при unload —
+ * держит только текущую модель.
  */
 @Singleton
-class SherpaSttEngine @Inject constructor() : SttEngine {
+class SherpaSttEngine @Inject constructor(
+    private val retentionProvider: ModelRetentionProvider
+) : SttEngine {
 
     companion object {
         const val SAMPLE_RATE = 16000
         private const val TYPE_TRANSDUCER = "transducer"
         private const val TYPE_NEMO_CTC = "nemo_ctc"
         private const val TYPE_WHISPER = "whisper"
+
+        /** Ёмкость LRU-кэша: несколько STT-моделей + активная модель. */
+        private const val MODEL_CACHE_CAPACITY = 3
     }
 
-    private var recognizer: OfflineRecognizer? = null
-    private var modelInfo: ModelInfo? = null
-    private var whisperLanguage: String? = null
-    private var loadedModelId: String? = null
+    /**
+     * Пучок sherpa-модели: нативный распознаватель и метаданные одной модели.
+     * [recognizer] и [whisperLanguage] — var: для whisper распознаватель
+     * пересоздаётся при смене языка распознавания.
+     */
+    private class ModelBundle(
+        val info: LoadedModelInfo,
+        val type: String,
+        val modelMeta: ModelInfo,
+        var recognizer: OfflineRecognizer,
+        var whisperLanguage: String?
+    ) {
+        /** Освободить нативный распознаватель пучка (ошибки — только в лог). */
+        fun release() {
+            try {
+                recognizer.release()
+            } catch (e: Exception) {
+                Timber.e(e, "Ошибка при разгрузке sherpa")
+            }
+        }
+    }
 
     /**
      * Защита нативного recognizer: распознавание, загрузка и разгрузка
      * сериализуются, поэтому release() ждёт окончания активного decode
      * (use-after-free исключён). Распознавание может идти десятки секунд —
      * для onStop-разгрузки это приемлемо, release() вызывается вне главного потока.
+     * Вся работа с [cache] и [activeId] — только под этим мьютексом.
      */
     private val recognizerMutex = Mutex()
 
+    /** LRU-кэш загруженных пучков моделей (issue #37). */
+    private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
+
+    /** Id пучка, на котором работает [transcribe]; пишется только под [recognizerMutex]. */
+    private var activeId: String? = null
+
     private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
 
-    /** Состояние загруженной модели; пишется только под [recognizerMutex]. */
+    /** Состояние загруженных моделей; пишется только под [recognizerMutex]. */
     override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
 
     val isLoaded: Boolean
-        get() = recognizer != null
+        get() = activeId != null
 
     /**
-     * Загрузить sherpa-модель.
+     * Загрузить sherpa-модель, поместив пучок в LRU-кэш. При настройке keep
+     * пучки других моделей сохраняются (сверх ёмкости вытесняются наименее
+     * давно используемые), при unload — движок держит ТОЛЬКО текущую модель:
+     * чужие пучки выгружаются и перед загрузкой, и при попадании в кэш
+     * (прежнее поведение).
      * @return null при успехе или [RuntimeError] при ошибке.
      */
     override suspend fun ensureLoaded(model: InstalledModel): RuntimeError? =
@@ -76,83 +115,106 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
             recognizerMutex.withLock {
-                // Быстрый путь под мьютексом: вне него поле loadedModelId могло
-                // быть очищено параллельным release() — проверка дала бы ложное
-                // «уже загружено» и распознавание упало бы на null-распознавателе.
-                if (loadedModelId == model.id && recognizer != null) {
+                val cached = cache.get(model.id)
+                if (cached != null) {
+                    // Быстрый путь под мьютексом: пучок уже в кэше — делать
+                    // активным без пересоздания распознавателя (повторный
+                    // выбор модели, issue #37). Политика применяется и здесь:
+                    // в unload-режиме движок обязан держать только текущую модель.
+                    if (!retentionProvider.keepModelsOnDirectionChange()) {
+                        unloadOtherBundlesUnlocked(model.id)
+                    }
+                    activeId = model.id
+                    publishLoadedUnlocked()
                     return@withContext null
                 }
 
-                releaseUnlocked()
+                // Политика выгрузки читается на каждую загрузку — смена
+                // настройки применяется сразу.
+                if (!retentionProvider.keepModelsOnDirectionChange()) {
+                    releaseUnlocked()
+                }
 
                 try {
-                    val info = detectModel(File(path))
-                    if (info == null) {
+                    val meta = detectModel(File(path))
+                    if (meta == null) {
                         Timber.e("Не удалось определить тип sherpa-модели: $path")
                         return@withContext RuntimeError.LoadFailed(
                             "sherpa", "Не удалось определить тип модели по файлам"
                         )
                     }
-                    this@SherpaSttEngine.modelInfo = info
-                    whisperLanguage = if (info.type == TYPE_WHISPER) "auto" else null
+                    val whisperLanguage = if (meta.type == TYPE_WHISPER) "auto" else null
                     // Граница отмены перед долгим нативным построением
                     // распознавателя (секунды-десятки секунд, не прерываемо).
+                    // Пучок ещё не в кэше — при отмене/ошибке чужие пучки целы.
                     currentCoroutineContext().ensureActive()
-                    recognizer = buildRecognizer(info, whisperLanguage)
-                    loadedModelId = model.id
-                    _loadedModels.value = listOf(
-                        LoadedModelInfo(
-                            modelId = model.id,
-                            displayName = model.displayName,
-                            category = ModelCategory.STT,
-                            ramRequiredMb = model.ramRequiredMb
+                    val recognizer = buildRecognizer(meta, whisperLanguage)
+                    cache.put(
+                        model.id,
+                        ModelBundle(
+                            info = LoadedModelInfo(
+                                modelId = model.id,
+                                displayName = model.displayName,
+                                category = ModelCategory.STT,
+                                ramRequiredMb = model.ramRequiredMb
+                            ),
+                            type = meta.type,
+                            modelMeta = meta,
+                            recognizer = recognizer,
+                            whisperLanguage = whisperLanguage
                         )
                     )
-                    Timber.d("Sherpa-модель загружена (${info.type}): $path")
+                    activeId = model.id
+                    cache.evictOverCapacity().forEach { (evictedId, bundle) ->
+                        Timber.d("Sherpa: вытеснена из кэша модель $evictedId")
+                        bundle.release()
+                    }
+                    publishLoadedUnlocked()
+                    Timber.d("Sherpa-модель загружена (${meta.type}): $path")
                     null
                 } catch (e: CancellationException) {
-                    // Отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
-                    // частично созданные ресурсы и всплываем выше.
+                    // Отмена загрузки кнопкой «Отмена» — не ошибка: пучок этого
+                    // пути в кэш не положен, пучки других моделей остаются.
                     Timber.d("Загрузка sherpa-модели отменена: $path")
-                    releaseUnlocked()
                     throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Не удалось загрузить sherpa-модель $path")
-                    releaseUnlocked()
                     RuntimeError.LoadFailed("sherpa", e.message ?: "Неизвестная ошибка")
                 }
             }
         }
 
     /**
-     * Распознать речь в WAV-файле.
+     * Распознать речь в WAV-файле по активному пучку кэша.
      * @param language подсказка языка (ru/en/ne); для whisper переключает распознавание.
      * @return текст или [RuntimeError].
      */
     override suspend fun transcribe(wavPath: String, language: String?): Result<String> =
         withContext(Dispatchers.IO) {
             recognizerMutex.withLock {
-                val info = this@SherpaSttEngine.modelInfo
-                if (info == null || recognizer == null) {
-                    return@withContext Result.failure(RuntimeError.ModelNotSelected)
-                }
+                val bundle = activeId?.let { cache.get(it) }
+                    ?: return@withContext Result.failure(RuntimeError.ModelNotSelected)
 
                 // Для whisper при смене языка пересоздаём распознаватель.
-                if (info.type == TYPE_WHISPER && language != null && language != whisperLanguage) {
+                if (bundle.type == TYPE_WHISPER && language != null && language != bundle.whisperLanguage) {
                     try {
                         // Обязательно освобождаем старый распознаватель — иначе
                         // утечка сотен МБ нативной памяти при каждой смене языка.
-                        recognizer?.release()
-                        recognizer = null
-                        recognizer = buildRecognizer(info, language)
-                        whisperLanguage = language
+                        bundle.recognizer.release()
+                        bundle.recognizer = buildRecognizer(bundle.modelMeta, language)
+                        bundle.whisperLanguage = language
                         Timber.d("Whisper переключён на язык: $language")
                     } catch (e: Exception) {
+                        // Старый распознаватель уже освобождён, новый не создан —
+                        // пучок неконсистентен: снимаем его с кэша и с активного
+                        // id (пучки других моделей не затрагиваются).
                         Timber.e(e, "Не удалось пересоздать whisper для языка $language")
-                        recognizer = null
-                        whisperLanguage = null
-                        loadedModelId = null
-                        _loadedModels.value = emptyList()
+                        val failedId = activeId
+                        if (failedId != null) {
+                            cache.remove(failedId)
+                            activeId = null
+                        }
+                        publishLoadedUnlocked()
                         return@withContext Result.failure(
                             RuntimeError.LoadFailed(
                                 "sherpa",
@@ -162,8 +224,7 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
                     }
                 }
 
-                val rec = recognizer
-                    ?: return@withContext Result.failure(RuntimeError.ModelNotSelected)
+                val rec = bundle.recognizer
 
                 val file = File(wavPath)
                 if (!file.exists()) {
@@ -216,27 +277,48 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
         }
 
     /**
-     * Разгрузить модель. Ждёт окончания активного распознавания (recognizerMutex).
+     * Разгрузить ВСЕ удерживаемые движком модели. Ждёт окончания активного
+     * распознавания ([recognizerMutex]).
      */
     override suspend fun release() {
         recognizerMutex.withLock { releaseUnlocked() }
     }
 
     /**
-     * Непосредственная разгрузка распознавателя. Вызывать только под
-     * `recognizerMutex`, чтобы не пересекаться с активным decode.
+     * Непосредственная разгрузка всех пучков. Вызывать только под
+     * [recognizerMutex], чтобы не пересекаться с активным decode.
      */
     private fun releaseUnlocked() {
-        recognizer?.release()
-        recognizer = null
-        modelInfo = null
-        whisperLanguage = null
-        loadedModelId = null
+        cache.clear().forEach { (_, bundle) -> bundle.release() }
+        activeId = null
         _loadedModels.value = emptyList()
     }
 
     /**
-     * Метаданные загруженной модели (тип и пути к файлам).
+     * Выгрузить все пучки кэша, кроме [keepId] (unload-режим при попадании
+     * в кэш — движок держит только текущую модель). Вызывать только под
+     * [recognizerMutex].
+     */
+    private fun unloadOtherBundlesUnlocked(keepId: String) {
+        cache.keysNotIn(setOf(keepId)).forEach { staleId ->
+            cache.remove(staleId)?.release()
+            Timber.d("sherpa: выгружена модель другого направления $staleId")
+        }
+    }
+
+    /**
+     * Опубликовать список загруженных моделей (активная — первой).
+     * Вызывать только под [recognizerMutex].
+     */
+    private fun publishLoadedUnlocked() {
+        val active = activeId
+        _loadedModels.value = cache.all()
+            .sortedByDescending { (id, _) -> id == active }
+            .map { (_, bundle) -> bundle.info }
+    }
+
+    /**
+     * Метаданные модели (тип и пути к файлам).
      */
     private data class ModelInfo(
         val type: String,

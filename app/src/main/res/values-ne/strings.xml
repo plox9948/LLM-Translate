@@ -101,6 +101,6 @@
     <string name="settings_unload_never">कहिल्यै अनलोड नगर्नुहोस्</string>
     <string name="settings_direction_retention">अनुवादको दिशा परिवर्तनमा व्यवहार</string>
     <string name="settings_retention_keep">अनलोड नगर्नुहोस्</string>
-    <string name="settings_retention_keep_hint">दिशा परिवर्तन छिटो गर्छ, तर बढी मेमोरी चाहिन्छ</string>
+    <string name="settings_retention_keep_hint">अनुवाद र वाणी पहिचानका मोडेलहरू स्मृतिमा राख्छ: दिशा परिवर्तन छिटो गर्छ, तर बढी मेमोरी चाहिन्छ</string>
     <string name="settings_retention_unload">अनलोड गर्नुहोस्</string>
 </resources>

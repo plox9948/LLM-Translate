@@ -209,7 +209,7 @@ class InferenceSmokeTest {
             "stt-en-parakeet-110m", ModelCategory.STT,
             RuntimeType.SHERPA, dir.absolutePath
         )
-        val engine = SherpaSttEngine()
+        val engine = SherpaSttEngine(retentionUnload())
         val error = runBlocking { engine.ensureLoaded(model) }
         assertTrue("Ошибка загрузки sherpa-модели: $error", error == null)
 
@@ -229,7 +229,7 @@ class InferenceSmokeTest {
             "stt-ru-gigaam-v3-e2e-ctc", ModelCategory.STT,
             RuntimeType.SHERPA, dir.absolutePath
         )
-        val engine = SherpaSttEngine()
+        val engine = SherpaSttEngine(retentionUnload())
         val error = runBlocking { engine.ensureLoaded(model) }
         assertTrue("Ошибка загрузки sherpa-модели (nemo ctc): $error", error == null)
         runBlocking { engine.release() }

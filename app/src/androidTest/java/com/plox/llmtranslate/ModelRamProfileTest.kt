@@ -161,7 +161,7 @@ class ModelRamProfileTest {
             // Дублирующая libonnxruntime из androidTest jniLibs больше не нужна:
             // в APK одна библиотека 1.30.0, патченый libsherpa-onnx-jni требует её же
             // version-node (VERS_1.30.0), загрузка идёт через clinit sherpa.
-            else -> SherpaSttEngine()
+            else -> SherpaSttEngine(retentionUnload())
         }
 
         val sampler = Sampler().also { it.start() }
