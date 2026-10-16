@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.StatFs
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
+import com.plox.llmtranslate.data.download.DownloadLayout
 import com.plox.llmtranslate.data.download.ModelDownloadWorker
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
@@ -185,9 +186,9 @@ class ModelManagerImpl @Inject constructor(
      * и `<имя>.part.meta`) и осиротевшие целые архивы (ArchiveInstaller
      * скачивает архив в корень каталога рантайма; при отмене распаковки он
      * мог остаться до внедрения немедленного удаления).
-     * Размещение повторяет логику инсталляторов (см. [ModelDownloadWorker]):
-     * ONNX мультифайл и обычные файлы sherpa — в каталог модели,
-     * одиночные ONNX-файлы и архивы — в корень каталога рантайма.
+     * Размещение файлов задаёт общий с инсталляторами [DownloadLayout]
+     * (см. [ModelDownloadWorker]): ONNX мультифайл и обычные файлы sherpa —
+     * в каталог модели, одиночные ONNX-файлы и архивы — в корень каталога рантайма.
      * Модель не READY (проверяется вызывающим кодом), поэтому файлы по её URL
      * относятся только к её незавершённой загрузке — файлы READY-моделей
      * не затрагиваются.
@@ -198,23 +199,15 @@ class ModelManagerImpl @Inject constructor(
         val runtimeDir = File(modelsDir, model.runtime.name)
         urls.forEachIndexed { index, url ->
             val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
-            val isArchive = fileName.endsWith(".tar.bz2") ||
-                fileName.endsWith(".tar.gz") ||
-                fileName.endsWith(".zip")
-            val inModelDir = if (model.runtime == RuntimeType.SHERPA) {
-                !isArchive
-            } else {
-                urls.size > 1
-            }
-            val dir = if (inModelDir) File(runtimeDir, model.id) else runtimeDir
+            val dir = DownloadLayout.fileDir(runtimeDir, model.runtime, model.id, urls, fileName)
             listOf(File(dir, "$fileName.part"), File(dir, "$fileName.part.meta")).forEach { part ->
                 if (part.isFile && !part.delete()) {
                     Timber.w("Не удалось удалить осиротевший ${part.name}")
                 }
             }
-            // Целой архив лежит только в корне каталога рантайма (см. ArchiveInstaller);
+            // Целый архив лежит только в корне каталога рантайма (см. ArchiveInstaller);
             // для не READY-модели это остаток её же незавершённой распаковки.
-            if (isArchive && !inModelDir) {
+            if (DownloadLayout.isArchive(fileName) && dir == runtimeDir) {
                 val archiveFile = File(dir, fileName)
                 if (archiveFile.isFile && !archiveFile.delete()) {
                     Timber.w("Не удалось удалить осиротевший архив ${archiveFile.name}")
@@ -237,13 +230,20 @@ class ModelManagerImpl @Inject constructor(
 
                 val targetFile = copyFromUri(uri) ?: return@withContext null
 
+                val runtime = guessRuntime(fileName)
+                if (runtime == null) {
+                    Timber.w("Неизвестный формат файла модели $fileName — импорт отклонён")
+                    targetFile.delete()
+                    return@withContext null
+                }
+
                 val modelId = fileName.removeSuffix(".gguf").removeSuffix(".onnx")
                 val model = InstalledModel(
                     id = modelId,
                     category = guessCategory(fileName),
                     displayName = fileName,
                     description = "Импортированная модель",
-                    runtime = guessRuntime(fileName),
+                    runtime = runtime,
                     sizeBytes = targetFile.length(),
                     ramRequiredMb = 0,
                     languages = emptyList(),
@@ -360,11 +360,20 @@ class ModelManagerImpl @Inject constructor(
 
     private suspend fun copyFromUri(uri: Uri): File? {
         val targetFile = File(modelsDir, "imported_${System.currentTimeMillis()}")
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            targetFile.outputStream().use { output ->
-                input.copyTo(output)
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                targetFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            } ?: return null
+        } catch (e: Exception) {
+            // Обрыв потокопередачи SAF: частичный imported_* не должен
+            // оставаться на диске без регистрации в БД.
+            if (!targetFile.delete()) {
+                Timber.w("Не удалось удалить частичный файл импорта: ${targetFile.name}")
             }
-        } ?: return null
+            throw e
+        }
         return targetFile
     }
 
@@ -482,6 +491,9 @@ class ModelManagerImpl @Inject constructor(
         val targetDir = modelTargetDir(runtime, meta.id)
         if (!extracted.copyRecursively(targetDir, overwrite = true)) {
             Timber.w("Не удалось распаковать модель ${meta.id} в ${targetDir.path}")
+            // Полу-скопированный каталог — мусор; извлечённый temp чистится
+            // в finally importZip.
+            targetDir.deleteRecursively()
             return null
         }
         return InstalledModel(
@@ -521,9 +533,16 @@ class ModelManagerImpl @Inject constructor(
             .removeSuffix(".onnx")
         if (modelId.isBlank()) return null
         val runtime = guessRuntime(sourceName)
+            ?: run {
+                Timber.w("Неизвестный формат ZIP-модели $sourceName — импорт отклонён")
+                return null
+            }
         val targetDir = modelTargetDir(runtime, modelId)
         if (!extracted.copyRecursively(targetDir, overwrite = true)) {
             Timber.w("Не удалось распаковать модель $modelId в ${targetDir.path}")
+            // Полу-скопированный каталог — мусор; извлечённый temp чистится
+            // в finally importZip.
+            targetDir.deleteRecursively()
             return null
         }
         val size = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
@@ -580,20 +599,38 @@ class ModelManagerImpl @Inject constructor(
         return null
     }
 
+    /**
+     * Признак архива: архивные расширения скачивает только sherpa-инсталлятор
+     * (см. ArchiveInstaller), языковые паки перевода — это .bin/.spm файлы.
+     */
+    private fun isArchiveName(lower: String): Boolean =
+        lower.endsWith(".zip") || lower.endsWith(".tar.bz2") || lower.endsWith(".tar.gz")
+
     private fun guessCategory(fileName: String): ModelCategory {
         val lower = fileName.lowercase()
         return when {
-            lower.contains("whisper") || lower.contains("vosk") -> ModelCategory.STT
+            lower.contains("whisper") || lower.contains("vosk") ||
+                lower.contains("sherpa") || isArchiveName(lower) ->
+                // sherpa-маркер и безмаркерный архив — STT-пачка (ArchiveInstaller).
+                ModelCategory.STT
             else -> ModelCategory.TRANSLATION
         }
     }
 
-    private fun guessRuntime(fileName: String): RuntimeType {
+    /**
+     * Угадать рантайм по имени файла. null — формат не распознан: импорт
+     * отклоняется вместо записи с битым умолчанием MARIAN_ONNX.
+     */
+    private fun guessRuntime(fileName: String): RuntimeType? {
         val lower = fileName.lowercase()
         return when {
             lower.contains("indictrans") -> RuntimeType.INDICTRANS_ONNX
-            lower.endsWith(".zip") || lower.contains("sherpa") -> RuntimeType.SHERPA
-            else -> RuntimeType.MARIAN_ONNX // .onnx и прочее — по умолчанию Marian
+            lower.contains("sherpa") || isArchiveName(lower) ->
+                // Архивы (.zip/.tar.bz2/.tar.gz) без явных признаков ONNX/Marian
+                // — пачки sherpa.
+                RuntimeType.SHERPA
+            lower.endsWith(".onnx") -> RuntimeType.MARIAN_ONNX // явный ONNX — Marian fallback
+            else -> null
         }
     }
 

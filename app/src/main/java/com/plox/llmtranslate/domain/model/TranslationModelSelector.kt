@@ -121,10 +121,12 @@ object TranslationModelSelector {
             return if (covered) null else card
         }
 
-        // Прямая цепочка имеет приоритет, как в selectChain.
+        // Прямая цепочка имеет приоритет, как в selectChain. Карточка ищется
+        // один раз и переиспользуется для проверки покрытия.
         val direct = translationCatalog.firstOrNull { directionOf(it) == (from to to) }
         if (direct != null) {
-            return neededCard(from to to)?.let { listOf(it) } ?: emptyList()
+            val covered = ready.any { it.id == direct.id || directionOf(it) == (from to to) }
+            return if (covered) emptyList() else listOf(direct)
         }
 
         // Цепочка через хаб: каталог должен покрывать оба звена.

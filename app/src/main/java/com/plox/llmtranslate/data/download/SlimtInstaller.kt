@@ -36,7 +36,7 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
             return InstallResult.Failure("Нет URL для скачивания")
         }
         val hashes = perUrlSha256s(urls.size, sha256s, sha256)
-        val modelDir = File(targetDir, modelId)
+        val modelDir = DownloadLayout.modelDir(targetDir, modelId)
         val created = mutableListOf<File>()
 
         for ((index, url) in urls.withIndex()) {
@@ -63,10 +63,13 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
             try {
                 if (archiveName.endsWith(".gz")) {
                     val unpacked = File(modelDir, archiveName.removeSuffix(".gz"))
+                    // Регистрация в множестве отбраковки ДО распаковки:
+                    // при отмене/сбое полу-распакованный файл не должен
+                    // оставаться в каталоге.
+                    created += unpacked
                     gunzip(unpack = downloaded, to = unpacked)
                     currentCoroutineContext().ensureActive()
                     downloaded.delete()
-                    created += unpacked
                 } else {
                     created += downloaded
                 }

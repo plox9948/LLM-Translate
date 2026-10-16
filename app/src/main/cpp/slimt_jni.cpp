@@ -19,8 +19,11 @@ namespace {
 
 struct Session {
     std::shared_ptr<Model> model;
-    std::unique_ptr<Async> frontend;
     std::atomic<bool> cancel{false};
+    // frontend объявлен ПОСЛЕ cancel: деструкция идёт в обратном порядке,
+    // поэтому ~Async (join воркеров, читающих &cancel через cancel_flag_)
+    // завершится раньше, чем будет уничтожен cancel.
+    std::unique_ptr<Async> frontend;
     std::mutex mu;
     std::optional<std::future<Response>> future;
     std::string result;
@@ -214,6 +217,10 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeStart(
         throw_java(env, "slimt: translation already running");
         return;
     }
+    // Сброс результатов предыдущего перевода: иначе при исключении в
+    // translate nativePoll/nativeTakeError вернут устаревшие данные.
+    session->result.clear();
+    session->error.clear();
     session->cancel.store(false);
     Options options;
     options.alignment = static_cast<bool>(with_alignment);

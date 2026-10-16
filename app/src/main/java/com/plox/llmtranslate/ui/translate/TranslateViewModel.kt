@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.io.File
 import javax.inject.Inject
 
 /**
@@ -424,7 +425,11 @@ class TranslateViewModel @Inject constructor(
         // Симметрично guard в translate(): пока идёт перевод или распознавание,
         // не перезаписываем translationJob — иначе быстрый тап «Перевести» в окне
         // stopRecording() порождает гонку двух задач на один Job.
-        if (state.isTranslating) return
+        if (state.isTranslating) {
+            // Распознавание не начинаем — WAV этой записи уже не нужен.
+            File(wavPath).delete()
+            return
+        }
         translationJob = viewModelScope.launch {
             try {
                 update {
@@ -506,6 +511,12 @@ class TranslateViewModel @Inject constructor(
                 update { it.copy(isTranslating = false, canCancelTranslation = false) }
             } finally {
                 translationJob = null
+                // WAV нужен движку только на время transcribe() — удаляем сразу
+                // после её завершения (успех, ошибка или отмена), иначе каталог
+                // «audio» растёт с каждой записью.
+                if (!File(wavPath).delete()) {
+                    Timber.w("Не удалось удалить WAV после распознавания: $wavPath")
+                }
             }
         }
     }
@@ -515,13 +526,15 @@ class TranslateViewModel @Inject constructor(
         val state = _uiState.value
         if (state.resultText.isBlank()) return
         viewModelScope.launch {
+            // Флаг «говорим» выставляется ДО speak(): onDone короткой фразы
+            // может сработать раньше возврата speak() и иначе оставил бы
+            // флаг залипшим. При ошибке — откат.
+            update { it.copy(isSpeaking = true, error = null) }
             val error = ttsRuntime.speak(state.resultText, state.targetLang.code) {
                 update { it.copy(isSpeaking = false) }
             }
             if (error != null) {
-                update { it.copy(error = error.userMessage()) }
-            } else {
-                update { it.copy(isSpeaking = true, error = null) }
+                update { it.copy(isSpeaking = false, error = error.userMessage()) }
             }
         }
     }
@@ -683,17 +696,13 @@ class TranslateViewModel @Inject constructor(
     }
 
     /**
-     * Начать скачивание всех недостающих для текущего направления моделей
-     * (карточка подсказки на экране «Перевод», issue #33). Уже скачиваемые
-     * модели пропускаются.
+     * Начать скачивание конкретной недостающей модели [card]
+     * (кнопка в строке карточки подсказки на экране «Перевод», issue #33).
+     * Уже скачиваемая модель пропускается.
      */
-    fun downloadMissingModels() {
-        val state = _uiState.value
-        for (card in state.missingModels) {
-            if (!state.downloadingProgress.containsKey(card.id)) {
-                modelManager.startDownload(card)
-            }
-        }
+    fun downloadMissingModel(card: ModelCard) {
+        if (_uiState.value.downloadingProgress.containsKey(card.id)) return
+        modelManager.startDownload(card)
     }
 
     private fun update(transform: (TranslateUiState) -> TranslateUiState) {

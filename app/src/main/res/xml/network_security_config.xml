@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Разрешает открытый (http) трафик только хостам загрузки моделей из
+    встроенного каталога (github.com, huggingface.co, storage.googleapis.com
+    и их поддомены — фактические URL каталога идут по https, разрешение
+    оставлено на случай http-зеркал). Остальной трафик — только HTTPS.
+    При включении REMOTE_CATALOG_URL (RemoteCatalogProvider) его хост нужно
+    добавить в этот список.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">github.com</domain>
+        <domain includeSubdomains="true">huggingface.co</domain>
+        <domain includeSubdomains="true">storage.googleapis.com</domain>
+    </domain-config>
+</network-security-config>

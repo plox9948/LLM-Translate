@@ -86,8 +86,24 @@ class ModelPreferences @Inject constructor(
             json.decodeFromString(STT_MAP_SERIALIZER, raw)
         } catch (e: Exception) {
             Timber.w(e, "Повреждённое значение stt_by_language, сброшено")
+            clearCorruptedSttByLanguage()
             emptyMap()
         }
+
+    /**
+     * Удалить повреждённый ключ из DataStore: без этого битое значение
+     * остаётся в хранилище и каждая следующая его запись пересобирается
+     * из пусто-карты вместо явного сброса.
+     */
+    private fun clearCorruptedSttByLanguage() {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                context.dataStore.edit { prefs -> prefs.remove(STT_BY_LANGUAGE_KEY) }
+            } catch (e: Exception) {
+                Timber.w(e, "Не удалось удалить повреждённый ключ stt_by_language")
+            }
+        }
+    }
 
     // --- Последнее направление перевода (issue #33) ---
 

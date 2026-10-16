@@ -45,12 +45,13 @@ class FavoritesRepositoryTest {
             sourceLang: String,
             targetLang: String,
             inputText: String
-        ) {
+        ): Int {
             val match = store.values.filter {
                 it.sourceLang == sourceLang && it.targetLang == targetLang &&
                     it.inputText == inputText
             }.map { it.id }
             match.forEach { store.remove(it) }
+            return match.size
         }
     }
 

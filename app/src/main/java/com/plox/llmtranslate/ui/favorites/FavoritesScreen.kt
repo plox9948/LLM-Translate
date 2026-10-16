@@ -47,7 +47,7 @@ fun FavoritesScreen(
     viewModel: FavoritesViewModel = hiltViewModel()
 ) {
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
-    val speakingId by viewModel.speakingId.collectAsStateWithLifecycle()
+    val speaking by viewModel.speaking.collectAsStateWithLifecycle()
 
     if (favorites.isEmpty()) {
         Box(
@@ -75,25 +75,28 @@ fun FavoritesScreen(
             )
         }
         items(favorites, key = { it.id }) { entry ->
+            val inputSelection = SpeakingSelection(entry.id, FavoriteSpeakField.INPUT)
+            val resultSelection = SpeakingSelection(entry.id, FavoriteSpeakField.RESULT)
             FavoriteItem(
                 entry = entry,
-                speaking = speakingId == entry.id,
+                speakingInput = speaking == inputSelection,
+                speakingResult = speaking == resultSelection,
                 onUse = {
                     viewModel.useEntry(entry)
                     onUseEntry()
                 },
                 onSpeakInput = {
-                    if (speakingId == entry.id) {
+                    if (speaking == inputSelection) {
                         viewModel.stopSpeaking()
                     } else {
-                        viewModel.speak(entry, entry.inputText, entry.sourceLang)
+                        viewModel.speak(entry, FavoriteSpeakField.INPUT)
                     }
                 },
                 onSpeakResult = {
-                    if (speakingId == entry.id) {
+                    if (speaking == resultSelection) {
                         viewModel.stopSpeaking()
                     } else {
-                        viewModel.speak(entry, entry.resultText, entry.targetLang)
+                        viewModel.speak(entry, FavoriteSpeakField.RESULT)
                     }
                 },
                 onRemove = { viewModel.removeFavorite(entry) }
@@ -109,7 +112,8 @@ fun FavoritesScreen(
 @Composable
 private fun FavoriteItem(
     entry: FavoriteEntry,
-    speaking: Boolean,
+    speakingInput: Boolean,
+    speakingResult: Boolean,
     onUse: () -> Unit,
     onSpeakInput: () -> Unit,
     onSpeakResult: () -> Unit,
@@ -149,7 +153,7 @@ private fun FavoriteItem(
                     modifier = Modifier.width(40.dp)
                 ) {
                     Icon(
-                        imageVector = if (speaking) Icons.Filled.Stop
+                        imageVector = if (speakingInput) Icons.Filled.Stop
                         else Icons.AutoMirrored.Filled.VolumeUp,
                         contentDescription = stringResource(R.string.favorites_speak_input_cd)
                     )
@@ -160,7 +164,7 @@ private fun FavoriteItem(
                     modifier = Modifier.width(40.dp)
                 ) {
                     Icon(
-                        imageVector = if (speaking) Icons.Filled.Stop
+                        imageVector = if (speakingResult) Icons.Filled.Stop
                         else Icons.AutoMirrored.Filled.VolumeUp,
                         contentDescription = stringResource(R.string.favorites_speak_result_cd)
                     )

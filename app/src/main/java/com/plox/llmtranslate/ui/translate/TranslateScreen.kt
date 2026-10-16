@@ -204,7 +204,7 @@ fun TranslateScreen(
                 MissingModelsCard(
                     models = state.missingModels,
                     downloadingProgress = state.downloadingProgress,
-                    onDownload = viewModel::downloadMissingModels
+                    onDownload = viewModel::downloadMissingModel
                 )
             } else {
                 Text(
@@ -376,14 +376,15 @@ private fun OnboardingSheet(
 
 /**
  * Карточка подсказки недостающих моделей перевода (issue #33): звенья
- * цепочки текущего направления из каталога с размером; для уже скачиваемых
- * моделей показывается прогресс вместо кнопки.
+ * цепочки текущего направления из каталога с размером; кнопка «Скачать»
+ * запускает скачивание только своего звена, для уже скачиваемых моделей
+ * показывается прогресс вместо кнопки.
  */
 @Composable
 private fun MissingModelsCard(
     models: List<ModelCard>,
     downloadingProgress: Map<String, Int>,
-    onDownload: () -> Unit
+    onDownload: (ModelCard) -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -414,7 +415,7 @@ private fun MissingModelsCard(
                             style = MaterialTheme.typography.labelSmall
                         )
                     } else {
-                        OutlinedButton(onClick = onDownload) {
+                        OutlinedButton(onClick = { onDownload(card) }) {
                             Icon(Icons.Filled.Download, contentDescription = null)
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(stringResource(R.string.download))

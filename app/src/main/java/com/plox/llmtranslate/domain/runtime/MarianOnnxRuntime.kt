@@ -111,7 +111,11 @@ class MarianOnnxRuntime @Inject constructor(
     /** LRU-кэш загруженных пучков моделей (issue #36). */
     private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
 
-    /** Id пучка, на котором работает [translate]; пишется только под [sessionMutex]. */
+    /**
+     * Id пучка, на котором работает [translate]; пишется только под [sessionMutex],
+     * читается и вне него ([isLoaded]) — отсюда @Volatile для корректной видимости.
+     */
+    @Volatile
     private var activeId: String? = null
 
     private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())

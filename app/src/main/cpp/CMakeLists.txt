@@ -48,7 +48,10 @@ set(SLIMT_COMPILE_OPTIONS
     -Wno-unknown-pragmas
     -Wno-missing-field-initializers
     -Wno-unused-function
-    -Wextra-semi)
+    -Wextra-semi
+    # Детерминированность чисел между ABI: ядро slimt тоже компилируется
+    # без FMA-контракта (см. комментарий к цели slimt_jni ниже).
+    -ffp-contract=off)
 set(SLIMT_PUBLIC_LIBS SentencePiece::SentencePiece)
 set(SLIMT_INTERFACE_LIBS "")
 set(SLIMT_PRIVATE_LIBS ruy)

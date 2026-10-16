@@ -3,6 +3,7 @@ package com.plox.llmtranslate.ui.models
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -27,7 +28,7 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.automirrored.filled.StarHalf
+import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -228,12 +229,18 @@ fun ModelsScreen(
             }
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Статусное сообщение.
+            // Статусное сообщение. Тап по баннеру скрывает его (кроме режима занятости).
             if (uiState.statusMessage != null || uiState.isBusy) {
                 Surface(
                     color = MaterialTheme.colorScheme.secondaryContainer,
                     shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            enabled = uiState.statusMessage != null,
+                            onClickLabel = stringResource(R.string.models_status_dismiss),
+                            role = Role.Button
+                        ) { viewModel.clearStatusMessage() }
                 ) {
                     Text(
                         text = uiState.statusMessage ?: "…",
@@ -751,8 +758,7 @@ private fun Stars(count: Int) {
     Row {
         repeat(5) { i ->
             Icon(
-                imageVector = if (i < count) Icons.Filled.Star
-                else Icons.AutoMirrored.Filled.StarHalf,
+                imageVector = if (i < count) Icons.Filled.Star else Icons.Outlined.Star,
                 contentDescription = null,
                 modifier = Modifier.size(14.dp),
                 tint = if (i < count) {

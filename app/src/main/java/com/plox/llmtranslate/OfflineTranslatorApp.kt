@@ -66,6 +66,7 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
     private fun syncDatabaseWithCatalog() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                cleanupAudioRecords()
                 val obsoletePaths = modelRepository.cleanObsoleteRuntimes().toMutableList()
                 // last(): flow сначала отдаёт assets, затем (при наличии) объединение
                 // с удалённым каталогом — берём итоговый список.
@@ -104,6 +105,21 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка очистки устаревших моделей")
+            }
+        }
+    }
+
+    /**
+     * Очистка остатков WAV-записей распознавания в каталоге «audio»:
+     * обычно файл удаляется сразу после распознавания (TranslateViewModel),
+     * но остатки от процесса, убитого во время записи/распознавания,
+     * удаляются здесь при старте.
+     */
+    private fun cleanupAudioRecords() {
+        val files = getExternalFilesDir("audio")?.listFiles() ?: return
+        files.forEach { file ->
+            if (file.isFile && !file.delete()) {
+                Timber.w("Не удалось удалить остаток записи: ${file.name}")
             }
         }
     }

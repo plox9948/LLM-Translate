@@ -45,14 +45,12 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         }
         val hashes = perUrlSha256s(urls.size, sha256s, sha256)
 
-        val modelDir = File(targetDir, modelId)
+        val modelDir = DownloadLayout.modelDir(targetDir, modelId)
         modelDir.mkdirs()
 
         urls.forEachIndexed { index, url ->
             val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
-            val isArchive = fileName.endsWith(".tar.bz2") ||
-                fileName.endsWith(".tar.gz") ||
-                fileName.endsWith(".zip")
+            val isArchive = DownloadLayout.isArchive(fileName)
 
             if (isArchive) {
                 when (val outcome = downloadFile(url, targetDir, fileName, hashes[index]) { fileProgress ->

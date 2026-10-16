@@ -6,7 +6,12 @@ import android.speech.tts.UtteranceProgressListener
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.TtsEngines
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.util.Locale
@@ -23,7 +28,8 @@ import kotlin.coroutines.resume
  */
 @Singleton
 class TtsRuntime @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val scope: CoroutineScope
 ) {
 
     companion object {
@@ -39,13 +45,21 @@ class TtsRuntime @Inject constructor(
     private var currentUtteranceId: String? = null
 
     /**
+     * Сериализует инициализацию: несколько подписчиков настройки ttsEngine
+     * (экрана «Перевод» и «Избранное») не запускают параллельные release+init
+     * одного синглтона — второй вызов ждёт мьютекс и, видя готовый тот же
+     * движок, завершается no-op.
+     */
+    private val initMutex = Mutex()
+
+    /**
      * Инициализировать TTS указанным движком.
      * Повторный вызов с тем же движком при готовности — no-op.
      * @param engine "system" | "rhvoice" | "espeak" (настройка ttsEngine).
      * @return null при успехе или [RuntimeError].
      */
-    suspend fun init(engine: String): RuntimeError? {
-        if (engine == lastEngine && tts != null && ready) return null
+    suspend fun init(engine: String): RuntimeError? = initMutex.withLock {
+        if (engine == lastEngine && tts != null && ready) return@withLock null
         // Смена движка (или повтор после сбоя) — освобождаем старый экземпляр.
         release()
         lastEngine = engine
@@ -85,13 +99,13 @@ class TtsRuntime @Inject constructor(
                 }
             }
         }
-        if (initError != null) return initError
-        if (ready) return null
+        if (initError != null) return@withLock initError
+        if (ready) return@withLock null
         // withTimeoutOrNull вернул null по таймауту (или успешный null без ready —
         // маловероятная гонка): недозагруженный экземпляр выгружаем.
         Timber.e("TTS инициализация: таймаут подключения движка '$engine'")
         release()
-        return RuntimeError.LoadFailed("tts", "Таймаут инициализации TTS")
+        return@withLock RuntimeError.LoadFailed("tts", "Таймаут инициализации TTS")
     }
 
     /**
@@ -138,6 +152,10 @@ class TtsRuntime @Inject constructor(
 
     /**
      * Озвучить текст на языке [lang].
+     * Колбэк [onDone] приходит с фонового потока UtteranceProgressListener —
+     * перебрасывается в главный, как обещает контракт. Состояние «озвучиваем»
+     * вызывающий код обязан выставить ДО вызова speak(): короткая фраза может
+     * завершиться (onDone) раньше возврата speak().
      * @param onDone колбэк завершения озвучивания (вызывается на главном потоке).
      * @return null при успехе или [RuntimeError].
      */
@@ -164,7 +182,8 @@ class TtsRuntime @Inject constructor(
                 if (utteranceId == null || utteranceId != currentUtteranceId) return
                 currentUtteranceId = null
                 Timber.d("TTS завершён: $utteranceId")
-                onDone?.invoke()
+                // Колбэк приходит на фоновом потоке TTS — в главный, по контракту.
+                scope.launch(Dispatchers.Main) { onDone?.invoke() }
             }
 
             @Deprecated("Deprecated in Java")

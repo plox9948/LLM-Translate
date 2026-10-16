@@ -81,7 +81,11 @@ class RemoteCatalogProvider @Inject constructor(
 
             // 2. Пытаемся получить удалённый каталог (новый или из кэша).
             val remoteModels = fetchRemoteCatalog()
-            if (!remoteModels.isNullOrEmpty()) {
+            // Пустой удалённый каталог легитимен и мержится наравне с
+            // непустым: важно отличать null («удалённой части нет») от
+            // пустого списка — иначе remotePartApplied ложно блокирует
+            // очистку ранее добавленных удалённых моделей.
+            if (remoteModels != null) {
                 // 3. Объединяем: удалённый переопределяет assets по id.
                 val merged = mergeCatalogs(assetsModels, remoteModels)
                 mergedCache = merged

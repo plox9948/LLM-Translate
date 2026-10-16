@@ -55,6 +55,7 @@
     <!-- Экран «Модели» -->
     <string name="models_import_custom">+ Import your own model</string>
     <string name="models_backup">Backup</string>
+    <string name="models_status_dismiss">Dismiss message</string>
     <string name="models_restore">Restore</string>
     <string name="models_disk_used">Models used space: %1$s</string>
     <string name="models_license_title">Model license</string>

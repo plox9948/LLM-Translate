@@ -2,7 +2,6 @@ package com.plox.llmtranslate.data.model
 
 import com.plox.llmtranslate.domain.model.FavoriteEntry
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -28,8 +27,10 @@ class FavoritesRepository @Inject constructor(
      */
     suspend fun add(sourceLang: String, targetLang: String, inputText: String, resultText: String) {
         if (inputText.isBlank() || resultText.isBlank()) return
-        dao.deleteMatching(sourceLang, targetLang, inputText)
-        dao.insert(
+        // replaceMatching — delete+insert в одной транзакции Room: без неё
+        // параллельные добавления одного перевода дают UNIQUE constraint
+        // violation на idx_favorites_unique.
+        dao.replaceMatching(
             FavoriteEntity(
                 sourceLang = sourceLang,
                 targetLang = targetLang,
@@ -48,19 +49,22 @@ class FavoritesRepository @Inject constructor(
      * Переключить избранность: если запись с таким направлением и текстом
      * уже есть — удалить и вернуть false; иначе — добавить и вернуть true.
      */
-    suspend fun toggle(sourceLang: String, targetLang: String, inputText: String, resultText: String): Boolean {
-        val exists = dao.observeAll().first().any {
-            it.sourceLang == sourceLang && it.targetLang == targetLang &&
-                it.inputText == inputText
-        }
-        return if (exists) {
-            dao.deleteMatching(sourceLang, targetLang, inputText)
-            false
-        } else {
-            add(sourceLang, targetLang, inputText, resultText)
-            true
-        }
-    }
+    suspend fun toggle(sourceLang: String, targetLang: String, inputText: String, resultText: String): Boolean =
+        // exists + delete/insert — одной транзакцией DAO: check-then-act вне
+        // транзакции гонит двойной тап в SQLiteConstraintException на
+        // уникальном idx_favorites_unique.
+        dao.toggleEntry(
+            sourceLang,
+            targetLang,
+            inputText,
+            FavoriteEntity(
+                sourceLang = sourceLang,
+                targetLang = targetLang,
+                inputText = inputText,
+                resultText = resultText,
+                createdAt = System.currentTimeMillis()
+            )
+        )
 
     suspend fun delete(id: Long) = dao.deleteById(id)
 }

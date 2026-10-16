@@ -329,7 +329,7 @@ abstract class BaseDownloader {
         sha256s: List<String?> = emptyList(),
         onProgress: suspend (Int) -> Unit
     ): DownloadOutcome {
-        val modelDir = File(targetDir, modelId)
+        val modelDir = DownloadLayout.modelDir(targetDir, modelId)
         modelDir.mkdirs()
 
         urls.forEachIndexed { index, url ->

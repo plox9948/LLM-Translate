@@ -68,6 +68,15 @@ class MainActivity : ComponentActivity() {
          * (читается на момент сворачивания); ON_START процесса — отменяет её,
          * если пользователь вернулся до истечения тайм-аута.
          */
+        /**
+         * Признак выполненной регистрации [processReleaseObserver]: onCreate
+         * вызывается и после recreate() (смена языка), а addObserver одного и
+         * того же экземпляра на ProcessLifecycleOwner повторно увеличивает
+         * счётчик — колбэки дублировались бы.
+         */
+        @Volatile
+        private var observerRegistered = false
+
         private val processReleaseObserver = object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 backgroundUnload?.cancel()
@@ -140,7 +149,12 @@ class MainActivity : ComponentActivity() {
         // на процесс (регистрируется один раз).
         releaseTarget = modelManager
         backgroundUnload = unloadScheduler
-        ProcessLifecycleOwner.get().lifecycle.addObserver(processReleaseObserver)
+        // Регистрация однократна на процесс: повторные onCreate после recreate()
+        // (смена языка) не должны добавлять наблюдателя повторно.
+        if (!observerRegistered) {
+            observerRegistered = true
+            ProcessLifecycleOwner.get().lifecycle.addObserver(processReleaseObserver)
+        }
     }
 
     /**

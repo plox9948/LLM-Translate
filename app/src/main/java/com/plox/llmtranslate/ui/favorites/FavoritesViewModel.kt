@@ -16,6 +16,15 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
 
+/** Поле записи избранного, озвучиваемое TTS: оригинал или перевод. */
+enum class FavoriteSpeakField { INPUT, RESULT }
+
+/**
+ * Какой экран/поле сейчас озвучиваются: id записи + поле ([FavoriteSpeakField]).
+ * UI показывает «Стоп» только на кнопке того поля, которое говорится сейчас.
+ */
+data class SpeakingSelection(val entryId: Long, val field: FavoriteSpeakField)
+
 /**
  * ViewModel вкладки «Избранное»: просмотр избранных переводов, озвучивание
  * оригинала/перевода TTS и подстановка записи на экран «Перевод».
@@ -31,9 +40,9 @@ class FavoritesViewModel @Inject constructor(
     private val _favorites = MutableStateFlow<List<FavoriteEntry>>(emptyList())
     val favorites: StateFlow<List<FavoriteEntry>> = _favorites
 
-    // Id записи, которую сейчас озвучивают (null — озвучивания нет).
-    private val _speakingId = MutableStateFlow<Long?>(null)
-    val speakingId: StateFlow<Long?> = _speakingId
+    // Что сейчас озвучивается (запись + поле); null — озвучивания нет.
+    private val _speaking = MutableStateFlow<SpeakingSelection?>(null)
+    val speaking: StateFlow<SpeakingSelection?> = _speaking
 
     init {
         viewModelScope.launch {
@@ -51,18 +60,28 @@ class FavoritesViewModel @Inject constructor(
     }
 
     /**
-     * Озвучить текст записи ([text] на языке [lang]) текущей TTS.
-     * Во время озвучивания [speakingId] содержит id записи.
+     * Озвучить поле [field] записи [entry] (оригинал или перевод) текущей TTS.
+     * Во время озвучивания [speaking] содержит пару (id записи, поле).
      */
-    fun speak(entry: FavoriteEntry, text: String, lang: String) {
+    fun speak(entry: FavoriteEntry, field: FavoriteSpeakField) {
+        val (text, lang) = when (field) {
+            FavoriteSpeakField.INPUT -> entry.inputText to entry.sourceLang
+            FavoriteSpeakField.RESULT -> entry.resultText to entry.targetLang
+        }
         if (text.isBlank()) return
-        _speakingId.value = null
+        val selection = SpeakingSelection(entry.id, field)
+        // speaking выставляется ДО speak(): onDone короткой фразы может
+        // сработать раньше возврата speak() и иначе оставил бы флаг залипшим.
+        _speaking.value = selection
         viewModelScope.launch {
-            val error = ttsRuntime.speak(text, lang) { _speakingId.value = null }
+            val error = ttsRuntime.speak(text, lang) {
+                // Завершение ранее запущенной фразы не должно сбрасывать
+                // флаг, если уже озвучивается другое поле/запись.
+                if (_speaking.value == selection) _speaking.value = null
+            }
             if (error != null) {
                 Timber.w("TTS: ${error.userMessage()}")
-            } else {
-                _speakingId.value = entry.id
+                if (_speaking.value == selection) _speaking.value = null
             }
         }
     }
@@ -70,7 +89,7 @@ class FavoritesViewModel @Inject constructor(
     /** Остановить озвучивание. */
     fun stopSpeaking() {
         ttsRuntime.stop()
-        _speakingId.value = null
+        _speaking.value = null
     }
 
     /** Убрать запись из избранного (звезда в карточке). */
@@ -78,11 +97,6 @@ class FavoritesViewModel @Inject constructor(
         viewModelScope.launch {
             favoritesRepository.remove(entry.sourceLang, entry.targetLang, entry.inputText)
         }
-    }
-
-    /** Удалить запись избранного по id. */
-    fun deleteFavorite(id: Long) {
-        viewModelScope.launch { favoritesRepository.delete(id) }
     }
 
     /** Подставить запись на экран «Перевод» (конвертация в формат истории). */
