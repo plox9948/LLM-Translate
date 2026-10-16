@@ -32,6 +32,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -78,6 +79,7 @@ fun ModelsScreen(
     val blockedReason by viewModel.blockedReason.collectAsStateWithLifecycle()
     val processPssMb by viewModel.processPssMb.collectAsStateWithLifecycle()
     val ttsEngine by viewModel.ttsEngine.collectAsStateWithLifecycle()
+    val sttByLanguage by viewModel.sttByLanguage.collectAsStateWithLifecycle()
 
     // Опрос PSS процесса живёт здесь, а не в ViewModel: цикл остановлен,
     // пока экран убран из composition (навигация с backstack) ИЛИ приложение
@@ -274,13 +276,31 @@ fun ModelsScreen(
                     activeId == card.id
                 }
                 val check = deviceInfo?.let { viewModel.checkInstall(card, it) }
+                // Чипы «язык распознавания» — только на установленных STT-карточках
+                // по языкам самой модели (issue #28).
+                val sttChips = if (card.category == ModelCategory.STT &&
+                    installedModel?.isReady == true
+                ) {
+                    STT_CHIP_LANGUAGES.filter { it in card.languages }
+                } else {
+                    emptyList()
+                }
+                val sttAssignedLanguages =
+                    sttChips.filter { sttByLanguage[it] == card.id }.toSet()
 
                 ModelCardItem(
                     card = card,
                     installedModel = installedModel,
                     isActive = isActive,
                     check = check,
+                    sttChips = sttChips,
+                    sttAssignedLanguages = sttAssignedLanguages,
                     onDownload = { viewModel.onDownloadClick(card) },
+                    onImport = {
+                        importLauncher.launch(
+                            arrayOf("application/zip", "application/octet-stream", "*/*")
+                        )
+                    },
                     onDelete = { installedModel?.let { viewModel.onDeleteClick(it) } },
                     onActive = {
                         if (card.category == ModelCategory.TTS) {
@@ -290,7 +310,8 @@ fun ModelsScreen(
                         }
                     },
                     onCancel = { installedModel?.let { viewModel.onCancelDownload(it) } },
-                    onExport = { installedModel?.let { viewModel.onExportClick(it) } }
+                    onExport = { installedModel?.let { viewModel.onExportClick(it) } },
+                    onSttLanguageToggle = { lang -> viewModel.onSttLanguageToggle(card, lang) }
                 )
             }
         }
@@ -449,11 +470,15 @@ private fun ModelCardItem(
     installedModel: InstalledModel?,
     isActive: Boolean,
     check: InstallCheck?,
+    sttChips: List<String>,
+    sttAssignedLanguages: Set<String>,
     onDownload: () -> Unit,
+    onImport: () -> Unit,
     onDelete: () -> Unit,
     onActive: () -> Unit,
     onCancel: () -> Unit,
-    onExport: () -> Unit
+    onExport: () -> Unit,
+    onSttLanguageToggle: (String) -> Unit
 ) {
     // TTS-карточки — встроенные движки: индикатор кликабелен без установки
     // и выбирает движок (запись в настройку ttsEngine).
@@ -477,27 +502,31 @@ private fun ModelCardItem(
                 // (TalkBack объявляет состояние). Строка карточки не кликабельна
                 // (прошлый фикс радиокнопок), выбор — только этой кнопкой или
                 // кнопкой «Выбрать» ниже. Неактивная unavailable-модель — disabled.
+                // У моделей перевода радиокнопки нет: движок выбирается
+                // автоматически по направлению (issue #28).
                 val canSelect = isTtsEngine || installedModel?.isReady == true
-                Box(
-                    modifier = Modifier
-                        .size(24.dp)
-                        .clip(CircleShape)
-                        .selectable(
-                            selected = isActive,
-                            enabled = canSelect,
-                            role = Role.RadioButton,
-                            onClick = onActive
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (isActive) Icons.Filled.RadioButtonChecked
-                        else Icons.Filled.RadioButtonUnchecked,
-                        contentDescription = stringResource(R.string.models_active_cd),
-                        modifier = Modifier.size(20.dp)
-                    )
+                if (card.category != ModelCategory.TRANSLATION) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .selectable(
+                                selected = isActive,
+                                enabled = canSelect,
+                                role = Role.RadioButton,
+                                onClick = onActive
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isActive) Icons.Filled.RadioButtonChecked
+                            else Icons.Filled.RadioButtonUnchecked,
+                            contentDescription = stringResource(R.string.models_active_cd),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
                 }
-                Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = card.displayName,
@@ -611,6 +640,14 @@ private fun ModelCardItem(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(stringResource(R.string.download))
                         }
+                        // Импорт уже готового файла модели (zip экспорта этой же
+                        // программы или одиночный файл) вместо скачивания (issue #28).
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(onClick = onImport, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Filled.FileDownload, contentDescription = null)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(stringResource(R.string.models_import))
+                        }
                     }
                     installedModel.status == ModelStatus.DOWNLOADING -> {
                         OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
@@ -618,11 +655,17 @@ private fun ModelCardItem(
                         }
                     }
                     else -> {
-                        Button(onClick = onActive, modifier = Modifier.weight(1f)) {
-                            Text(stringResource(R.string.models_choose))
+                        // Модель перевода выбирается автоматически по направлению —
+                        // кнопка «Выбрать» не показывается (issue #28).
+                        if (card.category != ModelCategory.TRANSLATION) {
+                            Button(onClick = onActive, modifier = Modifier.weight(1f)) {
+                                Text(stringResource(R.string.models_choose))
+                            }
                         }
                         if (card.sizeBytes > 0L) {
-                            Spacer(modifier = Modifier.width(8.dp))
+                            if (card.category != ModelCategory.TRANSLATION) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
                             OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
                                 Icon(Icons.Filled.FileUpload, contentDescription = null)
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -635,6 +678,31 @@ private fun ModelCardItem(
                                 Text(stringResource(R.string.models_delete))
                             }
                         }
+                    }
+                }
+            }
+
+            // Чипы «язык распознавания»: назначение STT-модели на каждый язык
+            // (issue #28). Активный чип — язык назначен этой модели; повторный
+            // тап снимает назначение; тап по языку другой модели — переназначение.
+            if (sttChips.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = stringResource(R.string.models_stt_lang_label),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    sttChips.forEachIndexed { index, lang ->
+                        if (index > 0) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        FilterChip(
+                            selected = lang in sttAssignedLanguages,
+                            onClick = { onSttLanguageToggle(lang) },
+                            label = { Text(lang.uppercase(Locale.US)) }
+                        )
                     }
                 }
             }
@@ -672,6 +740,9 @@ private fun categoryTitle(category: ModelCategory): String = stringResource(
 
 // Пороги форматирования размера (КиБ/МиБ/ГиБ в байтах).
 private const val BYTES_IN_KB = 1_024L
+
+/** Поддерживаемые языки для чипов назначения STT-модели (issue #28). */
+private val STT_CHIP_LANGUAGES = listOf("ru", "en", "ne")
 private const val BYTES_IN_MB = 1_048_576L
 private const val BYTES_IN_GB = 1_073_741_824L
 

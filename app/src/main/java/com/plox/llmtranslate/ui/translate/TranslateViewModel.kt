@@ -11,6 +11,7 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.SentenceSplitter
+import com.plox.llmtranslate.domain.model.SttModelSelector
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import com.plox.llmtranslate.domain.model.TranslationModelSelector
 import com.plox.llmtranslate.domain.model.userMessage
@@ -75,6 +76,10 @@ class TranslateViewModel @Inject constructor(
     // Установленные модели перевода для автовыбора по направлению.
     private var translationModels: List<InstalledModel> = emptyList()
 
+    // Установленные STT-модели и назначения «язык → модель» (issue #28).
+    private var sttModels: List<InstalledModel> = emptyList()
+    private var sttAssignments: Map<String, String> = emptyMap()
+
     init {
         viewModelScope.launch {
             modelManager.installedModels(ModelCategory.TRANSLATION)
@@ -82,6 +87,15 @@ class TranslateViewModel @Inject constructor(
                     translationModels = models
                     _uiState.value = _uiState.value.copy(hasTranslationModel = models.isNotEmpty())
                 }
+        }
+        viewModelScope.launch {
+            modelManager.installedModels(ModelCategory.STT)
+                .collect { models -> sttModels = models }
+        }
+        viewModelScope.launch {
+            modelManager.sttByLanguage.collect { assignments ->
+                sttAssignments = assignments
+            }
         }
         viewModelScope.launch {
             modelManager.activeModel(ModelCategory.STT)
@@ -259,8 +273,22 @@ class TranslateViewModel @Inject constructor(
                     )
                 }
 
-                val model = modelManager.activeModel(ModelCategory.STT)
+                // Выбор STT-модели (issue #28): для явно выбранного исходного
+                // языка — модель, назначенная этому языку (с фолбэком
+                // IndicConformer для ne), иначе — глобальная активная модель.
+                val langCode = if (state.sourceLang != TranslateLanguage.AUTO) {
+                    state.sourceLang.code
+                } else {
+                    null
+                }
+                val globalActive = modelManager.activeModel(ModelCategory.STT)
                     .firstOrNull()
+                val model = SttModelSelector.select(
+                    language = langCode,
+                    assignments = sttAssignments,
+                    installed = sttModels,
+                    globalActive = globalActive
+                )
                 if (model == null) {
                     update {
                         it.copy(

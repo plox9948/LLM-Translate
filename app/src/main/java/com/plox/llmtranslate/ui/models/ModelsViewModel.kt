@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 
 /**
@@ -94,6 +95,13 @@ class ModelsViewModel @Inject constructor(
     private val _ttsEngine = MutableStateFlow(TtsEngines.SYSTEM)
     val ttsEngine: StateFlow<String> = _ttsEngine
 
+    /**
+     * Назначения «язык → id STT-модели» (issue #28): реактивно из DataStore,
+     * используется чипами языков на STT-карточках.
+     */
+    private val _sttByLanguage = MutableStateFlow<Map<String, String>>(emptyMap())
+    val sttByLanguage: StateFlow<Map<String, String>> = _sttByLanguage
+
     private val activeIdsFlow: Flow<Map<ModelCategory, String?>> =
         combine(
             modelManager.activeModelId(ModelCategory.TRANSLATION),
@@ -149,6 +157,12 @@ class ModelsViewModel @Inject constructor(
             // Движок TTS — та же настройка, что на экране «Настройки».
             preferences.ttsEngine.collect { engine ->
                 _ttsEngine.value = engine
+            }
+        }
+        viewModelScope.launch {
+            // Назначения STT по языкам — для подсветки чипов на карточках.
+            modelManager.sttByLanguage.collect { map ->
+                _sttByLanguage.value = map
             }
         }
     }
@@ -243,12 +257,32 @@ class ModelsViewModel @Inject constructor(
     }
 
     /**
+     * Тап по чипу языка на STT-карточке (issue #28): назначить модель языку,
+     * повторный тап по активному чипу — снять назначение.
+     * Если язык уже назначен другой модели — переназначение (одна модель на язык).
+     */
+    fun onSttLanguageToggle(card: ModelCard, language: String) {
+        val current = _sttByLanguage.value[language]
+        val next = if (current == card.id) null else card.id
+        viewModelScope.launch {
+            modelManager.setSttForLanguage(language, next)
+        }
+    }
+
+    /**
      * Подготовить запрос экспорта модели (UI запустит SAF-лаунчер).
      */
     fun onExportClick(model: InstalledModel) {
         if (!model.isReady || model.filePath.isNullOrBlank()) return
+        val source = File(model.filePath!!)
         val ext = model.filePath!!.substringAfterLast('.', "").lowercase()
-        val finalExt = if (ext in listOf("gguf", "onnx", "zip")) ext else "gguf"
+        // Каталог модели упаковывается в zip — расширение должно быть .zip,
+        // чтобы повторный импорт распознал ZIP-экспорт.
+        val finalExt = when {
+            ext in listOf("gguf", "onnx", "zip") -> ext
+            source.isDirectory -> "zip"
+            else -> "gguf"
+        }
         _uiState.value = _uiState.value.copy(
             exportRequest = ExportRequest(model.id, "${model.displayName}.$finalExt")
         )

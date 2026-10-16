@@ -60,6 +60,8 @@
     <string name="models_builtin">Встроенный движок — выберите кнопкой слева</string>
     <string name="models_cancel_download">Отменить</string>
     <string name="models_choose">Выбрать</string>
+    <string name="models_import">Импорт</string>
+    <string name="models_stt_lang_label">Язык распознавания:</string>
     <string name="models_export">Экспорт</string>
     <string name="models_delete">Удалить</string>
     <string name="models_category_translation">Перевод (LLM)</string>

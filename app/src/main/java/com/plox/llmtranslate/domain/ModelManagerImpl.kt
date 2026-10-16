@@ -14,6 +14,7 @@ import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.ModelImportMeta
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
@@ -26,9 +27,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import timber.log.Timber
 import java.io.File
 import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -44,8 +47,14 @@ class ModelManagerImpl @Inject constructor(
     private val preferences: ModelPreferences,
     private val deviceInfoProvider: DeviceInfoProvider,
     private val runtimeRouter: RuntimeRouter,
+    private val json: Json,
     private val scope: CoroutineScope
 ) : ModelManager {
+
+    private companion object {
+        /** Имя записи с метаданными в ZIP-экспорте мультифайловой модели. */
+        const val META_ENTRY_NAME = "model_meta.json"
+    }
 
     private val modelsDir: File
         get() = context.getExternalFilesDir("models") ?: context.filesDir
@@ -65,6 +74,22 @@ class ModelManagerImpl @Inject constructor(
     override fun activeModel(category: ModelCategory): Flow<InstalledModel?> =
         combine(activeModelId(category), repository.observeAll()) { id, models ->
             models.firstOrNull { it.id == id && it.isReady }
+        }
+
+    override val sttByLanguage: Flow<Map<String, String>> = preferences.sttByLanguage
+
+    override suspend fun setSttForLanguage(language: String, modelId: String?) =
+        withContext(Dispatchers.IO) {
+            if (modelId != null) {
+                val model = repository.getById(modelId)
+                if (model == null || model.category != ModelCategory.STT || !model.isReady) {
+                    Timber.w(
+                        "Назначение STT языку $language пропущено: модель $modelId недоступна"
+                    )
+                    return@withContext
+                }
+            }
+            preferences.setSttForLanguage(language, modelId)
         }
 
     override val loadedModels: Flow<List<LoadedModelInfo>> = runtimeRouter.loadedModels
@@ -202,9 +227,17 @@ class ModelManagerImpl @Inject constructor(
         withContext(Dispatchers.IO) {
             try {
                 val fileName = queryFileName(uri) ?: return@withContext null
+
+                // ZIP (в т.ч. экспорт мультифайловой модели этой же программой):
+                // распаковываем в каталог модели, id и структуру берём из
+                // вложенной метадати model_meta.json (см. exportToUri).
+                if (looksLikeZip(uri)) {
+                    return@withContext importZip(uri, fileName)
+                }
+
                 val targetFile = copyFromUri(uri) ?: return@withContext null
 
-                val modelId = fileName.removeSuffix(".gguf").removeSuffix(".onnx").removeSuffix(".zip")
+                val modelId = fileName.removeSuffix(".gguf").removeSuffix(".onnx")
                 val model = InstalledModel(
                     id = modelId,
                     category = guessCategory(fileName),
@@ -251,7 +284,16 @@ class ModelManagerImpl @Inject constructor(
                 output.use { out ->
                     if (source.isDirectory) {
                         // Каталог модели упаковываем в zip потоково.
+                        // Первой записью — метаданные: повторный импорт этого
+                        // zip регистрирует модель под её каталожным id.
                         ZipOutputStream(out.buffered()).use { zip ->
+                            zip.putNextEntry(ZipEntry(META_ENTRY_NAME))
+                            zip.write(
+                                json.encodeToString(
+                                    ModelImportMeta.serializer(), importMetaOf(model)
+                                ).toByteArray()
+                            )
+                            zip.closeEntry()
                             source.walkTopDown().filter { it.isFile }.forEach { f ->
                                 zip.putNextEntry(ZipEntry(f.relativeTo(source).path))
                                 f.inputStream().buffered().use { it.copyTo(zip) }
@@ -325,6 +367,211 @@ class ModelManagerImpl @Inject constructor(
         } ?: return null
         return targetFile
     }
+
+    /** Проверка сигнатуры ZIP (PK\x03\x04) по первым байтам документа SAF. */
+    private fun looksLikeZip(uri: Uri): Boolean = try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val magic = ByteArray(4)
+            var read = 0
+            while (read < 4) {
+                val n = input.read(magic, read, 4 - read)
+                if (n < 0) break
+                read += n
+            }
+            read == 4 &&
+                magic[0] == 0x50.toByte() && magic[1] == 0x4B.toByte() &&
+                magic[2] == 0x03.toByte() && magic[3] == 0x04.toByte()
+        } ?: false
+    } catch (e: Exception) {
+        Timber.w(e, "Не удалось прочитать сигнатуру $uri")
+        false
+    }
+
+    /**
+     * Импорт ZIP-экспорта: распаковка в каталог модели
+     * `models/<RUNTIME>/<id>` и регистрация записи. Если внутри есть
+     * запись [META_ENTRY_NAME] (ZIP сделан экспортом этой программы),
+     * id, категория и поля модели берутся из неё — такая модель
+     * совпадает с карточкой каталога. Иначе параметры угадываются по имени.
+     */
+    private suspend fun importZip(uri: Uri, sourceName: String): String? {
+        val tempDir = File(context.cacheDir, "model_import_${System.currentTimeMillis()}")
+        try {
+            tempDir.mkdirs()
+            var meta: ModelImportMeta? = null
+            var fileCount = 0
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                ZipInputStream(input.buffered()).use { zip ->
+                    var entry = zip.nextEntry
+                    while (entry != null) {
+                        val name = entry.name
+                        if (entry.isDirectory) {
+                            zip.closeEntry()
+                            entry = zip.nextEntry
+                            continue
+                        }
+                        if (name == META_ENTRY_NAME) {
+                            val content = String(zip.readBytes(), Charsets.UTF_8)
+                            meta = try {
+                                json.decodeFromString(ModelImportMeta.serializer(), content)
+                            } catch (e: Exception) {
+                                Timber.w(e, "Некорректная метаданная в ZIP $sourceName")
+                                null
+                            }
+                        } else {
+                            val outFile = File(tempDir, name)
+                            // Защита от zip-slip: файл не должен выходить за пределы временного каталога.
+                            val canonicalTemp = tempDir.canonicalPath
+                            if (!outFile.canonicalPath.startsWith(canonicalTemp + File.separator)) {
+                                Timber.w("ZIP-запись вне каталога, пропущена: $name")
+                            } else {
+                                outFile.parentFile?.mkdirs()
+                                outFile.outputStream().use { zip.copyTo(it) }
+                                fileCount++
+                            }
+                        }
+                        zip.closeEntry()
+                        entry = zip.nextEntry
+                    }
+                }
+            }
+            if (fileCount == 0) {
+                Timber.w("ZIP не содержит файлов модели: $sourceName")
+                return null
+            }
+
+            val model = meta?.let { modelFromMeta(it, tempDir) }
+                ?: modelFromZipName(sourceName, tempDir)
+                ?: return null
+
+            repository.upsert(model)
+            Timber.d("Импортирована модель ${model.id} (ZIP $sourceName)")
+            return model.id
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка импорта ZIP-модели из $uri")
+            return null
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    /**
+     * Каталог модели на диске для мультифайловой установки:
+     * `models/<RUNTIME>/<id>` — та же раскладка, что у загрузчика.
+     */
+    private fun modelTargetDir(runtime: RuntimeType, modelId: String): File =
+        File(File(modelsDir, runtime.name), modelId.replace('/', '_'))
+
+    /**
+     * Распакованный ZIP → модель из вложенных метаданных (id из каталога).
+     * @return null, если category/runtime из метаданных не распознаются.
+     */
+    private fun modelFromMeta(meta: ModelImportMeta, extracted: File): InstalledModel? {
+        val runtime = try {
+            RuntimeType.valueOf(meta.runtime)
+        } catch (e: IllegalArgumentException) {
+            Timber.w("Неизвестный runtime в метаданных ZIP: ${meta.runtime}")
+            return null
+        }
+        val category = try {
+            ModelCategory.valueOf(meta.category)
+        } catch (e: IllegalArgumentException) {
+            Timber.w("Неизвестная категория в метаданных ZIP: ${meta.category}")
+            return null
+        }
+        val targetDir = modelTargetDir(runtime, meta.id)
+        if (!extracted.copyRecursively(targetDir, overwrite = true)) {
+            Timber.w("Не удалось распаковать модель ${meta.id} в ${targetDir.path}")
+            return null
+        }
+        return InstalledModel(
+            id = meta.id,
+            category = category,
+            displayName = meta.displayName,
+            description = meta.description,
+            runtime = runtime,
+            sizeBytes = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
+            ramRequiredMb = meta.ramRequiredMb,
+            languages = meta.languages,
+            quality = meta.quality,
+            speed = meta.speed,
+            url = meta.url,
+            urls = meta.urls,
+            sha256 = null,
+            sha256s = meta.sha256s,
+            license = meta.license,
+            minAndroidSdk = meta.minAndroidSdk,
+            recommendedRamMb = meta.recommendedRamMb,
+            status = ModelStatus.READY,
+            progress = 100,
+            filePath = targetDir.absolutePath,
+            bytesDone = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
+            isBuiltin = meta.isBuiltin
+        )
+    }
+
+    /**
+     * Распакованный ZIP без метаданных → модель с параметрами,
+     * угаданными по имени файла.
+     */
+    private fun modelFromZipName(sourceName: String, extracted: File): InstalledModel? {
+        val modelId = sourceName
+            .removeSuffix(".zip")
+            .removeSuffix(".gguf")
+            .removeSuffix(".onnx")
+        if (modelId.isBlank()) return null
+        val runtime = guessRuntime(sourceName)
+        val targetDir = modelTargetDir(runtime, modelId)
+        if (!extracted.copyRecursively(targetDir, overwrite = true)) {
+            Timber.w("Не удалось распаковать модель $modelId в ${targetDir.path}")
+            return null
+        }
+        val size = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        return InstalledModel(
+            id = modelId,
+            category = guessCategory(sourceName),
+            displayName = sourceName,
+            description = "Импортированная модель",
+            runtime = runtime,
+            sizeBytes = size,
+            ramRequiredMb = 0,
+            languages = emptyList(),
+            quality = 3,
+            speed = 3,
+            url = "",
+            urls = emptyList(),
+            sha256 = null,
+            license = "Неизвестна",
+            minAndroidSdk = 26,
+            recommendedRamMb = 0,
+            status = ModelStatus.READY,
+            progress = 100,
+            filePath = targetDir.absolutePath,
+            bytesDone = size,
+            isBuiltin = false
+        )
+    }
+
+    /** Метаданные экспортируемой модели для ZIP. */
+    private fun importMetaOf(model: InstalledModel): ModelImportMeta = ModelImportMeta(
+        id = model.id,
+        category = model.category.name,
+        runtime = model.runtime.name,
+        displayName = model.displayName,
+        description = model.description,
+        languages = model.languages,
+        sizeBytes = model.sizeBytes,
+        ramRequiredMb = model.ramRequiredMb,
+        quality = model.quality,
+        speed = model.speed,
+        url = model.url,
+        urls = model.urls,
+        sha256s = model.sha256s,
+        license = model.license,
+        minAndroidSdk = model.minAndroidSdk,
+        recommendedRamMb = model.recommendedRamMb,
+        isBuiltin = model.isBuiltin
+    )
 
     private fun queryFileName(uri: Uri): String? {
         uri.getQueryParameter("name")?.let { return it }

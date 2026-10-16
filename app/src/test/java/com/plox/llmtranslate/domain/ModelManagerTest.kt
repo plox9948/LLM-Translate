@@ -22,6 +22,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -56,6 +57,7 @@ class ModelManagerTest {
             preferences,
             deviceInfoProvider,
             runtimeRouter,
+            Json { ignoreUnknownKeys = true },
             CoroutineScope(UnconfinedTestDispatcher())
         )
     }

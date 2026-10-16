@@ -60,6 +60,8 @@
     <string name="models_builtin">Built-in engine — select it with the button on the left</string>
     <string name="models_cancel_download">Cancel</string>
     <string name="models_choose">Select</string>
+    <string name="models_import">Import</string>
+    <string name="models_stt_lang_label">Speech recognition language:</string>
     <string name="models_export">Export</string>
     <string name="models_delete">Delete</string>
     <string name="models_category_translation">Translation (LLM)</string>

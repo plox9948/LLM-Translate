@@ -16,6 +16,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import timber.log.Timber
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
@@ -28,7 +31,8 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
  */
 @Singleton
 class ModelPreferences @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val json: Json
 ) {
 
     private val activeModelKeys = mapOf(
@@ -51,6 +55,38 @@ class ModelPreferences @Inject constructor(
 
     suspend fun getActiveModelId(category: ModelCategory): String? =
         context.dataStore.data.first()[activeModelKeys[category]!!]
+
+    // --- STT-модель на каждый язык (issue #28) ---
+
+    /**
+     * Карта «код языка → id STT-модели» (языки: "ru"/"en"/"ne").
+     * Сериализация значения — JSON-строка в preference `stt_by_language`.
+     */
+    val sttByLanguage: Flow<Map<String, String>> =
+        context.dataStore.data.map { prefs -> decodeSttByLanguage(prefs[STT_BY_LANGUAGE_KEY]) }
+
+    /**
+     * Назначить STT-модель языку; null — снять назначение.
+     */
+    suspend fun setSttForLanguage(language: String, modelId: String?) {
+        context.dataStore.edit { prefs ->
+            val map = decodeSttByLanguage(prefs[STT_BY_LANGUAGE_KEY]).toMutableMap()
+            if (modelId == null) map.remove(language) else map[language] = modelId
+            if (map.isEmpty()) {
+                prefs.remove(STT_BY_LANGUAGE_KEY)
+            } else {
+                prefs[STT_BY_LANGUAGE_KEY] = json.encodeToString(STT_MAP_SERIALIZER, map)
+            }
+        }
+    }
+
+    private fun decodeSttByLanguage(raw: String?): Map<String, String> =
+        if (raw.isNullOrBlank()) emptyMap() else try {
+            json.decodeFromString(STT_MAP_SERIALIZER, raw)
+        } catch (e: Exception) {
+            Timber.w(e, "Повреждённое значение stt_by_language, сброшено")
+            emptyMap()
+        }
 
     // --- Настройки приложения ---
 
@@ -129,5 +165,11 @@ class ModelPreferences @Inject constructor(
     companion object {
         /** Тайм-аут выгрузки рантаймов по умолчанию, минуты. */
         const val DEFAULT_UNLOAD_TIMEOUT_MINUTES = 5
+
+        /** Preference с JSON-картой «язык → id STT-модели». */
+        private val STT_BY_LANGUAGE_KEY = stringPreferencesKey("stt_by_language")
+
+        /** Сериализатор карты языков для [STT_BY_LANGUAGE_KEY]. */
+        private val STT_MAP_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
     }
 }

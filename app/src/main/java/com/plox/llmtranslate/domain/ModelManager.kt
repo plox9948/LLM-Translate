@@ -25,6 +25,15 @@ interface ModelManager {
     /** Активная модель для категории (null, если не выбрана или не готова). */
     fun activeModel(category: ModelCategory): Flow<InstalledModel?>
 
+    /** Карта «код языка → id STT-модели»: STT-модель на каждый язык. */
+    val sttByLanguage: Flow<Map<String, String>>
+
+    /**
+     * Назначить STT-модель языку (null — снять назначение).
+     * Модель должна быть установлена и готова; иначе назначение игнорируется.
+     */
+    suspend fun setSttForLanguage(language: String, modelId: String?)
+
     /** Свободно место на диске под модели. */
     val diskUsage: Flow<DiskUsage>
 
