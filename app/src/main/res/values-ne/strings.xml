@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LLM Translate</string>
+
+    <!-- Нижняя навигация -->
+    <string name="nav_translate">अनुवाद</string>
+    <string name="nav_history">इतिहास</string>
+    <string name="nav_models">मोडेलहरू</string>
+    <string name="nav_settings">सेटिङहरू</string>
+
+    <!-- Общие -->
+    <string name="ok">हुन्छ</string>
+    <string name="error_title">त्रुटि</string>
+    <string name="download">डाउनलोड</string>
+    <string name="cancel">रद्द गर्नुहोस्</string>
+    <string name="option_system">सिस्टम अनुसार</string>
+    <string name="option_ru">Русский</string>
+    <string name="option_en">English</string>
+    <string name="option_ne">नेपाली</string>
+
+    <!-- Единицы измерения -->
+    <string name="unit_gb">जि.बि.</string>
+    <string name="unit_mb">मे.बि.</string>
+    <string name="unit_kb">कि.बि.</string>
+
+    <!-- Экран «Перевод» -->
+    <string name="translate_swap_cd">भाषा अदलबदल गर्नुहोस्</string>
+    <string name="translate_record_cd">अडियो रिकर्ड गर्नुहोस्</string>
+    <string name="translate_input_placeholder">अनुवाद गर्न पाठ लेख्नुहोस्…</string>
+    <string name="translate_action">अनुवाद गर्नुहोस्</string>
+    <string name="translate_in_progress">अनुवाद हुँदैछ…</string>
+    <string name="translate_no_model">\"मोडेलहरू\" स्क्रीनमा अनुवाद मोडेल डाउनलोड गर्नुहोस्</string>
+    <string name="translate_missing_title">अनुवादका लागि मोडेलहरू आवश्यक छन्</string>
+    <string name="translate_download_progress">डाउनलोड हुँदैछ… %1$d%%</string>
+    <string name="translate_speak_cd">सुनाउनुहोस्</string>
+    <string name="translate_copy_cd">अनुवाद कपी गर्नुहोस्</string>
+    <string name="translate_recording_hint">● रिकर्डिङ चलिरहेको छ… रोक्न माइक्रोफोनमा ट्याप गर्नुहोस्</string>
+    <string name="translate_select_language">भाषा चयन गर्नुहोस्</string>
+    <string name="translate_clear">मेटाउनुहोस्</string>
+    <string name="translate_cancel">रद्द गर्नुहोस्</string>
+    <string name="translate_history_clear">मेटाउनुहोस्</string>
+    <string name="translate_history_delete_cd">इतिहासबाट मेटाउनुहोस्</string>
+
+    <!-- Онбординг первого запуска -->
+    <string name="onboarding_title">के अनुवाद गर्ने?</string>
+    <string name="onboarding_subtitle">दिशा चयन गर्नुहोस् — कुन मोडेल डाउनलोड गर्ने भनी सुझाउनेछौँ</string>
+    <string name="onboarding_option_ru_en">रुसी ⇄ अंग्रेजी</string>
+    <string name="onboarding_option_en_ne">अंग्रेजी ⇄ नेपाली</string>
+    <string name="onboarding_option_ru_ne">रुसी ⇄ नेपाली</string>
+    <string name="onboarding_skip">छोड्नुहोस्</string>
+
+    <!-- Вкладка «История» -->
+    <string name="history_empty">अनुवाद इतिहास खाली छ</string>
+
+    <!-- Экран «Модели» -->
+    <string name="models_import_custom">+ आफ्नै मोडेल आयात गर्नुहोस्</string>
+    <string name="models_backup">ब्याकअप</string>
+    <string name="models_restore">पुनःस्थापना</string>
+    <string name="models_disk_used">मोडेलले प्रयोग गरेको स्थान: %1$s</string>
+    <string name="models_license_title">मोडेल इजाजतपत्र</string>
+    <string name="models_license_text">मोडेल \"%1$s\" %2$s इजाजतपत्रअन्तर्गत वितरण गरिएको छ। कृपया इजाजतपत्रका सर्तहरूअनुरूप मात्र यसको प्रयोग गर्ने भनी पुष्टि गर्नुहोस्।</string>
+    <string name="models_active_cd">सक्रिय</string>
+    <string name="models_selected">चयन गरिएको</string>
+    <string name="models_quality">गुणस्तर</string>
+    <string name="models_speed">गति</string>
+    <string name="models_ram_mb"> · ~%1$d जि.बि. र्याम</string>
+    <string name="models_loaded_title">मेमोरीमा लोड गरिएको</string>
+    <string name="models_loaded_estimate">अनुमानित प्रयोग: ~%1$d जि.बि.</string>
+    <string name="models_loaded_process">प्रक्रिया मेमोरी: %1$d जि.बि.</string>
+    <string name="models_loaded_cat_translation">अनुवाद</string>
+    <string name="models_loaded_cat_stt">वाणी</string>
+    <string name="models_builtin">अन्तर्निर्मित इन्जिन — बायाँतर्फको बटनबाट चयन गर्नुहोस्</string>
+    <string name="models_cancel_download">रद्द गर्नुहोस्</string>
+    <string name="models_choose">चयन गर्नुहोस्</string>
+    <string name="models_import">आयात</string>
+    <string name="models_stt_lang_label">वाणी पहिचान भाषा:</string>
+    <string name="models_required_for">%1$s का लागि आवश्यक</string>
+    <string name="models_export">निर्यात</string>
+    <string name="models_delete">मेटाउनुहोस्</string>
+    <string name="models_category_translation">अनुवाद (LLM)</string>
+    <string name="models_category_stt">वाणी पहिचान (STT)</string>
+    <string name="models_category_tts">वाणी संश्लेषण (TTS)</string>
+
+    <!-- Экран «Настройки» -->
+    <string name="settings_tts_engine">वाणी संश्लेषण इन्जिन</string>
+    <string name="settings_tts_system">एन्ड्रोइड सिस्टम TTS</string>
+    <string name="settings_tts_rhvoice">RHVoice (ru, ne)</string>
+    <string name="settings_tts_espeak">eSpeak NG (१००+ भाषा)</string>
+    <string name="settings_ui_language">इन्टरफेस भाषा</string>
+    <string name="settings_theme">थिम</string>
+    <string name="settings_theme_light">उज्यालो</string>
+    <string name="settings_theme_dark">अँध्यारो</string>
+    <string name="settings_unload_models">मोडेल अनलोडिङ</string>
+    <string name="settings_unload_now">तुरुन्तै</string>
+    <plurals name="settings_unload_after_default">
+        <item quantity="one">%1$d मिनेटपछि (पूर्वनिर्धारित)</item>
+        <item quantity="other">%1$d मिनेटपछि (पूर्वनिर्धारित)</item>
+    </plurals>
+    <string name="settings_unload_after_15">१५ मिनेटपछि</string>
+    <string name="settings_unload_after_30">३० मिनेटपछि</string>
+    <string name="settings_unload_never">कहिल्यै अनलोड नगर्नुहोस्</string>
+</resources>

@@ -146,7 +146,8 @@ fun SettingsScreen(
             options = listOf(
                 "system" to stringResource(R.string.option_system),
                 "ru" to stringResource(R.string.option_ru),
-                "en" to stringResource(R.string.option_en)
+                "en" to stringResource(R.string.option_en),
+                "ne" to stringResource(R.string.option_ne)
             )
         )
 

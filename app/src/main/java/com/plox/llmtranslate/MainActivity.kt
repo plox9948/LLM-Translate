@@ -18,6 +18,7 @@ import androidx.lifecycle.lifecycleScope
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.BackgroundUnloadScheduler
 import com.plox.llmtranslate.domain.ModelManager
+import com.plox.llmtranslate.domain.model.defaultUiLanguageForSystemLocale
 import com.plox.llmtranslate.ui.MainScreen
 import com.plox.llmtranslate.ui.theme.OfflineTranslatorTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -153,6 +154,12 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Применить язык интерфейса к конфигурации активности.
+     *
+     * Явные значения («ru»/«en»/«ne») применяются как есть. В режиме «по системе»
+     * язык берётся из снимка системной конфигурации [baseConfig] и детерминированно
+     * отображается в один из поддерживаемых языков (см. [defaultUiLanguageForSystemLocale]),
+     * после чего применяются той же веткой setLocale — прямой сброс на baseConfig
+     * дал бы произвольную системную локаль, недоступную в интерфейсе.
      */
     private fun applyUiLanguage(lang: String) {
         if (lang == appliedUiLanguage) return
@@ -160,9 +167,21 @@ class MainActivity : ComponentActivity() {
         val config = when (lang) {
             "ru" -> Configuration(resources.configuration).apply { setLocale(Locale("ru")) }
             "en" -> Configuration(resources.configuration).apply { setLocale(Locale("en")) }
-            // «По системе» — явный сброс на снимок системной конфигурации:
-            // без него процесс сохраняет прилипшую локаль от updateConfiguration.
-            else -> baseConfig ?: return
+            "ne" -> Configuration(resources.configuration).apply { setLocale(Locale("ne")) }
+            // «По системе» — берём язык системы из снимка конфигурации и
+            // отображаем его в поддерживаемый язык UI. Детерминированность
+            // важна: без этого процесс сохраняет прилипшую локаль от
+            // предыдущего updateConfiguration и наследует её при recreate().
+            else -> {
+                val systemLanguage = baseConfig?.let { snapshot ->
+                    @Suppress("DEPRECATION")
+                    val locales = snapshot.locales
+                    if (locales != null && locales.size() > 0) locales.get(0).language
+                    else snapshot.locale?.language
+                }
+                val mapped = defaultUiLanguageForSystemLocale(systemLanguage)
+                Configuration(resources.configuration).apply { setLocale(Locale(mapped)) }
+            }
         }
         // updateConfiguration устарел, но остаётся надёжным способом применить
         // локаль к активности без AppCompat. Современный createConfigurationContext

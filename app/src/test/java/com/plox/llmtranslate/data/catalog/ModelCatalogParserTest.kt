@@ -259,7 +259,9 @@ class ModelCatalogParserTest {
         assertTrue("models_catalog.json не найден относительно $candidates", file != null)
 
         val cards = parser.parse(file!!.readText(Charsets.UTF_8))
-        assertEquals(12, cards.size)
+        // Число карточек = текущему составу каталога assets (после #34 —
+        // 11 моделей: удалён Zipformer, GigaAM v2 заменён на v3 E2E CTC).
+        assertEquals(11, cards.size)
         for (card in cards.filter { it.downloadUrls().isNotEmpty() }) {
             val urls = card.downloadUrls()
             assertEquals("${card.id}: sha256s != urls", urls.size, card.sha256s.size)

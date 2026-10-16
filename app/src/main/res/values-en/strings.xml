@@ -16,6 +16,7 @@
     <string name="option_system">System default</string>
     <string name="option_ru">Русский</string>
     <string name="option_en">English</string>
+    <string name="option_ne">नेपाली</string>
 
     <!-- Единицы измерения -->
     <string name="unit_gb">GB</string>
