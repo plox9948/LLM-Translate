@@ -118,7 +118,8 @@ class IndicTransOnnxRuntime @Inject constructor(
      * Загрузить IndicTrans-модель (3 сессии + токенизаторы), поместив пучок
      * в LRU-кэш. При настройке keep пучки других направлений сохраняются
      * (сверх ёмкости вытесняются наименее давно используемые), при unload —
-     * все существующие пучки выгружаются перед загрузкой (прежнее поведение).
+     * движок держит ТОЛЬКО текущую модель: чужие пучки выгружаются и перед
+     * загрузкой, и при попадании в кэш (прежнее поведение).
      */
     override suspend fun ensureLoaded(modelInfo: InstalledModel): RuntimeError? =
         withContext(Dispatchers.IO) {
@@ -126,9 +127,15 @@ class IndicTransOnnxRuntime @Inject constructor(
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
             sessionMutex.withLock {
-                // Быстрый путь под мьютексом: пучок уже в кэше — только сделать
-                // его активным, без повторной загрузки (смена направления, issue #36).
-                if (cache.get(modelInfo.id) != null) {
+                val cached = cache.get(modelInfo.id)
+                if (cached != null) {
+                    // Быстрый путь под мьютексом: пучок уже в кэше — делать
+                    // активным без повторной загрузки (смена направления, issue #36).
+                    // Политика применяется и здесь: в unload-режиме движок
+                    // обязан держать только текущую модель.
+                    if (!retentionProvider.keepModelsOnDirectionChange()) {
+                        unloadOtherBundlesUnlocked(modelInfo.id)
+                    }
                     activeId = modelInfo.id
                     publishLoadedUnlocked()
                     return@withContext null
@@ -430,6 +437,18 @@ class IndicTransOnnxRuntime @Inject constructor(
         cache.clear().forEach { (_, bundle) -> bundle.release() }
         activeId = null
         _loadedModels.value = emptyList()
+    }
+
+    /**
+     * Выгрузить все пучки кэша, кроме [keepId] (unload-режим при попадании
+     * в кэш — движок держит только текущую модель). Вызывать только под
+     * [sessionMutex].
+     */
+    private fun unloadOtherBundlesUnlocked(keepId: String) {
+        cache.keysNotIn(setOf(keepId)).forEach { staleId ->
+            cache.remove(staleId)?.release()
+            Timber.d("IndicTrans: выгружена модель другого направления $staleId")
+        }
     }
 
     /**

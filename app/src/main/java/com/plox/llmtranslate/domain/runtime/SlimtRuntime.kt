@@ -77,7 +77,8 @@ class SlimtRuntime @Inject constructor(
     /**
      * Загрузить пачку Firefox-модели (marian .bin + shortlist + словари).
      * При настройке keep другие направления остаются в LRU-кэше движка,
-     * при unload — выгружаются все перед загрузкой (прежнее поведение).
+     * при unload — движок держит ТОЛЬКО текущую модель: чужие пучки
+     * выгружаются и перед загрузкой, и при попадании в кэш (прежнее поведение).
      */
     override suspend fun ensureLoaded(modelInfo: InstalledModel): RuntimeError? =
         withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -85,9 +86,15 @@ class SlimtRuntime @Inject constructor(
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
             engineMutex.withLock {
-                // Быстрый путь под мьютексом: пучок уже в кэше — только сделать
-                // его активным, без повторной загрузки (смена направления, issue #36).
-                if (cache.get(modelInfo.id) != null) {
+                val cached = cache.get(modelInfo.id)
+                if (cached != null) {
+                    // Быстрый путь под мьютексом: пучок уже в кэше — делать
+                    // активным без повторной загрузки (смена направления, issue #36).
+                    // Политика применяется и здесь: в unload-режиме движок
+                    // обязан держать только текущую модель.
+                    if (!retentionProvider.keepModelsOnDirectionChange()) {
+                        unloadOtherBundlesUnlocked(modelInfo.id)
+                    }
                     activeId = modelInfo.id
                     publishLoadedUnlocked()
                     return@withContext null
@@ -230,6 +237,22 @@ class SlimtRuntime @Inject constructor(
         }
         activeId = null
         _loadedModels.value = emptyList()
+    }
+
+    /**
+     * Выгрузить все пучки кэша, кроме [keepId] (unload-режим при попадании
+     * в кэш — движок держит только текущую модель). Вызывать только под
+     * [engineMutex].
+     */
+    private fun unloadOtherBundlesUnlocked(keepId: String) {
+        cache.keysNotIn(setOf(keepId)).forEach { staleId ->
+            cache.remove(staleId)?.let { bundle ->
+                if (bundle.handle != 0L) {
+                    SlimtNative.nativeDestroy(bundle.handle)
+                }
+            }
+            Timber.d("slimt: выгружена модель другого направления $staleId")
+        }
     }
 
     /**
