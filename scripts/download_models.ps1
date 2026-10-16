@@ -9,7 +9,7 @@
       правки моделей поднимают версию в обоих файлах одинаково.
     Использование:
         .\scripts\download_models.ps1                 # скачать всё
-        .\scripts\download_models.ps1 -Ids opus-mt-tiny-ru-en-int8
+        .\scripts\download_models.ps1 -Ids firefox-bergamot-ru-en
         .\scripts\download_models.ps1 -PrintShaOnly   # только посчитать SHA уже скачанных
 #>
 [CmdletBinding()]

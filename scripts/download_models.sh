@@ -9,7 +9,7 @@
 #
 # Использование:
 #   ./scripts/download_models.sh                          # скачать всё
-#   ./scripts/download_models.sh opus-mt-tiny-ru-en-int8  # скачать конкретную модель
+#   ./scripts/download_models.sh firefox-bergamot-ru-en       # скачать конкретную модель
 #   ./scripts/download_models.sh --print-sha-only         # только посчитать SHA уже скачанных
 
 set -eo pipefail
