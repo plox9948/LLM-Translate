@@ -102,15 +102,15 @@ class ModelsViewModel @Inject constructor(
     private val _sttByLanguage = MutableStateFlow<Map<String, String>>(emptyMap())
     val sttByLanguage: StateFlow<Map<String, String>> = _sttByLanguage
 
+    // Глобальной активной STT-модели больше нет (issue #29): выбор по языкам,
+    // в activeIds только TRANSLATION (подсветка карточки) и TTS (движок).
     private val activeIdsFlow: Flow<Map<ModelCategory, String?>> =
         combine(
             modelManager.activeModelId(ModelCategory.TRANSLATION),
-            modelManager.activeModelId(ModelCategory.STT),
             modelManager.activeModelId(ModelCategory.TTS)
-        ) { t, s, tt ->
+        ) { t, tt ->
             mapOf(
                 ModelCategory.TRANSLATION to t,
-                ModelCategory.STT to s,
                 ModelCategory.TTS to tt
             )
         }
@@ -354,14 +354,18 @@ class ModelsViewModel @Inject constructor(
     }
 
     /**
-     * Проверить предупреждение о памяти при одновременной активации LLM и STT.
+     * Проверить предупреждение о памяти при одновременном нахождении в ОЗУ
+     * LLM и STT-моделей (issue #29: активной STT-модели нет — считаем по
+     * фактически загруженным в память моделям).
      * Логика и текст — в [InstallCheckLogic.ramWarning].
      */
     fun checkRamWarning(): String? {
         val device = _deviceInfo.value ?: return null
-        val state = uiState.value
-        val llm = state.installed.firstOrNull { it.id == state.activeIds[ModelCategory.TRANSLATION] }
-        val stt = state.installed.firstOrNull { it.id == state.activeIds[ModelCategory.STT] }
-        return InstallCheckLogic.ramWarning(llm?.ramRequiredMb, stt?.ramRequiredMb, device)
+        val loaded = uiState.value.loadedModels
+        val llmMb = loaded.filter { it.category == ModelCategory.TRANSLATION }
+            .maxOfOrNull { it.ramRequiredMb }
+        val sttMb = loaded.filter { it.category == ModelCategory.STT }
+            .maxOfOrNull { it.ramRequiredMb }
+        return InstallCheckLogic.ramWarning(llmMb, sttMb, device)
     }
 }

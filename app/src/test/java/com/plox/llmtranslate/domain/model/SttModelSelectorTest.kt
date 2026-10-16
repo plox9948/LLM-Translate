@@ -6,13 +6,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Тесты выбора STT-модели по языку (issue #28):
- * цепочка «назначение → индик-фолбэк для ne → глобальная активная».
+ * Тесты выбора STT-модели по языку (issues #28, #29):
+ * цепочка «назначение → индик-фолбэк для ne → поддерживающая язык модель»,
+ * для AUTO — мультаязычная (whisper в приоритете) либо первая Ready.
+ * Глобальной активной STT-модели больше нет.
  */
 class SttModelSelectorTest {
 
     private fun sttModel(
         id: String,
+        languages: List<String>,
         runtime: RuntimeType = RuntimeType.SHERPA,
         ready: Boolean = true
     ) = InstalledModel(
@@ -23,7 +26,7 @@ class SttModelSelectorTest {
         runtime = runtime,
         sizeBytes = 100,
         ramRequiredMb = 100,
-        languages = listOf("ru", "en", "ne"),
+        languages = languages,
         quality = 4,
         speed = 4,
         url = "",
@@ -39,39 +42,51 @@ class SttModelSelectorTest {
         isBuiltin = true
     )
 
-    private val global = sttModel("stt-whisper-small-multilingual")
-    private val indic = sttModel("stt-ne-indicconformer")
-    private val nv = sttModel("stt-nemo-parakeet-en")
+    private val whisper = sttModel(
+        "stt-whisper-small-multilingual",
+        languages = listOf("ru", "en", "ne")
+    )
+    private val indic = sttModel("stt-ne-indicconformer", languages = listOf("ne"))
+    private val nv = sttModel("stt-nemo-parakeet-en", languages = listOf("en"))
 
     @Test
     fun `assigned model wins for its language`() {
         val result = SttModelSelector.select(
             language = "en",
             assignments = mapOf("en" to "stt-nemo-parakeet-en"),
-            installed = listOf(global, indic, nv),
-            globalActive = global
+            installed = listOf(whisper, indic, nv)
         )
         assertEquals(nv, result)
     }
 
     @Test
-    fun `not assigned language falls back to global active`() {
+    fun `language without assignment falls back to supporting model`() {
+        // Языку «en» ничего не назначено — подходит первая Ready-модель,
+        // у которой languages содержит «en».
         val result = SttModelSelector.select(
-            language = "ru",
+            language = "en",
             assignments = emptyMap(),
-            installed = listOf(global, indic),
-            globalActive = global
+            installed = listOf(indic, nv, whisper)
         )
-        assertEquals(global, result)
+        assertEquals(nv, result)
     }
 
     @Test
-    fun `ne default prefers installed indicconformer over global`() {
+    fun `language supported only by a later model selects it`() {
+        val result = SttModelSelector.select(
+            language = "ru",
+            assignments = emptyMap(),
+            installed = listOf(indic, nv, whisper)
+        )
+        assertEquals(whisper, result)
+    }
+
+    @Test
+    fun `ne default prefers installed indicconformer over other support`() {
         val result = SttModelSelector.select(
             language = "ne",
             assignments = emptyMap(),
-            installed = listOf(global, indic),
-            globalActive = global
+            installed = listOf(whisper, indic)
         )
         assertEquals(indic, result)
     }
@@ -81,65 +96,120 @@ class SttModelSelectorTest {
         val result = SttModelSelector.select(
             language = "ne",
             assignments = mapOf("ne" to "stt-whisper-small-multilingual"),
-            installed = listOf(global, indic),
-            globalActive = global
+            installed = listOf(whisper, indic)
         )
-        assertEquals(global, result)
+        assertEquals(whisper, result)
     }
 
     @Test
     fun `assigned but not installed model falls through the chain`() {
-        // Назначена удалённая (не установленная) модель — для ne срабатывает
-        // индик-фолбэк, для других языков — глобальная.
+        // Назначена удалённая (не установленная) модель: для ne срабатывает
+        // индик-фолбэк, для ru — поддерживающая язык модель.
         val neResult = SttModelSelector.select(
             language = "ne",
             assignments = mapOf("ne" to "missing-model"),
-            installed = listOf(global, indic),
-            globalActive = global
+            installed = listOf(whisper, indic)
         )
         assertEquals(indic, neResult)
 
         val ruResult = SttModelSelector.select(
             language = "ru",
             assignments = mapOf("ru" to "missing-model"),
-            installed = listOf(global, indic),
-            globalActive = global
+            installed = listOf(whisper, indic)
         )
-        assertEquals(global, ruResult)
+        assertEquals(whisper, ruResult)
     }
 
     @Test
     fun `assigned but not ready model is not selected`() {
-        val downloading = sttModel("stt-nemo-parakeet-en", ready = false)
+        val downloading = sttModel("stt-nemo-parakeet-en", languages = listOf("en"), ready = false)
         val result = SttModelSelector.select(
             language = "en",
             assignments = mapOf("en" to "stt-nemo-parakeet-en"),
-            installed = listOf(global, downloading),
-            globalActive = global
+            installed = listOf(whisper, downloading)
         )
-        assertEquals(global, result)
+        assertEquals(whisper, result)
     }
 
     @Test
-    fun `auto language uses only global active`() {
-        val result = SttModelSelector.select(
-            language = null,
-            assignments = mapOf("ru" to "stt-nemo-parakeet-en"),
-            installed = listOf(global, indic, nv),
-            globalActive = global
-        )
-        assertEquals(global, result)
-    }
-
-    @Test
-    fun `nothing assigned and no global returns null`() {
+    fun `no model supporting the language returns null`() {
         val result = SttModelSelector.select(
             language = "ru",
             assignments = emptyMap(),
-            installed = listOf(nv),
-            globalActive = null
+            installed = listOf(nv, indic)
         )
         assertNull(result)
+    }
+
+    @Test
+    fun `auto prefers multilingual whisper model`() {
+        // «ne» — монопалкая модель с languages из двух кодов (не whisper):
+        // whisper всё равно приоритетнее.
+        val otherMultilingual = sttModel(
+            "stt-other-multilingual",
+            languages = listOf("ru", "en")
+        )
+        val result = SttModelSelector.select(
+            language = null,
+            assignments = mapOf("ru" to "stt-nemo-parakeet-en"),
+            installed = listOf(otherMultilingual, whisper, indic)
+        )
+        assertEquals(whisper, result)
+    }
+
+    @Test
+    fun `auto without whisper picks first multilingual`() {
+        val result = SttModelSelector.select(
+            language = null,
+            assignments = emptyMap(),
+            installed = listOf(nv, indic, whisper)
+        )
+        assertEquals(whisper, result)
+    }
+
+    @Test
+    fun `auto without multilingual picks first ready`() {
+        val mono1 = sttModel("stt-mono-one", languages = listOf("en"))
+        val mono2 = sttModel("stt-mono-two", languages = listOf("ne"))
+        val result = SttModelSelector.select(
+            language = null,
+            assignments = emptyMap(),
+            installed = listOf(mono1, mono2)
+        )
+        assertEquals(mono1, result)
+    }
+
+    @Test
+    fun `auto skips models that are not ready`() {
+        val downloadingWhisper = sttModel(
+            "stt-whisper-large-multilingual",
+            languages = listOf("ru", "en"),
+            ready = false
+        )
+        val result = SttModelSelector.select(
+            language = null,
+            assignments = emptyMap(),
+            installed = listOf(downloadingWhisper, nv)
+        )
+        assertEquals(nv, result)
+    }
+
+    @Test
+    fun `empty installed list returns null`() {
+        assertNull(
+            SttModelSelector.select(
+                language = "ru",
+                assignments = mapOf("ru" to "stt-nemo-parakeet-en"),
+                installed = emptyList()
+            )
+        )
+        assertNull(
+            SttModelSelector.select(
+                language = null,
+                assignments = emptyMap(),
+                installed = emptyList()
+            )
+        )
     }
 
     @Test
@@ -147,7 +217,7 @@ class SttModelSelectorTest {
         assertTrue(SttModelSelector.isIndicConformer(indic))
         assertTrue(
             SttModelSelector.isIndicConformer(
-                sttModel("custom_indicconformer_v2").copy(runtime = RuntimeType.SHERPA)
+                sttModel("custom_indicconformer_v2", languages = listOf("ne"))
             )
         )
         assertTrue(!SttModelSelector.isIndicConformer(nv))

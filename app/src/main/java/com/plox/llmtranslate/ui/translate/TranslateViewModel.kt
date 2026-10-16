@@ -24,7 +24,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
@@ -90,18 +89,19 @@ class TranslateViewModel @Inject constructor(
         }
         viewModelScope.launch {
             modelManager.installedModels(ModelCategory.STT)
-                .collect { models -> sttModels = models }
+                .collect { models ->
+                    sttModels = models
+                    // Доступность распознавания — любая готовая STT-модель:
+                    // глобальной активной больше нет, выбор по языкам (issue #29).
+                    _uiState.value = _uiState.value.copy(
+                        hasSttModel = models.any { it.isReady }
+                    )
+                }
         }
         viewModelScope.launch {
             modelManager.sttByLanguage.collect { assignments ->
                 sttAssignments = assignments
             }
-        }
-        viewModelScope.launch {
-            modelManager.activeModel(ModelCategory.STT)
-                .collect { model ->
-                    _uiState.value = _uiState.value.copy(hasSttModel = model != null)
-                }
         }
         viewModelScope.launch {
             pendingHolder.pending.collect { entry ->
@@ -252,7 +252,7 @@ class TranslateViewModel @Inject constructor(
     }
 
     /**
-     * Распознать записанный аудио-файл (WAV) активной STT-моделью.
+     * Распознать записанный аудио-файл (WAV) STT-моделью, подобранной по языку.
      * Операция идёт через тот же [translationJob], что и перевод: кнопка
      * «Отмена» активна и во время распознавания; отмена — тихий возврат
      * в idle без ошибки.
@@ -273,28 +273,26 @@ class TranslateViewModel @Inject constructor(
                     )
                 }
 
-                // Выбор STT-модели (issue #28): для явно выбранного исходного
-                // языка — модель, назначенная этому языку (с фолбэком
-                // IndicConformer для ne), иначе — глобальная активная модель.
+                // Выбор STT-модели (issues #28, #29): для явно выбранного
+                // исходного языка — назначенная языку модель (с фолбэком
+                // IndicConformer для ne и поддержанием языка), для AUTO —
+                // мультаязычная (whisper в приоритете) либо любая установленная.
                 val langCode = if (state.sourceLang != TranslateLanguage.AUTO) {
                     state.sourceLang.code
                 } else {
                     null
                 }
-                val globalActive = modelManager.activeModel(ModelCategory.STT)
-                    .firstOrNull()
                 val model = SttModelSelector.select(
                     language = langCode,
                     assignments = sttAssignments,
-                    installed = sttModels,
-                    globalActive = globalActive
+                    installed = sttModels
                 )
                 if (model == null) {
                     update {
                         it.copy(
                             isTranslating = false,
                             canCancelTranslation = false,
-                            error = "Нет активной модели распознавания. Скачайте её на экране «Модели»."
+                            error = "Нет подходящей модели распознавания. Скачайте её на экране «Модели»."
                         )
                     }
                     return@launch
@@ -403,7 +401,7 @@ class TranslateViewModel @Inject constructor(
     fun onPermissionDenied() {
         update {
             it.copy(
-                error = "Нужно разрешение на микрофон и активная модель распознавания"
+                error = "Нужно разрешение на микрофон и установленная модель распознавания"
             )
         }
     }

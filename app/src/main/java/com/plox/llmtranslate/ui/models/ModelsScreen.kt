@@ -160,7 +160,7 @@ fun ModelsScreen(
         }
     }
 
-    // Предупреждение о нехватке ОЗУ при одновременной активации LLM и STT.
+    // Предупреждение о нехватке ОЗУ при одновременном нахождении в памяти LLM и STT.
     val ramWarning = viewModel.checkRamWarning()
 
     LazyColumn(
@@ -497,15 +497,14 @@ private fun ModelCardItem(
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Радиокнопка активной модели / выбранного TTS-движка:
-                // selectable с ролью RadioButton — доступный переключатель
-                // (TalkBack объявляет состояние). Строка карточки не кликабельна
-                // (прошлый фикс радиокнопок), выбор — только этой кнопкой или
-                // кнопкой «Выбрать» ниже. Неактивная unavailable-модель — disabled.
-                // У моделей перевода радиокнопки нет: движок выбирается
-                // автоматически по направлению (issue #28).
+                // Радиокнопка выбранного TTS-движка: selectable с ролью
+                // RadioButton — доступный переключатель (TalkBack объявляет
+                // состояние). Строка карточки не кликабельна (прошлый фикс
+                // радиокнопок), выбор — только этой кнопкой или в настройках.
+                // Радиокнопок перевода и STT нет: модель перевода выбирается
+                // автоматически по направлению, STT — по языкам (issues #28, #29).
                 val canSelect = isTtsEngine || installedModel?.isReady == true
-                if (card.category != ModelCategory.TRANSLATION) {
+                if (card.category == ModelCategory.TTS) {
                     Box(
                         modifier = Modifier
                             .size(24.dp)
@@ -655,15 +654,16 @@ private fun ModelCardItem(
                         }
                     }
                     else -> {
-                        // Модель перевода выбирается автоматически по направлению —
-                        // кнопка «Выбрать» не показывается (issue #28).
-                        if (card.category != ModelCategory.TRANSLATION) {
+                        // Кнопка «Выбрать» осталась только у TTS (движок):
+                        // модель перевода выбирается по направлению, STT — по
+                        // языкам через чипы (issues #28, #29).
+                        if (card.category == ModelCategory.TTS) {
                             Button(onClick = onActive, modifier = Modifier.weight(1f)) {
                                 Text(stringResource(R.string.models_choose))
                             }
                         }
                         if (card.sizeBytes > 0L) {
-                            if (card.category != ModelCategory.TRANSLATION) {
+                            if (card.category == ModelCategory.TTS) {
                                 Spacer(modifier = Modifier.width(8.dp))
                             }
                             OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
