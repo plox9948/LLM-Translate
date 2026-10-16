@@ -216,10 +216,10 @@ class InferenceSmokeTest {
 
     @Test
     fun sherpaGigaAmV3SttLoads() {
-        val dir = modelDir("SHERPA", "stt-ru-gigaam-v3-ctc")
+        val dir = modelDir("SHERPA", "stt-ru-gigaam-v3-e2e-ctc")
         assertTrue("Каталог модели не найден: $dir", dir.exists())
         val model = readyModel(
-            "stt-ru-gigaam-v3-ctc", ModelCategory.STT,
+            "stt-ru-gigaam-v3-e2e-ctc", ModelCategory.STT,
             RuntimeType.SHERPA, dir.absolutePath
         )
         val engine = SherpaSttEngine()

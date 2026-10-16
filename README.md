@@ -258,7 +258,7 @@ sherpa — по таймауту фонового простоя. Таймаут
 | Firefox Translations RU→EN (Bergamot/slimt, int8 intgemm) | Перевод | ru⇄en | 21 МБ | 300 МБ | 2 ГБ |
 | IndicTrans2 (Indic→EN, int8) | Перевод | ne→en | ~320 МБ | 650 МБ | 3 ГБ |
 | IndicTrans2 (EN→Indic, int8) | Перевод | en→ne | ~320 МБ | 600 МБ | 3 ГБ |
-| GigaAM v3 RU (sherpa-onnx) | STT | ru | ~230 МБ (int8) | 320 МБ | 2.5 ГБ |
+| GigaAM v3 RU (sherpa-onnx) | STT | ru | ~230 МБ (int8, пунктуация) | 320 МБ | 2.5 ГБ |
 | Parakeet 110M EN (sherpa-onnx) | STT | en | ~110 МБ (int8) | 250 МБ | 2 ГБ |
 | IndicConformer NE (sherpa-onnx) | STT | ne | ~190 МБ (int8) | 280 МБ | 2.5 ГБ |
 | Whisper Small Multilingual (sherpa-onnx) | STT | ru/en/ne | ~360 МБ (int8) | 700 МБ | 3 ГБ |
@@ -283,7 +283,7 @@ v0.4.1+ (issue #32): инструментационный тест `ModelRamProf
 | Firefox Translations RU→EN (Bergamot/slimt) | 232 МБ (+85) | 233 МБ | 150 МБ (+3) |
 | IndicTrans2 indic→EN (int8) | 475 МБ (+328) | 549 МБ | 167 МБ (+20) |
 | IndicTrans2 EN→indic (int8) | 569 МБ (+422) | 659 МБ | 167 МБ (+20) |
-| GigaAM v3 CTC RU | 419 МБ (+272) | 420 МБ | 167 МБ (+20) |
+| GigaAM v3 E2E CTC RU | 419 МБ (+272) | 420 МБ | 167 МБ (+20) |
 | Parakeet 110M EN | 358 МБ (+211) | 360 МБ | 167 МБ (+20) |
 | IndicConformer NE | 388 МБ (+241) | 410 МБ | 168 МБ (+21) |
 | Whisper Small Multilingual | 912 МБ (+765) | 928 МБ | 168 МБ (+21) |
@@ -376,7 +376,7 @@ llm_translate_backup.zip
     │       ├── lex.50.50.ruen.s2t.bin
     │       └── vocab.ruen.spm
     └── SHERPA/
-        └── stt-ru-gigaam-v3-ctc/
+        └── stt-ru-gigaam-v3-e2e-ctc/
             ├── model.int8.onnx
             └── tokens.txt
 ```
@@ -418,7 +418,7 @@ llm_translate_backup.zip
 ```json
 {
   "activeTranslation": "firefox-bergamot-ru-en",
-  "activeStt": "stt-ru-gigaam-v3-ctc",
+  "activeStt": "stt-ru-gigaam-v3-e2e-ctc",
   "activeTts": "tts-system",
   "ttsEngine": "system",
   "uiLanguage": "ru",

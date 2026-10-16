@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "comment": "Единственный источник правды о моделях. Из него генерируются scripts/download_models.* и assets/models_catalog.json. SHA-256 заполняются после первичного скачивания (скрипт печатает их). Версия синхронна с version в assets/models_catalog.json: любое изменение моделей/файлов поднимает версию в обоих файлах одинаково.",
   "models": [
     {
@@ -201,11 +201,11 @@
       ]
     },
     {
-      "id": "stt-ru-gigaam-v3-ctc",
+      "id": "stt-ru-gigaam-v3-e2e-ctc",
       "category": "STT",
       "runtime": "SHERPA",
       "displayName": "GigaAM v3 RU (sherpa-onnx)",
-      "description": "NeMo CTC, русский, ~230 МБ (int8)",
+      "description": "NeMo CTC с пунктуацией, русский, ~230 МБ (int8)",
       "sizeBytes": 241172480,
       "ramRequiredMb": 320,
       "languages": ["ru"],
@@ -216,9 +216,9 @@
       "recommendedRamMb": 2560,
       "files": [
         {
-          "name": "sherpa-onnx-nemo-ctc-giga-am-v3-russian-2025-12-16.tar.bz2",
-          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-giga-am-v3-russian-2025-12-16.tar.bz2",
-          "sha256": "e1291d704460cab4a01716081170c86c12f6b15338a1534f71cc5956922adb52"
+          "name": "sherpa-onnx-nemo-ctc-punct-giga-am-v3-russian-2025-12-16.tar.bz2",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-punct-giga-am-v3-russian-2025-12-16.tar.bz2",
+          "sha256": "20e41e160efa6f2460a7ef6554cdbbb9e8fffb2b92e6bc708e9406bd8b9256ea"
         }
       ]
     },
