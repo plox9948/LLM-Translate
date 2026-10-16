@@ -232,10 +232,16 @@ class TtsRuntime @Inject constructor(
         tts = null
         ready = false
         lastEngine = null
-        // Незавершённые озвучивания после shutdown колбэка не получат —
-        // реестр очищаем, их вызовы больше не нужны (вызывающие экраны
-        // при пересоздании начинают speak заново).
-        utterances.clear()
+        // После shutdown колбэки незавершённых озвучиваний не придут — изымаем
+        // их из реестра атомарно и вызываем на главном (тот же паттерн, что
+        // drain в speak()), иначе у вызывающего экрана залипается флаг
+        // «озвучиваем» при смене TTS-движка во время озвучки (issue #40).
+        // Порядок относительно shutdown не важен: однократность гарантирует
+        // атомарный изъём из реестра (как в finish()).
+        val pending = utterances.drain()
+        pending.forEach { callback ->
+            scope.launch(Dispatchers.Main) { callback() }
+        }
     }
 }
 
@@ -282,6 +288,16 @@ internal class TtsUtteranceRegistry {
     fun finish(utteranceId: String?): (() -> Unit)? =
         if (utteranceId == null) null else callbacks.remove(utteranceId)
 
-    /** Очистить реестр без вызова колбэков (разгрузка движка). */
-    fun clear() = callbacks.clear()
+    /**
+     * Атомарно изъять и вернуть колбэки всех незавершённых фраз
+     * (разгрузка движка: слушатель после shutdown их не вызовет —
+     * вызывающий код обязан известить экраны о завершении).
+     */
+    fun drain(): List<() -> Unit> {
+        val taken = mutableListOf<() -> Unit>()
+        for (id in callbacks.keys().toList()) {
+            callbacks.remove(id)?.let { taken.add(it) }
+        }
+        return taken
+    }
 }

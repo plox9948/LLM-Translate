@@ -19,6 +19,10 @@ import com.plox.llmtranslate.domain.model.sha256sFromCsv
 import com.plox.llmtranslate.domain.model.sha256sToCsv
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -70,21 +74,40 @@ class ModelDownloadWorker @AssistedInject constructor(
         // каталожные поля (ram_required_mb и др.), обновлённые
         // syncCatalogRamFields параллельно на старте процесса.
         var lastSavedPercent = -1
-        val result = installer.install(urls, sha256, sha256s, modelsDir, modelId) { progress ->
-            setProgress(workDataOf(KEY_PROGRESS to progress))
-            if (progress != lastSavedPercent) {
-                lastSavedPercent = progress
-                repository.updateDownloadProgress(modelId, ModelStatus.DOWNLOADING, progress)
+        val result = try {
+            installer.install(urls, sha256, sha256s, modelsDir, modelId) { progress ->
+                setProgress(workDataOf(KEY_PROGRESS to progress))
+                if (progress != lastSavedPercent) {
+                    lastSavedPercent = progress
+                    repository.updateDownloadProgress(modelId, ModelStatus.DOWNLOADING, progress)
+                }
             }
+        } catch (e: CancellationException) {
+            // Явная остановка (cancelUniqueWork / удаление записи): инсталляторы
+            // всплывают отменой, не удаляя .part — чистим остатки здесь, пока
+            // контекст воркера ещё жив (см. cleanupCancelledModel, issue #40).
+            cleanupCancelledModel(modelId, modelsDir, runtime, urls)
+            throw e
         }
 
         return when (result) {
             is InstallResult.Success -> {
-                val saved = repository.finalizeDownload(modelId, result.path, sizeBytes)
+                val saved = try {
+                    repository.finalizeDownload(modelId, result.path, sizeBytes)
+                } catch (e: CancellationException) {
+                    // Отмена воркера между завершением установки и записью READY —
+                    // файлы уже на диске, убираем их как осиротевшие.
+                    cleanupCancelledModel(modelId, modelsDir, runtime, urls)
+                    throw e
+                }
                 if (!saved) {
-                    // Запись удалена/отменена во время скачивания — не восстанавливаем,
-                    // скачанный файл чистит delete(); при отмене остаётся на диске.
+                    // Запись удалена/отменена во время скачивания — не восстанавливаем
+                    // (отменённую загрузку чистит отмена). Узкая гонка (issue #40):
+                    // файловая очистка в ModelManagerImpl.cancelDownload/delete могла
+                    // выполниться до завершившегося здесь transfer+rename — повторяем
+                    // очистку по той же раскладке после гонки.
                     Timber.d("Запись $modelId удалена во время скачивания — состояние не сохраняем")
+                    cleanupCancelledModel(modelId, modelsDir, runtime, urls)
                 }
                 Result.success()
             }
@@ -116,6 +139,37 @@ class ModelDownloadWorker @AssistedInject constructor(
      */
     private suspend fun markError(modelId: String) {
         repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
+    }
+
+    /**
+     * Очистить остатки незавершённой установки модели по раскладке
+     * [DownloadLayout] после остановки (отмены) воркера (issue #40):
+     * файловая очистка на стороне UI выполняется сразу после
+     * cancelUniqueWork и могла опередить дописанный/переименованный здесь
+     * файл — осиротевшие `.part`, `.part.meta` и целевые файлы остаются
+     * навсегда без этой страховки.
+     *
+     * Если запись в БД уже READY (скачивание успело завершиться параллельно
+     * с отменой и не была удалена) — файлы не трогаем. Обычная докачка
+     * (сетевые повторы `Result.retry()`) этот метод не вызывает —
+     * `.part`-файлы для докачки сохраняются.
+     *
+     * Тело выполняется на [NonCancellable]: вызывается из перехваченного
+     * [CancellationException], где обычная suspend-операция сразу упала бы
+     * отменой.
+     */
+    private suspend fun cleanupCancelledModel(
+        modelId: String,
+        runtimeDir: File,
+        runtime: RuntimeType,
+        urls: List<String>
+    ) = withContext(NonCancellable + Dispatchers.IO) {
+        val row = repository.getById(modelId)
+        if (row?.status == ModelStatus.READY) {
+            Timber.d("Модель $modelId стала READY при отмене — файлы не удаляем")
+            return@withContext
+        }
+        DownloadLayout.deleteOrphanedFiles(runtimeDir, runtime, modelId, urls)
     }
 
     companion object {

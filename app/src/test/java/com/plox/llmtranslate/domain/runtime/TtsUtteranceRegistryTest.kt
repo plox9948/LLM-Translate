@@ -82,11 +82,14 @@ class TtsUtteranceRegistryTest {
     }
 
     @Test
-    fun `clear drops pending callbacks without returning them`() {
+    fun `drain returns pending callbacks and empties the registry`() {
         val registry = TtsUtteranceRegistry()
-        registry.start("a") { }
+        val doneA = { }
+        registry.start("a", doneA)
 
-        registry.clear()
+        // Выгрузка движка: pending-колбэки изымаются атомарно и вызываются
+        // вызывающим кодом (issue #40 — залипший флаг «озвучиваем»).
+        assertSame(doneA, registry.drain().single())
 
         assertNull(registry.finish("a"))
         assertTrue(registry.start("b", null).isEmpty())

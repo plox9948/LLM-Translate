@@ -93,6 +93,24 @@ class SentenceSplitterTest {
     }
 
     @Test
+    fun `no and etc are sentence boundaries not abbreviations`() {
+        // Issue #40: «No.» — полноценная граница предложения, «etc.» почти
+        // всегда конец предложения — убраны из ABBREVIATIONS.
+        assertEquals(
+            listOf("Do you like it?", "No.", "I do."),
+            SentenceSplitter.split("Do you like it? No. I do.")
+        )
+        assertEquals(
+            listOf("No.", "I do."),
+            SentenceSplitter.split("No. I do.")
+        )
+        assertEquals(
+            listOf("I like tea, etc.", "He left."),
+            SentenceSplitter.split("I like tea, etc. He left.")
+        )
+    }
+
+    @Test
     fun `single sentence returned as is`() {
         assertEquals(
             listOf("A man in a knitted fleece smiles."),

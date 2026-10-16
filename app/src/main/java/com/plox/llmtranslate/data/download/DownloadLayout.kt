@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.data.download
 
 import com.plox.llmtranslate.domain.model.RuntimeType
+import timber.log.Timber
 import java.io.File
 
 /**
@@ -42,5 +43,57 @@ object DownloadLayout {
             else -> urls.size > 1
         }
         return if (inModelDir) modelDir(runtimeDir, modelId) else runtimeDir
+    }
+
+    /**
+     * Удалить остатки незавершённой установки модели по раскладке этого же
+     * [fileDir] (общая логика для ModelManagerImpl.deleteOrphanParts и очистки
+     * отменённой загрузки в ModelDownloadWorker): части докачки `.part` и
+     * метаданные `.part.meta` с целыми целевыми файлами в корне каталога
+     * рантайма, а для моделей с каталогом — каталог модели целиком
+     * (переименованные целевые файлы мультифайловой установки и распакованное
+     * содержимое архива). Каталог модели принадлежит только этой записи
+     * (ключ — id), поэтому сносится без разбора отдельных файлов.
+     *
+     * Вызывается только когда живой загрузки по этому id нет (после
+     * cancelUniqueWork) или запись удалена/не READY — иначе удаляются
+     * файлы завершённой установки READY-модели.
+     */
+    fun deleteOrphanedFiles(
+        runtimeDir: File,
+        runtime: RuntimeType,
+        modelId: String,
+        urls: List<String>
+    ) {
+        if (urls.isEmpty()) return
+        val modelDir = modelDir(runtimeDir, modelId)
+
+        var usesModelDir = false
+        urls.forEachIndexed { index, url ->
+            val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
+            val dir = fileDir(runtimeDir, runtime, modelId, urls, fileName)
+            if (dir == modelDir) {
+                usesModelDir = true
+                return@forEachIndexed
+            }
+            // Корень каталога рантайма: части докачки, метаданные докачки и
+            // осиротевший целый целевой файл — одиночный ONNX или архив до
+            // распаковки (для не READY-модели это остаток её же загрузки).
+            listOf(File(dir, "$fileName.part"), File(dir, "$fileName.part.meta")).forEach { part ->
+                if (part.isFile && !part.delete()) {
+                    Timber.w("Не удалось удалить осиротевший ${part.name}")
+                }
+            }
+            val doneFile = File(dir, fileName)
+            if (doneFile.isFile && !doneFile.delete()) {
+                Timber.w("Не удалось удалить осиротевший ${doneFile.name}")
+            }
+        }
+        // Каталог осиротевшей модели: переименованные целевые файлы
+        // мультифайловой установки, её .part/.part.meta и распакованное
+        // содержимое архива.
+        if (usesModelDir && modelDir.isDirectory && !modelDir.deleteRecursively()) {
+            Timber.w("Не удалось удалить каталог осиротевшей модели ${modelDir.name}")
+        }
     }
 }

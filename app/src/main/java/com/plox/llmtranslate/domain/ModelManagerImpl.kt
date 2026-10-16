@@ -201,44 +201,20 @@ class ModelManagerImpl @Inject constructor(
      * `models/<RUNTIME>/<id>`; каталог принадлежит только этой записи
      * (ключ — id), поэтому сносится целиком — иначе переименованные
      * целевые файлы прерванной мультифайловой установки остаются навсегда.
-     * Одиночные ONNX-файлы и архивы — в корень каталога рантайма.
-     * Модель не READY (проверяется вызывающим кодом), поэтому файлы по её URL
-     * относятся только к её незавершённой загрузке — файлы READY-моделей
-     * не затрагиваются.
+     * Одиночные ONNX-файлы и архивы — в корень каталога рантайма. Модель не
+     * READY (проверяется вызывающим кодом), поэтому файлы по её URL относятся
+     * только к её незавершённой загрузке — файлы READY-моделей не затрагиваются.
+     * Узкая гонка (после cancel воркер дописал/переименовал файлы уже после
+     * этой очистки) закрывается повторной очисткой на стороне воркера
+     * (см. `ModelDownloadWorker.cleanupCancelledModel`).
      */
     private fun deleteOrphanParts(model: InstalledModel) {
-        val urls = model.downloadUrls()
-        if (urls.isEmpty()) return
-        val runtimeDir = File(modelsDir, model.runtime.name)
-        val modelDir = DownloadLayout.modelDir(runtimeDir, model.id)
-
-        var usesModelDir = false
-        urls.forEachIndexed { index, url ->
-            val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
-            val dir = DownloadLayout.fileDir(runtimeDir, model.runtime, model.id, urls, fileName)
-            if (dir == modelDir) {
-                usesModelDir = true
-                return@forEachIndexed
-            }
-            // Корень каталога рантайма: части докачки, метаданные докачки и
-            // осиротевший целый целевой файл — одиночный ONNX или архив до
-            // распаковки (для не READY-модели это остаток её же загрузки).
-            listOf(File(dir, "$fileName.part"), File(dir, "$fileName.part.meta")).forEach { part ->
-                if (part.isFile && !part.delete()) {
-                    Timber.w("Не удалось удалить осиротевший ${part.name}")
-                }
-            }
-            val doneFile = File(dir, fileName)
-            if (doneFile.isFile && !doneFile.delete()) {
-                Timber.w("Не удалось удалить осиротевший ${doneFile.name}")
-            }
-        }
-        // Каталог осиротевшей модели: переименованные целевые файлы
-        // мультифайловой установки, её .part/.part.meta и распакованное
-        // содержимое архива.
-        if (usesModelDir && modelDir.isDirectory && !modelDir.deleteRecursively()) {
-            Timber.w("Не удалось удалить каталог осиротевшей модели ${modelDir.name}")
-        }
+        DownloadLayout.deleteOrphanedFiles(
+            runtimeDir = File(modelsDir, model.runtime.name),
+            runtime = model.runtime,
+            modelId = model.id,
+            urls = model.downloadUrls()
+        )
     }
 
     override suspend fun importFromUri(uri: Uri): String? =
