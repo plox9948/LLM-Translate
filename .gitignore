@@ -15,3 +15,5 @@ captures/
 /models/*
 !models/manifest.json
 !models/files/
+
+.kilo/
