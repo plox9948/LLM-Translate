@@ -5,6 +5,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -24,6 +25,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.plox.llmtranslate.R
+import com.plox.llmtranslate.ui.favorites.FavoritesScreen
 import com.plox.llmtranslate.ui.history.HistoryScreen
 import com.plox.llmtranslate.ui.models.ModelsScreen
 import com.plox.llmtranslate.ui.settings.SettingsScreen
@@ -35,6 +37,7 @@ import com.plox.llmtranslate.ui.translate.TranslateScreen
 enum class Screen(val route: String, @StringRes val titleRes: Int, val icon: ImageVector) {
     TRANSLATE("translate", R.string.nav_translate, Icons.Filled.Translate),
     HISTORY("history", R.string.nav_history, Icons.Filled.History),
+    FAVORITES("favorites", R.string.nav_favorites, Icons.Filled.Star),
     MODELS("models", R.string.nav_models, Icons.Filled.Memory),
     SETTINGS("settings", R.string.nav_settings, Icons.Filled.Settings)
 }
@@ -82,6 +85,11 @@ fun MainScreen() {
             composable(Screen.TRANSLATE.route) { TranslateScreen() }
             composable(Screen.HISTORY.route) {
                 HistoryScreen(
+                    onUseEntry = { navigateTab(Screen.TRANSLATE.route) }
+                )
+            }
+            composable(Screen.FAVORITES.route) {
+                FavoritesScreen(
                     onUseEntry = { navigateTab(Screen.TRANSLATE.route) }
                 )
             }

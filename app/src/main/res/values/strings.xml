@@ -105,4 +105,12 @@
     <string name="settings_retention_keep">Не выгружать</string>
     <string name="settings_retention_keep_hint">Удерживает модели перевода и распознавания речи: ускоряет смену направления, но требует больше памяти</string>
     <string name="settings_retention_unload">Выгружать</string>
+
+    <!-- Вкладка «Избранное» -->
+    <string name="nav_favorites">Избранное</string>
+    <string name="favorites_empty">Избранное пусто</string>
+    <string name="favorites_remove_cd">Убрать из избранного</string>
+    <string name="favorites_add_cd">Добавить в избранное</string>
+    <string name="favorites_speak_input_cd">Озвучить оригинал</string>
+    <string name="favorites_speak_result_cd">Озвучить перевод</string>
 </resources>

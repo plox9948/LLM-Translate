@@ -16,6 +16,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -33,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.plox.llmtranslate.R
+import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 
 /**
@@ -45,6 +48,7 @@ fun HistoryScreen(
     viewModel: HistoryViewModel = hiltViewModel()
 ) {
     val history by viewModel.history.collectAsStateWithLifecycle()
+    val favoriteKeys by viewModel.favoriteKeys.collectAsStateWithLifecycle()
 
     if (history.isEmpty()) {
         Box(
@@ -80,10 +84,14 @@ fun HistoryScreen(
         items(history, key = { it.id }) { entry ->
             HistoryItem(
                 entry = entry,
+                isFavorite = favoriteKeys.contains(
+                    FavoriteEntry.key(entry.sourceLang, entry.targetLang, entry.inputText)
+                ),
                 onUse = {
                     viewModel.useEntry(entry)
                     onUseEntry()
                 },
+                onToggleFavorite = { viewModel.toggleFavorite(entry) },
                 onDelete = { viewModel.deleteEntry(entry.id) }
             )
         }
@@ -91,13 +99,15 @@ fun HistoryScreen(
 }
 
 /**
- * Одна запись истории: направление, фрагменты текста, кнопка удаления.
- * Клик по карточке подставляет запись на экран «Перевод».
+ * Одна запись истории: направление, фрагменты текста, звёздочка избранного
+ * и кнопка удаления. Клик по карточке подставляет запись на экран «Перевод».
  */
 @Composable
 private fun HistoryItem(
     entry: TranslationHistoryEntry,
+    isFavorite: Boolean,
     onUse: () -> Unit,
+    onToggleFavorite: () -> Unit,
     onDelete: () -> Unit
 ) {
     Card(
@@ -128,6 +138,25 @@ private fun HistoryItem(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.weight(1f))
+                // Избранное записи (issue #38).
+                IconButton(
+                    onClick = onToggleFavorite,
+                    modifier = Modifier.width(40.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isFavorite) Icons.Filled.Star
+                        else Icons.Outlined.Star,
+                        contentDescription = stringResource(
+                            if (isFavorite) R.string.favorites_remove_cd
+                            else R.string.favorites_add_cd
+                        ),
+                        tint = if (isFavorite) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
                 IconButton(onClick = onDelete, modifier = Modifier.width(40.dp)) {
                     Icon(
                         imageVector = Icons.Filled.Close,

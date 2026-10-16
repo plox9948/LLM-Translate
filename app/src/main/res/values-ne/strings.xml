@@ -103,4 +103,12 @@
     <string name="settings_retention_keep">अनलोड नगर्नुहोस्</string>
     <string name="settings_retention_keep_hint">अनुवाद र वाणी पहिचानका मोडेलहरू स्मृतिमा राख्छ: दिशा परिवर्तन छिटो गर्छ, तर बढी मेमोरी चाहिन्छ</string>
     <string name="settings_retention_unload">अनलोड गर्नुहोस्</string>
+
+    <!-- Вкладка «Избранное» -->
+    <string name="nav_favorites">मन परेका</string>
+    <string name="favorites_empty">मन परेका खाली छ</string>
+    <string name="favorites_remove_cd">मन परेकाबाट हटाउनुहोस्</string>
+    <string name="favorites_add_cd">मन परेकामा थप्नुहोस्</string>
+    <string name="favorites_speak_input_cd">स्रोत सुनाउनुहोस्</string>
+    <string name="favorites_speak_result_cd">अनुवाद सुनाउनुहोस्</string>
 </resources>

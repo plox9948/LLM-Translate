@@ -3,9 +3,11 @@ package com.plox.llmtranslate.ui.translate
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.R
+import com.plox.llmtranslate.data.model.FavoritesRepository
 import com.plox.llmtranslate.data.model.TranslationHistoryRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.ModelManager
+import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.LanguageDetector
 import com.plox.llmtranslate.domain.model.ModelCard
@@ -69,6 +71,8 @@ data class TranslateUiState(
     val targetLang: TranslateLanguage = TranslateLanguage.EN,
     val inputText: String = "",
     val resultText: String = "",
+    /** Текущий перевод добавлен в избранное (звёздочка результата, issue #38). */
+    val resultFavorite: Boolean = false,
     val isTranslating: Boolean = false,
     val canCancelTranslation: Boolean = false,
     val isRecording: Boolean = false,
@@ -95,7 +99,8 @@ class TranslateViewModel @Inject constructor(
     private val audioRecorder: AudioRecorder,
     private val preferences: ModelPreferences,
     private val historyRepository: TranslationHistoryRepository,
-    private val pendingHolder: PendingTranslationHolder
+    private val pendingHolder: PendingTranslationHolder,
+    private val favoritesRepository: FavoritesRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TranslateUiState())
@@ -110,6 +115,10 @@ class TranslateViewModel @Inject constructor(
     // Установленные STT-модели и назначения «язык → модель» (issue #28).
     private var sttModels: List<InstalledModel> = emptyList()
     private var sttAssignments: Map<String, String> = emptyMap()
+
+    // Ключи избранного «направление|исходный текст» для звёздочки результата
+    // (issue #38).
+    private var favoriteKeys: Set<String> = emptySet()
 
     init {
         viewModelScope.launch {
@@ -179,6 +188,16 @@ class TranslateViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            // Избранное (issue #38): актуальный набор ключей для звёздочки
+            // результата; пересчёт флага при любых изменениях избранного.
+            favoritesRepository.observeAll().collect { favorites ->
+                favoriteKeys = favorites.map {
+                    FavoriteEntry.key(it.sourceLang, it.targetLang, it.inputText)
+                }.toSet()
+                refreshResultFavorite()
+            }
+        }
+        viewModelScope.launch {
             // Инициализация TTS текущим движком и переконфигурация при смене настройки.
             preferences.ttsEngine.collect { engine ->
                 val error = ttsRuntime.init(engine)
@@ -193,12 +212,46 @@ class TranslateViewModel @Inject constructor(
         update { it.copy(sourceLang = lang, error = null) }
         saveLastDirection()
         refreshTranslationAvailability()
+        refreshResultFavorite()
     }
 
     fun onTargetLangChange(lang: TranslateLanguage) {
         update { it.copy(targetLang = lang, error = null) }
         saveLastDirection()
         refreshTranslationAvailability()
+        refreshResultFavorite()
+    }
+
+    /**
+     * Пересчитать флаг избранности текущего результата (issue #38).
+     * Ключ строится по текущему явному направлению; для AUTO-источника
+     * фактический язык результата неизвестен UI — звезда неактивна (false).
+     */
+    private fun refreshResultFavorite() {
+        val st = _uiState.value
+        val favorite = st.sourceLang != TranslateLanguage.AUTO &&
+            st.resultText.isNotEmpty() &&
+            favoriteKeys.contains(
+                FavoriteEntry.key(st.sourceLang.code, st.targetLang.code, st.inputText)
+            )
+        if (_uiState.value.resultFavorite != favorite) {
+            update { it.copy(resultFavorite = favorite) }
+        }
+    }
+
+    /**
+     * Переключить избрание текущего перевода (звезда в карточке результата).
+     * Для AUTO-источника недоступно: направление результата не определено.
+     */
+    fun toggleResultFavorite() {
+        val st = _uiState.value
+        if (st.sourceLang == TranslateLanguage.AUTO || st.resultText.isBlank()) return
+        viewModelScope.launch {
+            val added = favoritesRepository.toggle(
+                st.sourceLang.code, st.targetLang.code, st.inputText, st.resultText
+            )
+            update { it.copy(resultFavorite = added) }
+        }
     }
 
     /**
@@ -239,6 +292,7 @@ class TranslateViewModel @Inject constructor(
 
     fun onInputTextChanged(text: String) {
         update { it.copy(inputText = text, error = null) }
+        refreshResultFavorite()
     }
 
     // Job текущей длительной операции (перевод ИЛИ распознавание) —
@@ -340,6 +394,7 @@ class TranslateViewModel @Inject constructor(
                     update {
                         it.copy(isTranslating = false, canCancelTranslation = false, resultText = text)
                     }
+                    refreshResultFavorite()
                     historyRepository.add(
                         sourceLang = sourceLang.code,
                         targetLang = state.targetLang.code,
@@ -522,6 +577,7 @@ class TranslateViewModel @Inject constructor(
      */
     fun clearInput() {
         update { it.copy(inputText = "", resultText = "", error = null) }
+        refreshResultFavorite()
     }
 
     /**
@@ -539,6 +595,7 @@ class TranslateViewModel @Inject constructor(
                 error = null
             )
         }
+        refreshResultFavorite()
     }
 
     /**

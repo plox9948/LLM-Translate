@@ -18,8 +18,10 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
@@ -249,6 +251,26 @@ fun TranslateScreen(
                                 imageVector = if (state.isSpeaking) Icons.Filled.Stop
                                 else Icons.AutoMirrored.Filled.VolumeUp,
                                 contentDescription = stringResource(R.string.translate_speak_cd)
+                            )
+                        }
+                        // Избранное перевода (issue #38): для AUTO-источника
+                        // направление результата не определено — звезда выключена.
+                        IconButton(
+                            onClick = viewModel::toggleResultFavorite,
+                            enabled = state.sourceLang != TranslateLanguage.AUTO
+                        ) {
+                            Icon(
+                                imageVector = if (state.resultFavorite) Icons.Filled.Star
+                                else Icons.Outlined.Star,
+                                contentDescription = stringResource(
+                                    if (state.resultFavorite) R.string.favorites_remove_cd
+                                    else R.string.favorites_add_cd
+                                ),
+                                tint = if (state.resultFavorite) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
                             )
                         }
                     }

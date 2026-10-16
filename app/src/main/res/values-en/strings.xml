@@ -103,4 +103,12 @@
     <string name="settings_retention_keep">Do not unload</string>
     <string name="settings_retention_keep_hint">Keeps translation and speech recognition models in memory: speeds up switching direction, but uses more memory</string>
     <string name="settings_retention_unload">Unload</string>
+
+    <!-- Вкладка «Избранное» -->
+    <string name="nav_favorites">Favorites</string>
+    <string name="favorites_empty">No favorites yet</string>
+    <string name="favorites_remove_cd">Remove from favorites</string>
+    <string name="favorites_add_cd">Add to favorites</string>
+    <string name="favorites_speak_input_cd">Read source aloud</string>
+    <string name="favorites_speak_result_cd">Read translation aloud</string>
 </resources>

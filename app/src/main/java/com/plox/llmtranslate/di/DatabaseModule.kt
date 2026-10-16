@@ -3,6 +3,7 @@ package com.plox.llmtranslate.di
 import android.content.Context
 import androidx.room.Room
 import com.plox.llmtranslate.data.model.AppDatabase
+import com.plox.llmtranslate.data.model.FavoritesDao
 import com.plox.llmtranslate.data.model.ModelDao
 import com.plox.llmtranslate.data.model.TranslationHistoryDao
 import dagger.Module
@@ -26,7 +27,8 @@ object DatabaseModule {
             .addMigrations(
                 AppDatabase.MIGRATION_1_2,
                 AppDatabase.MIGRATION_2_3,
-                AppDatabase.MIGRATION_3_4
+                AppDatabase.MIGRATION_3_4,
+                AppDatabase.MIGRATION_4_5
             )
             .build()
 
@@ -36,4 +38,7 @@ object DatabaseModule {
     @Provides
     fun provideTranslationHistoryDao(db: AppDatabase): TranslationHistoryDao =
         db.translationHistoryDao()
+
+    @Provides
+    fun provideFavoritesDao(db: AppDatabase): FavoritesDao = db.favoritesDao()
 }

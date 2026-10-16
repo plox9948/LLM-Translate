@@ -9,13 +9,14 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * База данных приложения.
  */
 @Database(
-    entities = [ModelEntity::class, TranslationHistoryEntity::class],
-    version = 4,
+    entities = [ModelEntity::class, TranslationHistoryEntity::class, FavoriteEntity::class],
+    version = 5,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun modelDao(): ModelDao
     abstract fun translationHistoryDao(): TranslationHistoryDao
+    abstract fun favoritesDao(): FavoritesDao
 
     companion object {
         /**
@@ -54,6 +55,27 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE models ADD COLUMN sha256s TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * Миграция 4 → 5: таблица избранного переводов.
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `favorites` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`source_lang` TEXT NOT NULL, " +
+                        "`target_lang` TEXT NOT NULL, " +
+                        "`input_text` TEXT NOT NULL, " +
+                        "`result_text` TEXT NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `idx_favorites_unique` " +
+                        "ON `favorites` (`source_lang`, `target_lang`, `input_text`)"
+                )
             }
         }
     }
