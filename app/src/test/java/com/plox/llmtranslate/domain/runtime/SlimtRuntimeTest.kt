@@ -11,7 +11,7 @@ import java.io.File
  */
 class SlimtRuntimeTest {
 
-    private val runtime = SlimtRuntime()
+    private val runtime = SlimtRuntime(FakeModelRetentionProvider(keep = true))
 
     private fun touch(dir: File, name: String): File {
         dir.mkdirs()

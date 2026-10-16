@@ -14,12 +14,16 @@ object LoadedModelsAggregator {
      * Слить состояния движков в единый реактивный список загруженных моделей.
      *
      * @param engines состояния движков в порядке отображения
-     *   (сначала движки перевода, затем STT); null — движок разгружен.
-     * @return поток непустых состояний; эмитируется при любом изменении
-     *   любого из состояний.
+     *   (сначала движки перевода, затем STT); каждый движок отдаёт список
+     *   своих загруженных моделей (активная — первой), пустой список —
+     *   движок разгружен.
+     * @return сплющенный список всех загруженных моделей в порядке движков;
+     *   эмитируется при любом изменении любого из состояний.
      */
-    fun merge(engines: List<StateFlow<LoadedModelInfo?>>): Flow<List<LoadedModelInfo>> {
-        val states: List<Flow<LoadedModelInfo?>> = engines
-        return combine(states) { values: Array<LoadedModelInfo?> -> values.filterNotNull() }
+    fun merge(engines: List<StateFlow<List<LoadedModelInfo>>>): Flow<List<LoadedModelInfo>> {
+        val states: List<Flow<List<LoadedModelInfo>>> = engines
+        return combine(states) { values: Array<out List<LoadedModelInfo>> ->
+            values.flatMap { it }
+        }
     }
 }

@@ -11,7 +11,7 @@ import org.junit.Test
  */
 class MarianGenerationMaskTest {
 
-    private val runtime = MarianOnnxRuntime()
+    private val runtime = MarianOnnxRuntime(FakeModelRetentionProvider(keep = true))
     private val tol = 1e-4f
 
     @Test

@@ -4,6 +4,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OnnxTensorLike
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
@@ -39,9 +40,15 @@ import javax.inject.Singleton
  * Greedy-цикл по translate.py репозитория модели. Язык задаётся flores-префиксом
  * в тексте по схеме IndicTransToolkit ("npi_Deva eng_Latn <текст>").
  * External data (*.onnx.data) ORT подхватывает по соседству файлов.
+ *
+ * Модели направлений хранятся LRU-кэшем пучков (issue #36): при настройке
+ * keep смена направления не выгружает модель старого направления —
+ * повторная загрузка не выполняется (быстрый путь [ensureLoaded]).
  */
 @Singleton
-class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
+class IndicTransOnnxRuntime @Inject constructor(
+    private val retentionProvider: ModelRetentionProvider
+) : TranslationEngine {
 
     companion object {
         private const val MAX_NEW_TOKENS = 128
@@ -50,40 +57,68 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
         private val PAST_SUFFIXES = listOf(
             "decoder.key", "decoder.value", "encoder.key", "encoder.value"
         )
+
+        /** Ёмкость LRU-кэша: два направления перевода + активная модель. */
+        private const val MODEL_CACHE_CAPACITY = 3
     }
 
-    private var env: OrtEnvironment? = null
-    private var encoderSession: OrtSession? = null
-    private var decoderSession: OrtSession? = null
-    private var decoderPastSession: OrtSession? = null
-    private var srcTokenizer: TokenizerJson? = null
-    private var tgtTokenizer: TokenizerJson? = null
-
-    private var numLayers: Int = 0
-    private var decoderStartTokenId: Int = 2
-    private var eosTokenId: Int = 2
-    private var srcDictSize: Int = Int.MAX_VALUE
-    private var tgtDictSize: Int = Int.MAX_VALUE
-    private var loadedModelId: String? = null
+    /**
+     * Пучок IndicTrans-модели: сессии ORT, токенизаторы и параметры генерации
+     * одного направления. Все поля — finals, освобождаются [release].
+     */
+    private class ModelBundle(
+        val encoderSession: OrtSession,
+        val decoderSession: OrtSession,
+        val decoderPastSession: OrtSession,
+        val srcTokenizer: TokenizerJson,
+        val tgtTokenizer: TokenizerJson,
+        val numLayers: Int,
+        val decoderStartTokenId: Int,
+        val eosTokenId: Int,
+        val srcDictSize: Int,
+        val tgtDictSize: Int,
+        val info: LoadedModelInfo
+    ) {
+        /** Закрыть нативные сессии пучка (ошибки — только в лог). */
+        fun release() {
+            try {
+                encoderSession.close()
+                decoderSession.close()
+                decoderPastSession.close()
+            } catch (e: Exception) {
+                Timber.e(e, "Ошибка при разгрузке IndicTrans")
+            }
+        }
+    }
 
     /**
      * Защита нативных сессий: инференс, загрузка и разгрузка сериализуются,
      * поэтому release() ждёт окончания активного инференса (use-after-free ORT
      * исключён). Инференс может идти десятки секунд — для onStop-разгрузки
      * это приемлемо, release() вызывается вне главного потока.
+     * Вся работа с [cache] и [activeId] — только под этим мьютексом.
      */
     private val sessionMutex = Mutex()
 
-    private val _loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
+    /** LRU-кэш загруженных пучков моделей (issue #36). */
+    private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
 
-    /** Состояние загруженной модели; пишется только под [sessionMutex]. */
-    override val loadedModel: StateFlow<LoadedModelInfo?> = _loadedModel
+    /** Id пучка, на котором работает [translate]; пишется только под [sessionMutex]. */
+    private var activeId: String? = null
+
+    private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
+
+    /** Состояние загруженных моделей; пишется только под [sessionMutex]. */
+    override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
 
     val isLoaded: Boolean
-        get() = encoderSession != null && decoderSession != null && decoderPastSession != null
+        get() = activeId != null
 
     /**
-     * Загрузить IndicTrans-модель (3 сессии + токенизаторы).
+     * Загрузить IndicTrans-модель (3 сессии + токенизаторы), поместив пучок
+     * в LRU-кэш. При настройке keep пучки других направлений сохраняются
+     * (сверх ёмкости вытесняются наименее давно используемые), при unload —
+     * все существующие пучки выгружаются перед загрузкой (прежнее поведение).
      */
     override suspend fun ensureLoaded(modelInfo: InstalledModel): RuntimeError? =
         withContext(Dispatchers.IO) {
@@ -91,18 +126,25 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
             sessionMutex.withLock {
-                // Быстрый путь под мьютексом: вне него поле loadedModelId могло
-                // быть очищено параллельным release() — проверка дала бы ложное
-                // «уже загружено» и инференс упал бы на разряженных сессиях.
-                if (loadedModelId == modelInfo.id && isLoaded) {
+                // Быстрый путь под мьютексом: пучок уже в кэше — только сделать
+                // его активным, без повторной загрузки (смена направления, issue #36).
+                if (cache.get(modelInfo.id) != null) {
+                    activeId = modelInfo.id
+                    publishLoadedUnlocked()
                     return@withContext null
                 }
 
-                releaseUnlocked()
+                // Политика выгрузки при смене направления читается на каждую
+                // загрузку — смена настройки применяется сразу.
+                if (!retentionProvider.keepModelsOnDirectionChange()) {
+                    releaseUnlocked()
+                }
 
+                var encoder: OrtSession? = null
+                var decoder: OrtSession? = null
+                var decoderPast: OrtSession? = null
                 try {
                     val ortEnv = OrtEnvironment.getEnvironment()
-                    env = ortEnv
                     val dir = File(path)
 
                     val encoderFile = findFile(dir, "encoder_model")
@@ -134,21 +176,20 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                         // не прерываемо, но между ними отмена обязана срабатывать,
                         // иначе «Отмена» не действует на загрузку модели.
                         currentCoroutineContext().ensureActive()
-                        encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
+                        encoder = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
                         currentCoroutineContext().ensureActive()
-                        decoderSession = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
+                        decoder = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
                         currentCoroutineContext().ensureActive()
-                        decoderPastSession = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
+                        decoderPast = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
                     } finally {
                         sessionOpts.close()
                     }
 
                     // numLayers = (число выходов декодера - 1) / 4.
-                    val decOutputs = decoderSession!!.outputNames.size
-                    numLayers = (decOutputs - 1) / 4
+                    val numLayers = (decoder.outputNames.size - 1) / 4
                     Timber.d(
                         "IndicTrans: numLayers=$numLayers, " +
-                            "decoder входы: ${decoderSession!!.inputNames}"
+                            "decoder входы: ${decoder.inputNames}"
                     )
 
                     val srcTok = TokenizerJson()
@@ -160,38 +201,57 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                         // encode() возвращал пустой список и инференс падал
                         // с «Пустой вход» вместо явной ошибки загрузки.
                         Timber.e("IndicTrans: не удалось загрузить токенизаторы в $path")
-                        releaseUnlocked()
+                        closeCreated(encoder, decoder, decoderPast)
                         return@withContext RuntimeError.LoadFailed(
                             "indictrans", "Не удалось загрузить токенизаторы"
                         )
                     }
-                    srcTokenizer = srcTok
-                    tgtTokenizer = tgtTok
 
                     // Граница отмены после парсинга обоих токенизаторов (МБ JSON),
                     // перед чтением конфигов.
                     currentCoroutineContext().ensureActive()
-                    parseGenerationConfig(genConfigFile)
-                    parseTokenizerMeta(metaFile)
+                    val gen = parseGenerationConfig(genConfigFile)
+                    val dict = parseTokenizerMeta(metaFile)
 
-                    loadedModelId = modelInfo.id
-                    _loadedModel.value = LoadedModelInfo(
-                        modelId = modelInfo.id,
-                        displayName = modelInfo.displayName,
-                        category = ModelCategory.TRANSLATION,
-                        ramRequiredMb = modelInfo.ramRequiredMb
+                    cache.put(
+                        modelInfo.id,
+                        ModelBundle(
+                            encoderSession = encoder,
+                            decoderSession = decoder,
+                            decoderPastSession = decoderPast,
+                            srcTokenizer = srcTok,
+                            tgtTokenizer = tgtTok,
+                            numLayers = numLayers,
+                            decoderStartTokenId = gen.decoderStartTokenId,
+                            eosTokenId = gen.eosTokenId,
+                            srcDictSize = dict.srcDictSize,
+                            tgtDictSize = dict.tgtDictSize,
+                            info = LoadedModelInfo(
+                                modelId = modelInfo.id,
+                                displayName = modelInfo.displayName,
+                                category = ModelCategory.TRANSLATION,
+                                ramRequiredMb = modelInfo.ramRequiredMb
+                            )
+                        )
                     )
+                    activeId = modelInfo.id
+                    cache.evictOverCapacity().forEach { (evictedId, bundle) ->
+                        Timber.d("IndicTrans: вытеснена из кэша модель $evictedId")
+                        bundle.release()
+                    }
+                    publishLoadedUnlocked()
                     null
                 } catch (e: CancellationException) {
                     // Отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
-                    // уже созданные сессии/токенизаторы и всплываем выше,
-                    // не конвертируя отмену в LoadFailed.
+                    // уже созданные сессии этого пучка (пучки других направлений
+                    // остаются в кэше) и всплываем выше, не конвертируя отмену
+                    // в LoadFailed.
                     Timber.d("Загрузка IndicTrans-модели отменена: $path")
-                    releaseUnlocked()
+                    closeCreated(encoder, decoder, decoderPast)
                     throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Не удалось загрузить IndicTrans-модель $path")
-                    releaseUnlocked()
+                    closeCreated(encoder, decoder, decoderPast)
                     RuntimeError.LoadFailed("indictrans", e.message ?: "Неизвестная ошибка")
                 }
             }
@@ -203,21 +263,23 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
      * Язык задаётся flores-префиксом в тексте по схеме IndicTransToolkit:
      * строится prompt "srcLang tgtLang <текст>", нормализуется (NFC) и
      * токенизируется целиком одним вызовом.
+     * Инференс идёт по активному пучку кэша — [ensureLoaded] вызывают перед
+     * переводом, поэтому активный пучок соответствует модели направления;
+     * при отсутствии активного — [RuntimeError.ModelNotSelected].
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(Dispatchers.IO) {
             sessionMutex.withLock {
-                val ortEnv = env
-                val enc = encoderSession
-                val dec = decoderSession
-                val decPast = decoderPastSession
-                val srcTok = srcTokenizer
-                val tgtTok = tgtTokenizer
-                if (ortEnv == null || enc == null || dec == null || decPast == null ||
-                    srcTok == null || tgtTok == null
-                ) {
+                val bundle = activeId?.let { cache.get(it) }
+                if (bundle == null) {
                     return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
+                val ortEnv = OrtEnvironment.getEnvironment()
+                val enc = bundle.encoderSession
+                val dec = bundle.decoderSession
+                val decPast = bundle.decoderPastSession
+                val srcTok = bundle.srcTokenizer
+                val tgtTok = bundle.tgtTokenizer
 
                 try {
                     // Flores-коды языков (по схеме IndicTransToolkit).
@@ -243,7 +305,7 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                     // Языковой префикс вставляется в текст до токенизации.
                     val prompt = IndicProcessorLite.preprocess(text, srcLang, tgtLang)
                     val inputIds = srcTok.encode(prompt)
-                        .map { clampId(it, srcDictSize).toLong() }
+                        .map { clampId(it, bundle.srcDictSize).toLong() }
                         .toLongArray()
                     if (inputIds.isEmpty()) {
                         return@withContext Result.failure(
@@ -284,10 +346,10 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                         val generatedIds = greedyDecode(
                             ortEnv = ortEnv,
                             attentionMask = attentionMask,
-                            startTokenId = decoderStartTokenId,
+                            startTokenId = bundle.decoderStartTokenId,
                             maxNewTokens = MAX_NEW_TOKENS,
-                            eosTokenId = eosTokenId,
-                            initialIds = listOf(decoderStartTokenId),
+                            eosTokenId = bundle.eosTokenId,
+                            initialIds = listOf(bundle.decoderStartTokenId),
                             pickToken = { result, _ -> argMax(logitsLastPosition(result)) }
                         ) { step, decInputIds, decAttnMask, _, prev ->
                             if (step == 0) {
@@ -305,7 +367,7 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                                 val inputs = HashMap<String, OnnxTensorLike>()
                                 inputs["input_ids"] = decInputIds
                                 inputs["encoder_attention_mask"] = decAttnMask
-                                for (i in 0 until numLayers) {
+                                for (i in 0 until bundle.numLayers) {
                                     for (suffix in PAST_SUFFIXES) {
                                         ortTensor(past, "present.$i.$suffix")?.let {
                                             inputs["past_key_values.$i.$suffix"] = it
@@ -317,7 +379,9 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                         }
 
                         // Декодирование (skip-специальные), id зажимаем размером словаря.
-                        val rawText = tgtTok.decode(generatedIds.map { clampId(it, tgtDictSize) })
+                        val rawText = tgtTok.decode(
+                            generatedIds.map { clampId(it, bundle.tgtDictSize) }
+                        )
                         Timber.d(
                             "IndicTrans: сгенерировано ${generatedIds.size} токенов, " +
                                 "сырой вывод: «$rawText»"
@@ -351,51 +415,83 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
         }
 
     /**
-     * Разгрузить модель. Ждёт окончания активного инференса (sessionMutex).
+     * Разгрузить ВСЕ удерживаемые движком модели. Ждёт окончания активного
+     * инференса (sessionMutex).
      */
     override suspend fun release() {
         sessionMutex.withLock { releaseUnlocked() }
     }
 
     /**
-     * Непосредственная разгрузка сессий. Вызывать только под `sessionMutex`,
+     * Непосредственная разгрузка всех пучков. Вызывать только под [sessionMutex],
      * чтобы не пересекаться с активным инференсом.
      */
     private fun releaseUnlocked() {
-        try {
-            encoderSession?.close()
-            decoderSession?.close()
-            decoderPastSession?.close()
-        } catch (e: Exception) {
-            Timber.e(e, "Ошибка при разгрузке IndicTrans")
-        }
-        encoderSession = null
-        decoderSession = null
-        decoderPastSession = null
-        srcTokenizer = null
-        tgtTokenizer = null
-        loadedModelId = null
-        _loadedModel.value = null
+        cache.clear().forEach { (_, bundle) -> bundle.release() }
+        activeId = null
+        _loadedModels.value = emptyList()
     }
 
-    private fun parseGenerationConfig(file: File) {
+    /**
+     * Опубликовать список загруженных моделей (активная — первой).
+     * Вызывать только под [sessionMutex].
+     */
+    private fun publishLoadedUnlocked() {
+        val active = activeId
+        _loadedModels.value = cache.all()
+            .sortedByDescending { (id, _) -> id == active }
+            .map { (_, bundle) -> bundle.info }
+    }
+
+    /**
+     * Закрыть сессии незавершённой загрузки (отмена/ошибка) — пучок в кэш
+     * ещё не положен, другие пучки кэша не затрагиваются.
+     */
+    private fun closeCreated(vararg sessions: OrtSession?) {
         try {
+            sessions.filterNotNull().forEach { it.close() }
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка при освобождении частично созданных IndicTrans-сессий")
+        }
+    }
+
+    /** Параметры генерации из generation_config.json. */
+    private data class GenerationParams(
+        val decoderStartTokenId: Int,
+        val eosTokenId: Int
+    )
+
+    /** Размеры словарей токенизаторов из tokenizer_meta.json. */
+    private data class DictSizes(
+        val srcDictSize: Int,
+        val tgtDictSize: Int
+    )
+
+    private fun parseGenerationConfig(file: File): GenerationParams {
+        return try {
             val root = Json.parseToJsonElement(file.readText()).jsonObject
-            decoderStartTokenId = (root["decoder_start_token_id"] as? JsonPrimitive)?.intOrNull ?: 2
-            eosTokenId = (root["eos_token_id"] as? JsonPrimitive)?.intOrNull ?: 2
+            GenerationParams(
+                decoderStartTokenId =
+                    (root["decoder_start_token_id"] as? JsonPrimitive)?.intOrNull ?: 2,
+                eosTokenId = (root["eos_token_id"] as? JsonPrimitive)?.intOrNull ?: 2
+            )
         } catch (e: Exception) {
             Timber.w("Не удалось прочитать generation_config.json: ${e.message}")
+            GenerationParams(decoderStartTokenId = 2, eosTokenId = 2)
         }
     }
 
-    private fun parseTokenizerMeta(file: File?) {
-        if (file == null) return
-        try {
+    private fun parseTokenizerMeta(file: File?): DictSizes {
+        if (file == null) return DictSizes(srcDictSize = Int.MAX_VALUE, tgtDictSize = Int.MAX_VALUE)
+        return try {
             val root = Json.parseToJsonElement(file.readText()).jsonObject
-            srcDictSize = (root["src_dict_size"] as? JsonPrimitive)?.intOrNull ?: Int.MAX_VALUE
-            tgtDictSize = (root["tgt_dict_size"] as? JsonPrimitive)?.intOrNull ?: Int.MAX_VALUE
+            DictSizes(
+                srcDictSize = (root["src_dict_size"] as? JsonPrimitive)?.intOrNull ?: Int.MAX_VALUE,
+                tgtDictSize = (root["tgt_dict_size"] as? JsonPrimitive)?.intOrNull ?: Int.MAX_VALUE
+            )
         } catch (e: Exception) {
             Timber.w("Не удалось прочитать tokenizer_meta.json: ${e.message}")
+            DictSizes(srcDictSize = Int.MAX_VALUE, tgtDictSize = Int.MAX_VALUE)
         }
     }
 

@@ -99,4 +99,8 @@
     <string name="settings_unload_after_15">After 15 minutes</string>
     <string name="settings_unload_after_30">After 30 minutes</string>
     <string name="settings_unload_never">Never unload</string>
+    <string name="settings_direction_retention">Behavior on translation direction change</string>
+    <string name="settings_retention_keep">Do not unload</string>
+    <string name="settings_retention_keep_hint">Speeds up switching direction, but uses more memory</string>
+    <string name="settings_retention_unload">Unload</string>
 </resources>

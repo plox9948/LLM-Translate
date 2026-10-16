@@ -101,4 +101,8 @@
     <string name="settings_unload_after_15">Через 15 минут</string>
     <string name="settings_unload_after_30">Через 30 минут</string>
     <string name="settings_unload_never">Не выгружать</string>
+    <string name="settings_direction_retention">Поведение при смене направления перевода</string>
+    <string name="settings_retention_keep">Не выгружать</string>
+    <string name="settings_retention_keep_hint">Ускоряет смену направления, но требует больше памяти</string>
+    <string name="settings_retention_unload">Выгружать</string>
 </resources>

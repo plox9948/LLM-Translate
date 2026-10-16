@@ -11,11 +11,13 @@ import kotlinx.coroutines.flow.StateFlow
 interface TranslationEngine {
 
     /**
-     * Реактивное состояние: модель, загруженная в ОЗУ этим движком,
-     * или null (движок разгружен). Обновляется под мьютексом движка
+     * Реактивное состояние: модели, загруженные в ОЗУ этим движком
+     * (активная — первой; пуст список, если движок разгружен).
+     * Движок может держать несколько моделей направлений, удерживаемых
+     * LRU-кэшем (issue #36). Обновляется под мьютексом движка
      * при загрузке/разгрузке.
      */
-    val loadedModel: StateFlow<LoadedModelInfo?>
+    val loadedModels: StateFlow<List<LoadedModelInfo>>
 
     /** Убедиться, что загружена модель [model]. */
     suspend fun ensureLoaded(model: InstalledModel): RuntimeError?
@@ -41,11 +43,12 @@ interface TranslationEngine {
 interface SttEngine {
 
     /**
-     * Реактивное состояние: модель, загруженная в ОЗУ этим движком,
-     * или null (движок разгружен). Обновляется под мьютексом движка
-     * при загрузке/разгрузке.
+     * Реактивное состояние: модель, загруженная в ОЗУ этим движком
+     * (список из 0 или 1 элемента — STT-движок держит одну модель;
+     * пуст список, если движок разгружен). Обновляется под мьютексом
+     * движка при загрузке/разгрузке.
      */
-    val loadedModel: StateFlow<LoadedModelInfo?>
+    val loadedModels: StateFlow<List<LoadedModelInfo>>
 
     /** Убедиться, что загружена модель [model]. */
     suspend fun ensureLoaded(model: InstalledModel): RuntimeError?

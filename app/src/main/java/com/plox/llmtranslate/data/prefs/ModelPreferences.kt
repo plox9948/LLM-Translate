@@ -193,6 +193,23 @@ class ModelPreferences @Inject constructor(
         context.dataStore.edit { it[intPreferencesKey("unload_timeout_minutes")] = minutes }
     }
 
+    /**
+     * Поведение движков при смене направления перевода (issue #36):
+     * [RETENTION_KEEP] — не выгружать модели другого направления по умолчанию,
+     * [RETENTION_UNLOAD] — выгружать перед загрузкой новой модели.
+     */
+    val modelDirectionRetention: Flow<String> =
+        context.dataStore.data.map {
+            it[MODEL_DIRECTION_RETENTION_KEY] ?: DEFAULT_MODEL_DIRECTION_RETENTION
+        }
+
+    suspend fun setModelDirectionRetention(value: String) {
+        context.dataStore.edit { prefs ->
+            prefs[MODEL_DIRECTION_RETENTION_KEY] =
+                if (value == RETENTION_UNLOAD) RETENTION_UNLOAD else RETENTION_KEEP
+        }
+    }
+
     val lastRemoteCatalogVersion: Flow<Int> =
         context.dataStore.data.map { it[intPreferencesKey("remote_catalog_version")] ?: 0 }
 
@@ -203,6 +220,19 @@ class ModelPreferences @Inject constructor(
     companion object {
         /** Тайм-аут выгрузки рантаймов по умолчанию, минуты. */
         const val DEFAULT_UNLOAD_TIMEOUT_MINUTES = 5
+
+        /** Значение настройки «не выгружать модели при смене направления» (issue #36). */
+        const val RETENTION_KEEP = "keep"
+
+        /** Значение настройки «выгружать модели при смене направления» (issue #36). */
+        const val RETENTION_UNLOAD = "unload"
+
+        /** Значение по умолчанию для настройки удержания моделей (issue #36). */
+        const val DEFAULT_MODEL_DIRECTION_RETENTION = RETENTION_KEEP
+
+        /** Preference поведения движков при смене направления перевода (issue #36). */
+        private val MODEL_DIRECTION_RETENTION_KEY =
+            stringPreferencesKey("model_direction_retention")
 
         /** Preference с JSON-картой «язык → id STT-модели». */
         private val STT_BY_LANGUAGE_KEY = stringPreferencesKey("stt_by_language")

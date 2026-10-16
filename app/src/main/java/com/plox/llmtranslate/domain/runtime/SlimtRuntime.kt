@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.domain.runtime
 
 import com.plox.llmtranslate.data.native_engine.SlimtNative
+import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
@@ -31,7 +32,9 @@ import timber.log.Timber
  * (мультифайловая установка через SlimtInstaller).
  */
 @Singleton
-class SlimtRuntime @Inject constructor() : TranslationEngine {
+class SlimtRuntime @Inject constructor(
+    private val retentionProvider: ModelRetentionProvider
+) : TranslationEngine {
 
     companion object {
         private const val POLL_INTERVAL_MS = 10L
@@ -39,26 +42,42 @@ class SlimtRuntime @Inject constructor() : TranslationEngine {
         private const val STATUS_DONE = 1
         private const val STATUS_ERROR = 2
         private const val STATUS_CANCELLED = 3
+
+        /** Ёмкость LRU-кэша: два направления перевода + активная модель. */
+        private const val MODEL_CACHE_CAPACITY = 3
     }
 
     /**
-     * Нативная сессия защищена мьютексом: запуск, опрос и разгрузка
+     * Пучок модели slimt: нативный handle и метаданные для UI.
+     * Пучки движка хранятся в LRU-кэше [cache].
+     */
+    private class ModelBundle(val handle: Long, val info: LoadedModelInfo)
+
+    /**
+     * Нативные сессии защищены мьютексом: запуск, опрос и разгрузка
      * сериализованы — use-after-free нативного slimt::Model исключён.
+     * Вся работа с [cache] и [activeId] — только под этим мьютексом.
      */
     private val engineMutex = Mutex()
-    private var handle: Long = 0L
-    private var loadedModelId: String? = null
 
-    private val _loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
+    /** LRU-кэш загруженных пучков моделей (issue #36). */
+    private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
 
-    /** Состояние загруленной модели; пишется только под [engineMutex]. */
-    override val loadedModel: StateFlow<LoadedModelInfo?> = _loadedModel
+    /** Id пучка, на котором работает [translate]; пишется только под [engineMutex]. */
+    private var activeId: String? = null
+
+    private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
+
+    /** Состояние загруженных моделей; пишется только под [engineMutex]. */
+    override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
 
     val isLoaded: Boolean
-        get() = handle != 0L
+        get() = activeId != null
 
     /**
      * Загрузить пачку Firefox-модели (marian .bin + shortlist + словари).
+     * При настройке keep другие направления остаются в LRU-кэше движка,
+     * при unload — выгружаются все перед загрузкой (прежнее поведение).
      */
     override suspend fun ensureLoaded(modelInfo: InstalledModel): RuntimeError? =
         withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -66,11 +85,19 @@ class SlimtRuntime @Inject constructor() : TranslationEngine {
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
             engineMutex.withLock {
-                if (loadedModelId == modelInfo.id && isLoaded) {
+                // Быстрый путь под мьютексом: пучок уже в кэше — только сделать
+                // его активным, без повторной загрузки (смена направления, issue #36).
+                if (cache.get(modelInfo.id) != null) {
+                    activeId = modelInfo.id
+                    publishLoadedUnlocked()
                     return@withContext null
                 }
 
-                releaseUnlocked()
+                // Политика выгрузки при смене направления читается на каждую
+                // загрузку — смена настройки применяется сразу.
+                if (!retentionProvider.keepModelsOnDirectionChange()) {
+                    releaseUnlocked()
+                }
 
                 val dir = File(path)
                 val files = resolvePackageFiles(dir)
@@ -95,22 +122,30 @@ class SlimtRuntime @Inject constructor() : TranslationEngine {
                             "slimt", "Не удалось создать модель slimt"
                         )
                     }
-                    handle = newHandle
-                    loadedModelId = modelInfo.id
-                    _loadedModel.value = LoadedModelInfo(
-                        modelId = modelInfo.id,
-                        displayName = modelInfo.displayName,
-                        category = ModelCategory.TRANSLATION,
-                        ramRequiredMb = modelInfo.ramRequiredMb
+                    cache.put(
+                        modelInfo.id,
+                        ModelBundle(
+                            handle = newHandle,
+                            info = LoadedModelInfo(
+                                modelId = modelInfo.id,
+                                displayName = modelInfo.displayName,
+                                category = ModelCategory.TRANSLATION,
+                                ramRequiredMb = modelInfo.ramRequiredMb
+                            )
+                        )
                     )
+                    activeId = modelInfo.id
+                    cache.evictOverCapacity().forEach { (evictedId, bundle) ->
+                        Timber.d("slimt: вытеснена из кэша модель $evictedId")
+                        SlimtNative.nativeDestroy(bundle.handle)
+                    }
+                    publishLoadedUnlocked()
                     Timber.d("slimt: модель ${modelInfo.id} загружена (mmap)")
                     null
                 } catch (e: CancellationException) {
-                    releaseUnlocked()
                     throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Не удалось загрузить slimt-модель $path")
-                    releaseUnlocked()
                     RuntimeError.LoadFailed("slimt", e.message ?: "Неизвестная ошибка")
                 }
             }
@@ -119,10 +154,15 @@ class SlimtRuntime @Inject constructor() : TranslationEngine {
     /**
      * Перевести текст через slimt (Blocking-фронтенд с атомарным флагом
      * отмены; опрос с границами отмены корутины между итерациями).
+     * Инференс идёт по активному пучку кэша — [ensureLoaded] вызывает
+     * перед переводом, поэтому активный пучок соответствует модели
+     * направления; при отсутствии активного — [RuntimeError.ModelNotSelected].
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(kotlinx.coroutines.Dispatchers.IO) {
             engineMutex.withLock {
+                val bundle = activeId?.let { cache.get(it) }
+                val handle = bundle?.handle ?: 0L
                 if (handle == 0L) {
                     return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
@@ -177,18 +217,30 @@ class SlimtRuntime @Inject constructor() : TranslationEngine {
         }
 
     /**
-     * Разгрузить нативную сессию. Деструктор slimt::Async дожидается
-     * воркера — вызов вне главного потока.
+     * Разгрузить ВСЕ удерживаемые движком модели. Деструктор slimt::Async
+     * дожидается воркера — вызов вне главного потока.
      */
     override suspend fun release() = engineMutex.withLock { releaseUnlocked() }
 
     private fun releaseUnlocked() {
-        if (handle != 0L) {
-            SlimtNative.nativeDestroy(handle)
-            handle = 0L
+        cache.clear().forEach { (_, bundle) ->
+            if (bundle.handle != 0L) {
+                SlimtNative.nativeDestroy(bundle.handle)
+            }
         }
-        loadedModelId = null
-        _loadedModel.value = null
+        activeId = null
+        _loadedModels.value = emptyList()
+    }
+
+    /**
+     * Опубликовать список загруженных моделей (активная — первой).
+     * Вызывать только под [engineMutex].
+     */
+    private fun publishLoadedUnlocked() {
+        val active = activeId
+        _loadedModels.value = cache.all()
+            .sortedByDescending { (id, _) -> id == active }
+            .map { (_, bundle) -> bundle.info }
     }
 
     /**

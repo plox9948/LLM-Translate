@@ -23,15 +23,17 @@ class LoadedModelsAggregatorTest {
 
     /** Фейковый движок перевода: состояние пишется при ensureLoaded/release. */
     private class FakeTranslationEngine : TranslationEngine {
-        private val state = MutableStateFlow<LoadedModelInfo?>(null)
-        override val loadedModel: StateFlow<LoadedModelInfo?> = state
+        private val state = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
+        override val loadedModels: StateFlow<List<LoadedModelInfo>> = state
 
         override suspend fun ensureLoaded(model: InstalledModel): RuntimeError? {
-            state.value = LoadedModelInfo(
-                modelId = model.id,
-                displayName = model.displayName,
-                category = ModelCategory.TRANSLATION,
-                ramRequiredMb = model.ramRequiredMb
+            state.value = listOf(
+                LoadedModelInfo(
+                    modelId = model.id,
+                    displayName = model.displayName,
+                    category = ModelCategory.TRANSLATION,
+                    ramRequiredMb = model.ramRequiredMb
+                )
             )
             return null
         }
@@ -40,21 +42,23 @@ class LoadedModelsAggregatorTest {
             Result.success("")
 
         override suspend fun release() {
-            state.value = null
+            state.value = emptyList()
         }
     }
 
     /** Фейковый STT-движок. */
     private class FakeSttEngine : SttEngine {
-        private val state = MutableStateFlow<LoadedModelInfo?>(null)
-        override val loadedModel: StateFlow<LoadedModelInfo?> = state
+        private val state = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
+        override val loadedModels: StateFlow<List<LoadedModelInfo>> = state
 
         override suspend fun ensureLoaded(model: InstalledModel): RuntimeError? {
-            state.value = LoadedModelInfo(
-                modelId = model.id,
-                displayName = model.displayName,
-                category = ModelCategory.STT,
-                ramRequiredMb = model.ramRequiredMb
+            state.value = listOf(
+                LoadedModelInfo(
+                    modelId = model.id,
+                    displayName = model.displayName,
+                    category = ModelCategory.STT,
+                    ramRequiredMb = model.ramRequiredMb
+                )
             )
             return null
         }
@@ -63,7 +67,7 @@ class LoadedModelsAggregatorTest {
             Result.success("")
 
         override suspend fun release() {
-            state.value = null
+            state.value = emptyList()
         }
     }
 
@@ -74,7 +78,7 @@ class LoadedModelsAggregatorTest {
     /** Тот же порядок движков, что в RuntimeRouter.loadedModels. */
     private fun routerFlow(): Flow<List<LoadedModelInfo>> =
         LoadedModelsAggregator.merge(
-            listOf(marian.loadedModel, indicTrans.loadedModel, stt.loadedModel)
+            listOf(marian.loadedModels, indicTrans.loadedModels, stt.loadedModels)
         )
 
     private suspend fun snapshot(): List<LoadedModelInfo> = routerFlow().first()
@@ -182,8 +186,8 @@ class LoadedModelsAggregatorTest {
 
     @Test
     fun `flow re-emits snapshot when engine state changes`() = runTest {
-        val marianState = MutableStateFlow<LoadedModelInfo?>(null)
-        val sttState = MutableStateFlow<LoadedModelInfo?>(null)
+        val marianState = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
+        val sttState = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
         val snapshots = mutableListOf<List<LoadedModelInfo>>()
 
         // Живая подписка: каждый emit любого движка даёт новый снапшот потока.
@@ -196,7 +200,7 @@ class LoadedModelsAggregatorTest {
         val opus = LoadedModelInfo(
             "opus-ru-en", "Opus-MT Tiny (RU→EN)", ModelCategory.TRANSLATION, 480
         )
-        marianState.value = opus
+        marianState.value = listOf(opus)
         runCurrent()
         assertEquals(2, snapshots.size)
         assertEquals(listOf(opus), snapshots.last())
@@ -204,15 +208,40 @@ class LoadedModelsAggregatorTest {
         val zipformer = LoadedModelInfo(
             "zipformer-ru", "Zipformer (RU)", ModelCategory.STT, 310
         )
-        sttState.value = zipformer
+        sttState.value = listOf(zipformer)
         runCurrent()
         assertEquals(listOf(opus, zipformer), snapshots.last())
 
-        marianState.value = null
+        marianState.value = emptyList()
         runCurrent()
         assertEquals(listOf(zipformer), snapshots.last())
         assertEquals(4, snapshots.size)
 
         collector.cancel()
+    }
+
+    @Test
+    fun `models kept by one engine flatten in engine order`() = runTest {
+        // Движок в режиме keep держит оба направления: активная модель первой.
+        val slimtState = MutableStateFlow(
+            listOf(
+                LoadedModelInfo("slimt-en-ru", "Firefox (EN→RU)", ModelCategory.TRANSLATION, 70),
+                LoadedModelInfo("slimt-ru-en", "Firefox (RU→EN)", ModelCategory.TRANSLATION, 70)
+            )
+        )
+        val sttState = MutableStateFlow(
+            listOf(LoadedModelInfo("zipformer-ru", "Zipformer (RU)", ModelCategory.STT, 310))
+        )
+
+        val merged = LoadedModelsAggregator.merge(listOf(slimtState, sttState)).first()
+
+        assertEquals(
+            listOf(
+                LoadedModelInfo("slimt-en-ru", "Firefox (EN→RU)", ModelCategory.TRANSLATION, 70),
+                LoadedModelInfo("slimt-ru-en", "Firefox (RU→EN)", ModelCategory.TRANSLATION, 70),
+                LoadedModelInfo("zipformer-ru", "Zipformer (RU)", ModelCategory.STT, 310)
+            ),
+            merged
+        )
     }
 }

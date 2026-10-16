@@ -3,6 +3,7 @@ package com.plox.llmtranslate
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
@@ -31,6 +32,12 @@ import kotlin.math.sin
 class InferenceSmokeTest {
 
     private val context: Context = ApplicationProvider.getApplicationContext()
+
+    /**
+     * Поставщик политики удержания моделей (issue #36): smoke-тесты грузят
+     * по одной модели, используется прежнее поведение — выгружать.
+     */
+    private fun retentionUnload() = ModelRetentionProvider { false }
 
     private fun modelDir(runtime: String, modelId: String): File =
         File(context.getExternalFilesDir("models"), "$runtime/$modelId")
@@ -72,7 +79,7 @@ class InferenceSmokeTest {
             "firefox-bergamot-ru-en", ModelCategory.TRANSLATION,
             RuntimeType.MARIAN_SLIMT, dir.absolutePath
         )
-        val engine = SlimtRuntime()
+        val engine = SlimtRuntime(retentionUnload())
         val error = runBlocking { engine.ensureLoaded(model) }
         assertNull("ensureLoaded вернул ошибку: $error", error)
 
@@ -92,7 +99,7 @@ class InferenceSmokeTest {
             "firefox-bergamot-en-ru", ModelCategory.TRANSLATION,
             RuntimeType.MARIAN_SLIMT, dir.absolutePath
         )
-        val engine = SlimtRuntime()
+        val engine = SlimtRuntime(retentionUnload())
         val error = runBlocking { engine.ensureLoaded(model) }
         assertTrue("Ошибка загрузки: $error", error == null)
 
@@ -112,7 +119,7 @@ class InferenceSmokeTest {
             "indictrans2-indic-en-int8", ModelCategory.TRANSLATION,
             RuntimeType.INDICTRANS_ONNX, dir.absolutePath
         )
-        val engine = IndicTransOnnxRuntime()
+        val engine = IndicTransOnnxRuntime(retentionUnload())
         val error = runBlocking { engine.ensureLoaded(model) }
         assertTrue("Ошибка загрузки: $error", error == null)
 
@@ -147,7 +154,7 @@ class InferenceSmokeTest {
             "indictrans2-en-indic-int8", ModelCategory.TRANSLATION,
             RuntimeType.INDICTRANS_ONNX, dir.absolutePath
         )
-        val engine = IndicTransOnnxRuntime()
+        val engine = IndicTransOnnxRuntime(retentionUnload())
         val error = runBlocking { engine.ensureLoaded(model) }
         assertTrue("Ошибка загрузки: $error", error == null)
 
@@ -181,7 +188,7 @@ class InferenceSmokeTest {
             "indictrans2-indic-en-int8", ModelCategory.TRANSLATION,
             RuntimeType.INDICTRANS_ONNX, dir.absolutePath
         )
-        val engine = IndicTransOnnxRuntime()
+        val engine = IndicTransOnnxRuntime(retentionUnload())
         val error = runBlocking { engine.ensureLoaded(model) }
         assertTrue("Ошибка загрузки: $error", error == null)
 

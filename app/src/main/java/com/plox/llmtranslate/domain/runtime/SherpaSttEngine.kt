@@ -58,10 +58,10 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
      */
     private val recognizerMutex = Mutex()
 
-    private val _loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
+    private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
 
     /** Состояние загруженной модели; пишется только под [recognizerMutex]. */
-    override val loadedModel: StateFlow<LoadedModelInfo?> = _loadedModel
+    override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
 
     val isLoaded: Boolean
         get() = recognizer != null
@@ -100,11 +100,13 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
                     currentCoroutineContext().ensureActive()
                     recognizer = buildRecognizer(info, whisperLanguage)
                     loadedModelId = model.id
-                    _loadedModel.value = LoadedModelInfo(
-                        modelId = model.id,
-                        displayName = model.displayName,
-                        category = ModelCategory.STT,
-                        ramRequiredMb = model.ramRequiredMb
+                    _loadedModels.value = listOf(
+                        LoadedModelInfo(
+                            modelId = model.id,
+                            displayName = model.displayName,
+                            category = ModelCategory.STT,
+                            ramRequiredMb = model.ramRequiredMb
+                        )
                     )
                     Timber.d("Sherpa-модель загружена (${info.type}): $path")
                     null
@@ -150,7 +152,7 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
                         recognizer = null
                         whisperLanguage = null
                         loadedModelId = null
-                        _loadedModel.value = null
+                        _loadedModels.value = emptyList()
                         return@withContext Result.failure(
                             RuntimeError.LoadFailed(
                                 "sherpa",
@@ -230,7 +232,7 @@ class SherpaSttEngine @Inject constructor() : SttEngine {
         modelInfo = null
         whisperLanguage = null
         loadedModelId = null
-        _loadedModel.value = null
+        _loadedModels.value = emptyList()
     }
 
     /**

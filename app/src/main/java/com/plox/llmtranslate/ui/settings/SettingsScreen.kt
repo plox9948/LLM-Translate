@@ -44,7 +44,8 @@ data class SettingsUiState(
     val ttsEngine: String = TtsEngines.SYSTEM,
     val uiLanguage: String = "system",
     val theme: String = "system",
-    val unloadTimeoutMinutes: Int = ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES
+    val unloadTimeoutMinutes: Int = ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES,
+    val directionRetention: String = ModelPreferences.DEFAULT_MODEL_DIRECTION_RETENTION
 )
 
 /**
@@ -79,6 +80,11 @@ class SettingsViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(unloadTimeoutMinutes = minutes)
             }
         }
+        viewModelScope.launch {
+            preferences.modelDirectionRetention.collect { retention ->
+                _uiState.value = _uiState.value.copy(directionRetention = retention)
+            }
+        }
     }
 
     fun onTtsEngineChange(engine: String) {
@@ -102,10 +108,25 @@ class SettingsViewModel @Inject constructor(
             ?: ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES
         viewModelScope.launch { preferences.setUnloadTimeoutMinutes(minutes) }
     }
+
+    /**
+     * Смена поведения при смене направления перевода (issue #36):
+     * «keep» — не выгружать модели других направлений, «unload» — выгружать.
+     * Неизвестное значение нормализуется к значению по умолчанию (keep).
+     */
+    fun onDirectionRetentionChange(value: String) {
+        val retention = if (value == ModelPreferences.RETENTION_UNLOAD) {
+            ModelPreferences.RETENTION_UNLOAD
+        } else {
+            ModelPreferences.RETENTION_KEEP
+        }
+        viewModelScope.launch { preferences.setModelDirectionRetention(retention) }
+    }
 }
 
 /**
- * Экран «Настройки»: TTS-движок, язык интерфейса, тема, выгрузка моделей.
+ * Экран «Настройки»: TTS-движок, язык интерфейса, тема, выгрузка моделей,
+ * поведение при смене направления перевода.
  */
 @Composable
 fun SettingsScreen(
@@ -186,19 +207,38 @@ fun SettingsScreen(
                     stringResource(R.string.settings_unload_never)
             )
         )
+
+        // Поведение движков при смене направления перевода (issue #36).
+        OptionCard(
+            titleRes = R.string.settings_direction_retention,
+            selected = state.directionRetention,
+            onSelect = viewModel::onDirectionRetentionChange,
+            options = listOf(
+                ModelPreferences.RETENTION_KEEP to
+                    stringResource(R.string.settings_retention_keep),
+                ModelPreferences.RETENTION_UNLOAD to
+                    stringResource(R.string.settings_retention_unload)
+            ),
+            optionHints = mapOf(
+                ModelPreferences.RETENTION_KEEP to
+                    stringResource(R.string.settings_retention_keep_hint)
+            )
+        )
     }
 }
 
 /**
  * Карточка настройки с заголовком и списком radio-опций.
  * @param options пары (значение, подпись).
+ * @param optionHints необязательные подсказки под опциями (значение → текст).
  */
 @Composable
 private fun OptionCard(
     titleRes: Int,
     selected: String,
     onSelect: (String) -> Unit,
-    options: List<Pair<String, String>>
+    options: List<Pair<String, String>>,
+    optionHints: Map<String, String> = emptyMap()
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -208,7 +248,7 @@ private fun OptionCard(
                 fontWeight = FontWeight.SemiBold
             )
             options.forEach { (value, label) ->
-                OptionRow(value, label, selected, onSelect)
+                OptionRow(value, label, optionHints[value], selected, onSelect)
             }
         }
     }
@@ -218,11 +258,13 @@ private fun OptionCard(
  * Строка radio-опции: кликабельна по всей ширине.
  * Обработчик навешан только на строку (role = RadioButton), сам RadioButton
  * не кликабелен (onClick = null) — это исключает двойное переключение.
+ * @param hint необязательная подсказка под строкой.
  */
 @Composable
 private fun OptionRow(
     value: String,
     label: String,
+    hint: String?,
     selected: String,
     onSelect: (String) -> Unit
 ) {
@@ -243,10 +285,18 @@ private fun OptionRow(
             selected = isSelected,
             onClick = null
         )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(start = 4.dp)
-        )
+        Column(modifier = Modifier.padding(start = 4.dp)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            if (hint != null) {
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }

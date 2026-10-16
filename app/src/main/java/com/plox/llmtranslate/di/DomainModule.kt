@@ -5,6 +5,7 @@ import com.plox.llmtranslate.domain.AndroidDeviceInfoProvider
 import com.plox.llmtranslate.domain.DeviceInfoProvider
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.ModelManagerImpl
+import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.UnloadTimeoutProvider
 import dagger.Binds
 import dagger.Module
@@ -73,6 +74,29 @@ abstract class DomainModule {
             } catch (e: Exception) {
                 Timber.w(e, "Не удалось прочитать тайм-аут выгрузки, беру значение по умолчанию")
                 ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES
+            }
+        }
+
+        /**
+         * Поставщик политики удержания моделей при смене направления
+         * перевода (issue #36): читает настройку из DataStore в момент
+         * загрузки; при ошибке чтения или неизвестном значении — keep.
+         */
+        @Provides
+        @Singleton
+        fun provideModelRetentionProvider(
+            preferences: ModelPreferences
+        ): ModelRetentionProvider = ModelRetentionProvider {
+            try {
+                preferences.modelDirectionRetention.first() !=
+                    ModelPreferences.RETENTION_UNLOAD
+            } catch (e: CancellationException) {
+                // Отмену корутины не проглатываем — иначе движок решит,
+                // что настройка прочитана, и применит дефолт вместо отмены.
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "Не удалось прочитать настройку удержания моделей, беру keep")
+                true
             }
         }
 

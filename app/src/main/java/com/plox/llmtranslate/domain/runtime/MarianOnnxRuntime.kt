@@ -4,6 +4,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OnnxTensorLike
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
@@ -47,7 +48,9 @@ import javax.inject.Singleton
  * вход дополняется EOS-токеном, как в HF `tokenizer(text)`.
  */
 @Singleton
-class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
+class MarianOnnxRuntime @Inject constructor(
+    private val retentionProvider: ModelRetentionProvider
+) : TranslationEngine {
 
     companion object {
         // Лимит генерации на одно предложение: текст разбивается по предложениям
@@ -64,38 +67,65 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
          * не меняет выводы на нормальных предложениях (проверено на battery).
          */
         private const val REPETITION_PENALTY = 1.2f
+
+        /** Ёмкость LRU-кэша: два направления перевода + активная модель. */
+        private const val MODEL_CACHE_CAPACITY = 3
     }
 
-    private var env: OrtEnvironment? = null
-    private var encoderSession: OrtSession? = null
-    private var decoderSession: OrtSession? = null
-    private var decoderPastSession: OrtSession? = null
-    private var tokenizer: TokenizerJson? = null
-
-    private var numLayers: Int = 0
-    private var decoderStartTokenId: Int = 0
-    private var eosTokenId: Int = 0
-    private var badTokenIds: Set<Int> = emptySet()
-    private var loadedModelId: String? = null
+    /**
+     * Пучок Marian-модели: сессии ORT, токенизатор и параметры генерации
+     * одного направления. Освобождается [release].
+     */
+    private class ModelBundle(
+        val encoderSession: OrtSession,
+        val decoderSession: OrtSession,
+        val decoderPastSession: OrtSession,
+        val tokenizer: TokenizerJson,
+        val numLayers: Int,
+        val decoderStartTokenId: Int,
+        val eosTokenId: Int,
+        val badTokenIds: Set<Int>,
+        val info: LoadedModelInfo
+    ) {
+        /** Закрыть нативные сессии пучка (ошибки — только в лог). */
+        fun release() {
+            try {
+                encoderSession.close()
+                decoderSession.close()
+                decoderPastSession.close()
+            } catch (e: Exception) {
+                Timber.e(e, "Ошибка при разгрузке Marian")
+            }
+        }
+    }
 
     /**
      * Защита нативных сессий: инференс, загрузка и разгрузка сериализуются,
      * поэтому release() ждёт окончания активного инференса (use-after-free ORT
      * исключён). Инференс может идти десятки секунд — для onStop-разгрузки
      * это приемлемо, release() вызывается вне главного потока.
+     * Вся работа с [cache] и [activeId] — только под этим мьютексом.
      */
     private val sessionMutex = Mutex()
 
-    private val _loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
+    /** LRU-кэш загруженных пучков моделей (issue #36). */
+    private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
 
-    /** Состояние загруженной модели; пишется только под [sessionMutex]. */
-    override val loadedModel: StateFlow<LoadedModelInfo?> = _loadedModel
+    /** Id пучка, на котором работает [translate]; пишется только под [sessionMutex]. */
+    private var activeId: String? = null
+
+    private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
+
+    /** Состояние загруженных моделей; пишется только под [sessionMutex]. */
+    override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
 
     val isLoaded: Boolean
-        get() = encoderSession != null && decoderSession != null && decoderPastSession != null
+        get() = activeId != null
 
     /**
-     * Загрузить Marian-модель (3 графа + токенизатор + generation config).
+     * Загрузить Marian-модель (3 графа + токенизатор + generation config),
+     * поместив пучок в LRU-кэш. При настройке keep пучки других направлений
+     * сохраняются, при unload — выгружаются перед загрузкой (прежнее поведение).
      */
     override suspend fun ensureLoaded(modelInfo: InstalledModel): RuntimeError? =
         withContext(Dispatchers.IO) {
@@ -103,18 +133,25 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
             sessionMutex.withLock {
-                // Быстрый путь под мьютексом: вне него поле loadedModelId могло
-                // быть очищено параллельным release() — проверка дала бы ложное
-                // «уже загружено» и инференс упал бы на разряженных сессиях.
-                if (loadedModelId == modelInfo.id && isLoaded) {
+                // Быстрый путь под мьютексом: пучок уже в кэше — только сделать
+                // его активным, без повторной загрузки (смена направления, issue #36).
+                if (cache.get(modelInfo.id) != null) {
+                    activeId = modelInfo.id
+                    publishLoadedUnlocked()
                     return@withContext null
                 }
 
-                releaseUnlocked()
+                // Политика выгрузки при смене направления читается на каждую
+                // загрузку — смена настройки применяется сразу.
+                if (!retentionProvider.keepModelsOnDirectionChange()) {
+                    releaseUnlocked()
+                }
 
+                var encoder: OrtSession? = null
+                var decoder: OrtSession? = null
+                var decoderPast: OrtSession? = null
                 try {
                     val ortEnv = OrtEnvironment.getEnvironment()
-                    env = ortEnv
                     val dir = File(path)
 
                     val encoderFile = dir.resolve("encoder_model.onnx")
@@ -143,18 +180,18 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
                         // не прерываемо, но между ними отмена обязана срабатывать,
                         // иначе «Отмена» не действует на загрузку модели.
                         currentCoroutineContext().ensureActive()
-                        encoderSession = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
+                        encoder = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
                         currentCoroutineContext().ensureActive()
-                        decoderSession = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
+                        decoder = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
                         currentCoroutineContext().ensureActive()
-                        decoderPastSession = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
+                        decoderPast = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
                     } finally {
                         sessionOpts.close()
                     }
 
                     // numLayers = (число выходов декодера - 1) / 4
                     // (выходы: logits + present.{layer}.{decoder,encoder}.{key,value}).
-                    numLayers = (decoderSession!!.outputNames.size - 1) / 4
+                    val numLayers = (decoder.outputNames.size - 1) / 4
                     Timber.d("Marian: numLayers=$numLayers")
 
                     val tok = TokenizerJson()
@@ -164,36 +201,54 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
                         // возвращал пустой список и инференс падал с
                         // «Пустой ввод» вместо явной ошибки загрузки.
                         Timber.e("Marian: не удалось загрузить tokenizer.json в $path")
-                        releaseUnlocked()
+                        closeCreated(encoder, decoder, decoderPast)
                         return@withContext RuntimeError.LoadFailed(
                             "marian", "Не удалось загрузить tokenizer"
                         )
                     }
-                    tokenizer = tok
 
                     // Парсинг generation config читает файл — граница отмены
                     // после токенизатора.
                     currentCoroutineContext().ensureActive()
-                    parseGenerationConfig(dir.resolve("generation_config.json"))
+                    val gen = parseGenerationConfig(dir.resolve("generation_config.json"))
 
-                    loadedModelId = modelInfo.id
-                    _loadedModel.value = LoadedModelInfo(
-                        modelId = modelInfo.id,
-                        displayName = modelInfo.displayName,
-                        category = ModelCategory.TRANSLATION,
-                        ramRequiredMb = modelInfo.ramRequiredMb
+                    cache.put(
+                        modelInfo.id,
+                        ModelBundle(
+                            encoderSession = encoder,
+                            decoderSession = decoder,
+                            decoderPastSession = decoderPast,
+                            tokenizer = tok,
+                            numLayers = numLayers,
+                            decoderStartTokenId = gen.decoderStartTokenId,
+                            eosTokenId = gen.eosTokenId,
+                            badTokenIds = gen.badTokenIds,
+                            info = LoadedModelInfo(
+                                modelId = modelInfo.id,
+                                displayName = modelInfo.displayName,
+                                category = ModelCategory.TRANSLATION,
+                                ramRequiredMb = modelInfo.ramRequiredMb
+                            )
+                        )
                     )
+                    activeId = modelInfo.id
+                    cache.evictOverCapacity().forEach { (evictedId, bundle) ->
+                        Timber.d("Marian: вытеснена из кэша модель $evictedId")
+                        bundle.release()
+                    }
+                    publishLoadedUnlocked()
                     null
                 } catch (e: CancellationException) {
                     // Отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
-                    // уже созданные сессии/токенизатор и всплываем выше,
-                    // не конвертируя отмену в LoadFailed.
+                    // уже созданные сессии этого пучка (пучки других направлений
+                    // остаются в кэше) и всплываем выше, не конвертируя отмену
+                    // в LoadFailed.
                     Timber.d("Загрузка Marian-модели отменена: $path")
-                    releaseUnlocked()
+                    closeCreated(encoder, decoder, decoderPast)
                     throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Не удалось загрузить Marian-модель $path")
-                    releaseUnlocked()
+                    closeCreated(encoder, decoder, decoderPast)
                     RuntimeError.LoadFailed("marian", e.message ?: "Неизвестная ошибка")
                 }
             }
@@ -201,18 +256,23 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
 
     /**
      * Перевести текст (Marian encoder-decoder, greedy + repetition penalty).
+     * Инференс идёт по активному пучку кэша — [ensureLoaded] вызывают перед
+     * переводом, поэтому активный пучок соответствует модели направления;
+     * при отсутствии активного — [RuntimeError.ModelNotSelected].
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(Dispatchers.IO) {
             sessionMutex.withLock {
-                val ortEnv = env
-                val enc = encoderSession
-                val dec = decoderSession
-                val decPast = decoderPastSession
-                val tok = tokenizer
-                if (ortEnv == null || enc == null || dec == null || decPast == null || tok == null) {
+                val bundle = activeId?.let { cache.get(it) }
+                if (bundle == null) {
                     return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
+                val ortEnv = OrtEnvironment.getEnvironment()
+                val enc = bundle.encoderSession
+                val dec = bundle.decoderSession
+                val decPast = bundle.decoderPastSession
+                val tok = bundle.tokenizer
+                val eos = bundle.eosTokenId
 
                 try {
                     // Вход — как HF tokenizer(text): куски + EOS в конце.
@@ -222,7 +282,6 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
                             RuntimeError.InferenceFailed("marian", "Пустой ввод")
                         )
                     }
-                    val eos = eosTokenId
                     val inputIds = (textIds + eos).map { it.toLong() }.toLongArray()
                     val attentionMask = LongArray(inputIds.size) { 1L }
 
@@ -263,10 +322,10 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
                         val generatedIds = greedyDecode(
                             ortEnv = ortEnv,
                             attentionMask = attentionMask,
-                            startTokenId = decoderStartTokenId,
+                            startTokenId = bundle.decoderStartTokenId,
                             maxNewTokens = MAX_NEW_TOKENS,
                             eosTokenId = eos,
-                            pickToken = ::pickToken
+                            pickToken = { result, generated -> pickToken(bundle, result, generated) }
                         ) { step, decInputIds, decAttnMask, first, prev ->
                             if (step == 0) {
                                 dec.run(
@@ -284,7 +343,7 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
                                 // внутреннюю ошибку драйвера.
                                 val s0 = first ?: error("Нет past_key_values")
                                 val p = prev ?: error("Нет past_key_values")
-                                for (i in 0 until numLayers) {
+                                for (i in 0 until bundle.numLayers) {
                                     // Encoder-past: из первого шага (не меняется).
                                     ortTensor(s0, "present.$i.encoder.key")?.let {
                                         inputs["past_key_values.$i.encoder.key"] = it
@@ -327,37 +386,59 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
 
     /**
      * Выбрать следующий токен: argmax по logits последнего шага с учётом
-     * bad-слов из generation config и повторного штрафа (аналог HF
-     * `repetition_penalty`). Чистая функция — вынесена для unit-тестов.
+     * bad-слов из generation config пучка и повторного штрафа (аналог HF
+     * `repetition_penalty`). Маска — чистая функция [applyGenerationMask],
+     * вынесена для unit-тестов.
      */
-    private fun pickToken(result: OrtSession.Result, generated: List<Int>): Int {
+    private fun pickToken(
+        bundle: ModelBundle,
+        result: OrtSession.Result,
+        generated: List<Int>
+    ): Int {
         val last = logitsLastPosition(result)
-        applyGenerationMask(last, generated, badTokenIds, REPETITION_PENALTY)
+        applyGenerationMask(last, generated, bundle.badTokenIds, REPETITION_PENALTY)
         return argMax(last)
     }
 
+    /**
+     * Разгрузить ВСЕ удерживаемые движком модели. Ждёт окончания активного
+     * инференса ([sessionMutex]).
+     */
     override suspend fun release() {
         sessionMutex.withLock { releaseUnlocked() }
     }
 
     /**
-     * Непосредственная разгрузка сессий. Вызывать только под `sessionMutex`,
+     * Непосредственная разгрузка всех пучков. Вызывать только под [sessionMutex],
      * чтобы не пересекаться с активным инференсом.
      */
     private fun releaseUnlocked() {
+        cache.clear().forEach { (_, bundle) -> bundle.release() }
+        activeId = null
+        _loadedModels.value = emptyList()
+    }
+
+    /**
+     * Опубликовать список загруженных моделей (активная — первой).
+     * Вызывать только под [sessionMutex].
+     */
+    private fun publishLoadedUnlocked() {
+        val active = activeId
+        _loadedModels.value = cache.all()
+            .sortedByDescending { (id, _) -> id == active }
+            .map { (_, bundle) -> bundle.info }
+    }
+
+    /**
+     * Закрыть сессии незавершённой загрузки (отмена/ошибка) — пучок в кэш
+     * ещё не положен, другие пучки кэша не затрагиваются.
+     */
+    private fun closeCreated(vararg sessions: OrtSession?) {
         try {
-            encoderSession?.close()
-            decoderSession?.close()
-            decoderPastSession?.close()
+            sessions.filterNotNull().forEach { it.close() }
         } catch (e: Exception) {
-            Timber.e(e, "Ошибка при разгрузке Marian")
+            Timber.e(e, "Ошибка при освобождении частично созданных Marian-сессий")
         }
-        encoderSession = null
-        decoderSession = null
-        decoderPastSession = null
-        tokenizer = null
-        loadedModelId = null
-        _loadedModel.value = null
     }
 
     /**
@@ -387,33 +468,42 @@ class MarianOnnxRuntime @Inject constructor() : TranslationEngine {
     /**
      * Прочитать параметры генерации из generation_config.json модели.
      */
-    private fun parseGenerationConfig(file: File) {
-        decoderStartTokenId = 0
-        eosTokenId = 0
-        badTokenIds = emptySet()
+    /** Параметры генерации из generation_config.json (значения одного пучка). */
+    private data class GenerationParams(
+        val decoderStartTokenId: Int,
+        val eosTokenId: Int,
+        val badTokenIds: Set<Int>
+    )
+
+    /**
+     * Прочитать параметры генерации из generation_config.json модели.
+     */
+    private fun parseGenerationConfig(file: File): GenerationParams {
         if (!file.isFile) {
             Timber.w("generation_config.json не найден, defaults: start=0, eos=0")
-            return
+            return GenerationParams(decoderStartTokenId = 0, eosTokenId = 0, badTokenIds = emptySet())
         }
-        try {
+        return try {
             val root = Json.parseToJsonElement(file.readText()).jsonObject
-            decoderStartTokenId =
-                (root["decoder_start_token_id"] as? JsonPrimitive)?.intOrNull ?: 0
-            eosTokenId =
-                (root["eos_token_id"] as? JsonPrimitive)?.intOrNull ?: 0
+            val start = (root["decoder_start_token_id"] as? JsonPrimitive)?.intOrNull ?: 0
+            val eos = (root["eos_token_id"] as? JsonPrimitive)?.intOrNull ?: 0
             val bad = mutableSetOf<Int>()
             (root["bad_words_ids"] as? JsonArray)?.forEach { w ->
                 w.jsonArray.forEach { t ->
                     t.jsonPrimitive.intOrNull?.let { bad.add(it) }
                 }
             }
-            badTokenIds = bad
             Timber.d(
-                "Marian gen-config: start=$decoderStartTokenId, eos=$eosTokenId, " +
-                    "bad=${bad.toList()}"
+                "Marian gen-config: start=$start, eos=$eos, bad=${bad.toList()}"
+            )
+            GenerationParams(
+                decoderStartTokenId = start,
+                eosTokenId = eos,
+                badTokenIds = bad
             )
         } catch (e: Exception) {
             Timber.w("Не удалось прочитать generation_config.json: ${e.message}")
+            GenerationParams(decoderStartTokenId = 0, eosTokenId = 0, badTokenIds = emptySet())
         }
     }
 }

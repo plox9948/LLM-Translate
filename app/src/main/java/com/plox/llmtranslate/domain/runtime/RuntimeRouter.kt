@@ -24,10 +24,10 @@ class RuntimeRouter @Inject constructor(
      */
     val loadedModels: Flow<List<LoadedModelInfo>> = LoadedModelsAggregator.merge(
         listOf(
-            marianOnnxRuntime.loadedModel,
-            indicTransOnnxRuntime.loadedModel,
-            slimtRuntime.loadedModel,
-            sherpaSttEngine.loadedModel
+            marianOnnxRuntime.loadedModels,
+            indicTransOnnxRuntime.loadedModels,
+            slimtRuntime.loadedModels,
+            sherpaSttEngine.loadedModels
         )
     )
 

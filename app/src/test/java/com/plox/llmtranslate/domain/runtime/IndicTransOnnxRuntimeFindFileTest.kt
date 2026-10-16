@@ -11,7 +11,7 @@ import kotlin.io.path.createTempDirectory
  */
 class IndicTransOnnxRuntimeFindFileTest {
 
-    private val runtime = IndicTransOnnxRuntime()
+    private val runtime = IndicTransOnnxRuntime(FakeModelRetentionProvider(keep = true))
 
     @Test
     fun `exact onnx preferred over onnx-data, substring fallback for json`() {

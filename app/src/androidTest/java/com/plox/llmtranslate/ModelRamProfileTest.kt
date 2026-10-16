@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
@@ -38,6 +39,12 @@ import kotlin.math.sin
 class ModelRamProfileTest {
 
     private val context: Context = ApplicationProvider.getApplicationContext()
+
+    /**
+     * Поставщик политики удержания моделей (issue #36): профилирование меряет
+     * одну модель за прогон, используется прежнее поведение — выгружать.
+     */
+    private fun retentionUnload() = ModelRetentionProvider { false }
 
     private data class Target(
         val id: String,
@@ -148,9 +155,9 @@ class ModelRamProfileTest {
         val base = pssMb()
 
         val engine: Any = when (t.runtime) {
-            RuntimeType.MARIAN_ONNX -> MarianOnnxRuntime()
-            RuntimeType.MARIAN_SLIMT -> SlimtRuntime()
-            RuntimeType.INDICTRANS_ONNX -> IndicTransOnnxRuntime()
+            RuntimeType.MARIAN_ONNX -> MarianOnnxRuntime(retentionUnload())
+            RuntimeType.MARIAN_SLIMT -> SlimtRuntime(retentionUnload())
+            RuntimeType.INDICTRANS_ONNX -> IndicTransOnnxRuntime(retentionUnload())
             // Дублирующая libonnxruntime из androidTest jniLibs больше не нужна:
             // в APK одна библиотека 1.30.0, патченый libsherpa-onnx-jni требует её же
             // version-node (VERS_1.30.0), загрузка идёт через clinit sherpa.
