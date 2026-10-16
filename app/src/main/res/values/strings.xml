@@ -29,6 +29,8 @@
     <string name="translate_action">Перевести</string>
     <string name="translate_in_progress">Перевод…</string>
     <string name="translate_no_model">Скачайте модель перевода на экране «Модели»</string>
+    <string name="translate_missing_title">Для перевода нужны модели</string>
+    <string name="translate_download_progress">Скачивается… %1$d%%</string>
     <string name="translate_speak_cd">Озвучить</string>
     <string name="translate_copy_cd">Скопировать перевод</string>
     <string name="translate_recording_hint">● Идёт запись… Нажмите на микрофон, чтобы остановить</string>
@@ -37,6 +39,14 @@
     <string name="translate_cancel">Отмена</string>
     <string name="translate_history_clear">Очистить</string>
     <string name="translate_history_delete_cd">Удалить из истории</string>
+
+    <!-- Онбординг первого запуска -->
+    <string name="onboarding_title">Что переводим?</string>
+    <string name="onboarding_subtitle">Выберите направление — подскажем, какую модель скачать</string>
+    <string name="onboarding_option_ru_en">Русский ⇄ Английский</string>
+    <string name="onboarding_option_en_ne">Английский ⇄ Непальский</string>
+    <string name="onboarding_option_ru_ne">Русский ⇄ Непальский</string>
+    <string name="onboarding_skip">Пропустить</string>
 
     <!-- Вкладка «История» -->
     <string name="history_empty">История переводов пуста</string>
@@ -63,6 +73,7 @@
     <string name="models_choose">Выбрать</string>
     <string name="models_import">Импорт</string>
     <string name="models_stt_lang_label">Язык распознавания:</string>
+    <string name="models_required_for">Нужно для %1$s</string>
     <string name="models_export">Экспорт</string>
     <string name="models_delete">Удалить</string>
     <string name="models_category_translation">Перевод (LLM)</string>

@@ -2,6 +2,7 @@ package com.plox.llmtranslate.domain.model
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -64,6 +65,81 @@ class TranslationModelSelectorTest {
         val onlyRuEn = listOf(ruEn)
         assertNull(TranslationModelSelector.selectChain(onlyRuEn, "ne", "ru"))
     }
+
+    // --- issue #33: подбор недостающих звеньев цепочки из каталога ---
+
+    private val catalogAll = listOf(
+        card("firefox-bergamot-ru-en", "Firefox Translations (RU→EN)", listOf("ru", "en"), 50_000_000L),
+        card("firefox-bergamot-en-ru", "Firefox Translations (EN→RU)", listOf("ru", "en"), 50_000_000L),
+        card("indictrans2-indic-en-int8", "IndicTrans2 (Indic→EN, int8)", listOf("ne", "en"), 300_000_000L),
+        card("indictrans2-en-indic-int8", "IndicTrans2 (EN→Indic, int8)", listOf("ne", "en"), 300_000_000L)
+    )
+
+    @Test
+    fun `direction of catalog card`() {
+        assertEquals("ru" to "en", TranslationModelSelector.directionOf(catalogAll[0]))
+        assertEquals("en" to "ne", TranslationModelSelector.directionOf(catalogAll[3]))
+    }
+
+    @Test
+    fun `missing chain ru to en is one slimt card`() {
+        val missing = TranslationModelSelector.missingChain(catalogAll, emptyList(), "ru", "en")
+        assertEquals(listOf(catalogAll[0]), missing)
+    }
+
+    @Test
+    fun `missing chain ru to ne is two cards via hub`() {
+        val missing = TranslationModelSelector.missingChain(catalogAll, emptyList(), "ru", "ne")
+        assertEquals(listOf(catalogAll[0], catalogAll[3]), missing)
+    }
+
+    @Test
+    fun `missing chain excludes installed links`() {
+        val missing = TranslationModelSelector.missingChain(catalogAll, listOf(ruEn), "ru", "ne")
+        assertEquals(listOf(catalogAll[3]), missing)
+    }
+
+    @Test
+    fun `missing chain empty when chain fully installed`() {
+        val installed = listOf(ruEn, enRu, neEn, enNe)
+        assertTrue(TranslationModelSelector.missingChain(catalogAll, installed, "ru", "ne").isEmpty())
+        assertTrue(TranslationModelSelector.missingChain(catalogAll, installed, "ru", "en").isEmpty())
+    }
+
+    @Test
+    fun `missing chain empty when catalog does not cover direction`() {
+        val noIndic = listOf(catalogAll[0], catalogAll[1])
+        assertTrue(TranslationModelSelector.missingChain(noIndic, emptyList(), "ru", "ne").isEmpty())
+    }
+
+    @Test
+    fun `missing chain empty for same language`() {
+        assertTrue(TranslationModelSelector.missingChain(catalogAll, emptyList(), "ru", "ru").isEmpty())
+    }
+
+    private fun card(
+        id: String,
+        displayName: String,
+        languages: List<String>,
+        sizeBytes: Long
+    ): ModelCard = ModelCard(
+        id = id,
+        category = ModelCategory.TRANSLATION,
+        displayName = displayName,
+        description = "",
+        runtime = RuntimeType.MARIAN_SLIMT,
+        sizeBytes = sizeBytes,
+        ramRequiredMb = 0,
+        languages = languages,
+        quality = 4,
+        speed = 5,
+        url = "",
+        urls = emptyList(),
+        sha256 = null,
+        license = "MIT",
+        minAndroidSdk = 26,
+        recommendedRamMb = 0
+    )
 
     private fun model(
         id: String,

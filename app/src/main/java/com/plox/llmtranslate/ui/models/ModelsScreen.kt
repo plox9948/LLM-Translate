@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.automirrored.filled.StarHalf
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -287,6 +288,11 @@ fun ModelsScreen(
                 }
                 val sttAssignedLanguages =
                     sttChips.filter { sttByLanguage[it] == card.id }.toSet()
+                // Чип «Нужно для RU→EN»: карточка не хватает для последнего
+                // направления перевода (issue #33).
+                val requiredChipLabel = uiState.requiredChips[card.id]?.let { direction ->
+                    stringResource(R.string.models_required_for, direction)
+                }
                 // Issue #31: на время экспорта модели кнопки «Экспорт»/«Удалить»
                 // этой карточки заблокированы (иначе удаление mid-экспорта даёт
                 // обрезанный ZIP). Общий экспорт/импорт бэкапа (isBusy)
@@ -301,6 +307,7 @@ fun ModelsScreen(
                     check = check,
                     sttChips = sttChips,
                     sttAssignedLanguages = sttAssignedLanguages,
+                    requiredChipLabel = requiredChipLabel,
                     actionsLocked = actionsLocked,
                     onDownload = { viewModel.onDownloadClick(card) },
                     onImport = {
@@ -479,6 +486,7 @@ private fun ModelCardItem(
     check: InstallCheck?,
     sttChips: List<String>,
     sttAssignedLanguages: Set<String>,
+    requiredChipLabel: String?,
     actionsLocked: Boolean,
     onDownload: () -> Unit,
     onImport: () -> Unit,
@@ -593,6 +601,18 @@ private fun ModelCardItem(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+
+            // Чип «Нужно для RU→EN»: карточка недостаёт для последнего
+            // направления перевода (issue #33); те же чипы, что язык STT.
+            if (requiredChipLabel != null) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(requiredChipLabel) }
+                    )
+                }
             }
 
             // Бейджи совместимости.
@@ -763,7 +783,7 @@ private const val BYTES_IN_MB = 1_048_576L
 private const val BYTES_IN_GB = 1_073_741_824L
 
 @Composable
-private fun formatBytes(bytes: Long): String {
+internal fun formatBytes(bytes: Long): String {
     val unitGb = stringResource(R.string.unit_gb)
     val unitMb = stringResource(R.string.unit_mb)
     val unitKb = stringResource(R.string.unit_kb)

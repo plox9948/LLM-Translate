@@ -3,6 +3,7 @@ package com.plox.llmtranslate.data.prefs
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -88,6 +89,43 @@ class ModelPreferences @Inject constructor(
             emptyMap()
         }
 
+    // --- Последнее направление перевода (issue #33) ---
+
+    /**
+     * Сохранённые коды языков последнего направления перевода ("ru"/"en"/"ne");
+     * null — направление ещё не выбиралось (AUTO не сохраняется).
+     */
+    val lastSourceLang: Flow<String?> =
+        context.dataStore.data.map { it[LAST_SOURCE_LANG_KEY] }
+
+    val lastTargetLang: Flow<String?> =
+        context.dataStore.data.map { it[LAST_TARGET_LANG_KEY] }
+
+    /**
+     * Сохранить последнее выбранное направление перевода.
+     */
+    suspend fun setLastDirection(sourceLang: String, targetLang: String) {
+        context.dataStore.edit { prefs ->
+            prefs[LAST_SOURCE_LANG_KEY] = sourceLang
+            prefs[LAST_TARGET_LANG_KEY] = targetLang
+        }
+    }
+
+    // --- Одноразовый онбординг (issue #33) ---
+
+    /**
+     * Завершен ли онбординг первого запуска; false до первого выбора/пропуска.
+     */
+    val onboardingDone: Flow<Boolean> =
+        context.dataStore.data.map { it[ONBOARDING_DONE_KEY] ?: false }
+
+    /**
+     * Отметить онбординг пройденным (больше не показывать).
+     */
+    suspend fun setOnboardingDone() {
+        context.dataStore.edit { prefs -> prefs[ONBOARDING_DONE_KEY] = true }
+    }
+
     // --- Настройки приложения ---
 
     val ttsEngine: Flow<String> =
@@ -171,5 +209,14 @@ class ModelPreferences @Inject constructor(
 
         /** Сериализатор карты языков для [STT_BY_LANGUAGE_KEY]. */
         private val STT_MAP_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
+
+        /** Preference кода исходного языка последнего направления (issue #33). */
+        private val LAST_SOURCE_LANG_KEY = stringPreferencesKey("last_source_lang")
+
+        /** Preference кода целевого языка последнего направления (issue #33). */
+        private val LAST_TARGET_LANG_KEY = stringPreferencesKey("last_target_lang")
+
+        /** Preference флага пройденного онбординга (issue #33). */
+        private val ONBOARDING_DONE_KEY = booleanPreferencesKey("onboarding_done")
     }
 }

@@ -8,6 +8,7 @@ import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.DiskUsage
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.DeviceInfo
+import com.plox.llmtranslate.domain.model.CatalogPriority
 import com.plox.llmtranslate.domain.model.InstallCheck
 import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
@@ -57,7 +58,13 @@ data class ModelsUiState(
     val isBusy: Boolean = false,
     /** Id модели, для которой идёт запись экспорта (SAF-копирование/zip). */
     val exportingModelId: String? = null,
-    val statusMessage: String? = null
+    val statusMessage: String? = null,
+    /**
+     * Карточки каталога, недостающие для последнего направления перевода (issue #33):
+     * id карточки → подпись чипа («RU→EN»); каталог в [catalog] уже отсортирован
+     * с их приоритетом.
+     */
+    val requiredChips: Map<String, String> = emptyMap()
 )
 
 /**
@@ -117,6 +124,12 @@ class ModelsViewModel @Inject constructor(
             )
         }
 
+    // Последнее направление перевода (issue #33): null — не сохранено.
+    private val lastDirectionFlow: Flow<Pair<String, String>?> =
+        combine(preferences.lastSourceLang, preferences.lastTargetLang) { source, target ->
+            if (source != null && target != null) source to target else null
+        }
+
     // Наружные обновления (statusMessage, exportRequest) пишутся в _uiState напрямую;
     // обновления из потоков моделей перезаписывают их — как при stateIn.
     private val _uiState = MutableStateFlow(ModelsUiState())
@@ -125,14 +138,30 @@ class ModelsViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             combine(
-                modelManager.catalog,
+                // Каталог с направлением: приоритизация карточек выполняется
+                // вместе, чтобы сортировка не разъезжалась с потоком каталога.
+                combine(modelManager.catalog, lastDirectionFlow) { cards, direction ->
+                    cards to direction
+                },
                 modelManager.installedModels(null),
                 activeIdsFlow,
                 modelManager.diskUsage,
                 modelManager.loadedModels
-            ) { catalog, installed, activeIds, disk, loaded ->
+            ) { (catalog, direction), installed, activeIds, disk, loaded ->
+                // Чипы «нужно для направления» — по недостающим звеньям
+                // цепочки текущего направления (issue #33).
+                val chips = if (direction != null && direction.first != direction.second) {
+                    val installedTranslation =
+                        installed.filter { it.category == ModelCategory.TRANSLATION }
+                    CatalogPriority.requiredChips(
+                        catalog, installedTranslation, direction.first, direction.second
+                    )
+                } else {
+                    emptyMap()
+                }
                 ModelsUiState(
-                    catalog = catalog,
+                    catalog = CatalogPriority.prioritize(catalog, chips),
+                    requiredChips = chips,
                     installed = installed,
                     activeIds = activeIds,
                     diskUsage = disk,

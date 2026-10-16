@@ -9,11 +9,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -25,13 +27,16 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,6 +52,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.plox.llmtranslate.R
+import com.plox.llmtranslate.domain.model.ModelCard
+import com.plox.llmtranslate.ui.models.formatBytes
 
 /**
  * Экран «Перевод»: текст или аудио → перевод → озвучивание.
@@ -191,11 +198,19 @@ fun TranslateScreen(
         }
 
         if (!state.hasTranslationModel) {
-            Text(
-                text = stringResource(R.string.translate_no_model),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error
-            )
+            if (state.missingModels.isNotEmpty()) {
+                MissingModelsCard(
+                    models = state.missingModels,
+                    downloadingProgress = state.downloadingProgress,
+                    onDownload = viewModel::downloadMissingModels
+                )
+            } else {
+                Text(
+                    text = stringResource(R.string.translate_no_model),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
 
         // Результат.
@@ -269,6 +284,122 @@ fun TranslateScreen(
                     }
                 }
             )
+        }
+    }
+
+    // Одноразовый онбординг первого запуска (issue #33): выбор направления;
+    // закрытие свайпом/тапом вне sheet считается пропуском.
+    if (state.showOnboarding) {
+        OnboardingSheet(
+            onOption = viewModel::onOnboardingOption,
+            onSkip = viewModel::onOnboardingSkip
+        )
+    }
+}
+
+/**
+ * Онбординг bottom sheet первого запуска (issue #33): три варианта направления
+ * перевода и «Пропустить». Выбор варианта применяет направление и закрывает
+ * sheet; после этого на экране сразу работает подсказка недостающих моделей.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OnboardingSheet(
+    onOption: (Int) -> Unit,
+    onSkip: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onSkip,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.onboarding_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = stringResource(R.string.onboarding_subtitle),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OnboardingOption.entries.forEach { option ->
+                TextButton(
+                    onClick = { onOption(option.ordinal) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(stringResource(option.labelRes))
+                }
+            }
+            TextButton(
+                onClick = onSkip,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = stringResource(R.string.onboarding_skip),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Карточка подсказки недостающих моделей перевода (issue #33): звенья
+ * цепочки текущего направления из каталога с размером; для уже скачиваемых
+ * моделей показывается прогресс вместо кнопки.
+ */
+@Composable
+private fun MissingModelsCard(
+    models: List<ModelCard>,
+    downloadingProgress: Map<String, Int>,
+    onDownload: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = stringResource(R.string.translate_missing_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            models.forEach { card ->
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = card.displayName,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            text = formatBytes(card.sizeBytes),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    val progress = downloadingProgress[card.id]
+                    if (progress != null) {
+                        Text(
+                            text = stringResource(R.string.translate_download_progress, progress),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    } else {
+                        OutlinedButton(onClick = onDownload) {
+                            Icon(Icons.Filled.Download, contentDescription = null)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(stringResource(R.string.download))
+                        }
+                    }
+                }
+            }
         }
     }
 }

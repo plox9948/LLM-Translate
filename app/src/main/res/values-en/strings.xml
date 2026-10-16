@@ -29,6 +29,8 @@
     <string name="translate_action">Translate</string>
     <string name="translate_in_progress">Translating…</string>
     <string name="translate_no_model">Download a translation model on the \"Models\" screen</string>
+    <string name="translate_missing_title">Translation models required</string>
+    <string name="translate_download_progress">Downloading… %1$d%%</string>
     <string name="translate_speak_cd">Read aloud</string>
     <string name="translate_copy_cd">Copy translation</string>
     <string name="translate_recording_hint">● Recording… Tap the microphone to stop</string>
@@ -37,6 +39,14 @@
     <string name="translate_cancel">Cancel</string>
     <string name="translate_history_clear">Clear</string>
     <string name="translate_history_delete_cd">Delete from history</string>
+
+    <!-- Онбординг первого запуска -->
+    <string name="onboarding_title">What are we translating?</string>
+    <string name="onboarding_subtitle">Choose a direction — we\'ll suggest which model to download</string>
+    <string name="onboarding_option_ru_en">Russian ⇄ English</string>
+    <string name="onboarding_option_en_ne">English ⇄ Nepali</string>
+    <string name="onboarding_option_ru_ne">Russian ⇄ Nepali</string>
+    <string name="onboarding_skip">Skip</string>
 
     <!-- Вкладка «История» -->
     <string name="history_empty">Translation history is empty</string>
@@ -63,6 +73,7 @@
     <string name="models_choose">Select</string>
     <string name="models_import">Import</string>
     <string name="models_stt_lang_label">Speech recognition language:</string>
+    <string name="models_required_for">Required for %1$s</string>
     <string name="models_export">Export</string>
     <string name="models_delete">Delete</string>
     <string name="models_category_translation">Translation (LLM)</string>

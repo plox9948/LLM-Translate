@@ -2,12 +2,15 @@ package com.plox.llmtranslate.ui.translate
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.model.TranslationHistoryRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.LanguageDetector
+import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.SentenceSplitter
@@ -24,6 +27,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
@@ -36,6 +40,25 @@ enum class TranslateLanguage(val code: String, val title: String) {
     RU("ru", "Русский (Russian)"),
     EN("en", "English (English)"),
     NE("ne", "नेपाली (Nepali)")
+}
+
+/**
+ * Варианты онбординга первого запуска: индекс списка → направление перевода
+ * (issue #33). Направление применяется через обычные механизмы смены языков.
+ */
+enum class OnboardingOption(
+    val sourceLang: TranslateLanguage,
+    val targetLang: TranslateLanguage,
+    val labelRes: Int
+) {
+    RU_EN(TranslateLanguage.RU, TranslateLanguage.EN, R.string.onboarding_option_ru_en),
+    EN_NE(TranslateLanguage.EN, TranslateLanguage.NE, R.string.onboarding_option_en_ne),
+    RU_NE(TranslateLanguage.RU, TranslateLanguage.NE, R.string.onboarding_option_ru_ne);
+
+    companion object {
+        /** Вариант по индексу списка на sheet; null — индекса нет. */
+        fun byIndex(index: Int): OnboardingOption? = entries.getOrNull(index)
+    }
 }
 
 /**
@@ -52,7 +75,13 @@ data class TranslateUiState(
     val isSpeaking: Boolean = false,
     val error: String? = null,
     val hasTranslationModel: Boolean = false,
-    val hasSttModel: Boolean = false
+    /** Карточки каталога для недостающего направления перевода (issue #33). */
+    val missingModels: List<ModelCard> = emptyList(),
+    /** Прогресс скачивания по id модели (для карточки недостающих моделей). */
+    val downloadingProgress: Map<String, Int> = emptyMap(),
+    val hasSttModel: Boolean = false,
+    /** Показывать одноразовый онбординг первого запуска (issue #33). */
+    val showOnboarding: Boolean = false
 )
 
 /**
@@ -75,6 +104,9 @@ class TranslateViewModel @Inject constructor(
     // Установленные модели перевода для автовыбора по направлению.
     private var translationModels: List<InstalledModel> = emptyList()
 
+    // Каталог моделей для подбора недостающих звеньев цепочки (issue #33).
+    private var catalogCards: List<ModelCard> = emptyList()
+
     // Установленные STT-модели и назначения «язык → модель» (issue #28).
     private var sttModels: List<InstalledModel> = emptyList()
     private var sttAssignments: Map<String, String> = emptyMap()
@@ -84,8 +116,14 @@ class TranslateViewModel @Inject constructor(
             modelManager.installedModels(ModelCategory.TRANSLATION)
                 .collect { models ->
                     translationModels = models
-                    _uiState.value = _uiState.value.copy(hasTranslationModel = models.isNotEmpty())
+                    refreshTranslationAvailability()
                 }
+        }
+        viewModelScope.launch {
+            modelManager.catalog.collect { cards ->
+                catalogCards = cards
+                refreshTranslationAvailability()
+            }
         }
         viewModelScope.launch {
             modelManager.installedModels(ModelCategory.STT)
@@ -101,6 +139,35 @@ class TranslateViewModel @Inject constructor(
         viewModelScope.launch {
             modelManager.sttByLanguage.collect { assignments ->
                 sttAssignments = assignments
+            }
+        }
+        viewModelScope.launch {
+            // Сохранённое направление перевода (issue #33):ru→en и т.п.;
+            // невалидные значения и AUTO-источник игнорируются — остаются
+            // значения по умолчанию.
+            combine(
+                preferences.lastSourceLang,
+                preferences.lastTargetLang
+            ) { source, target -> source to target }
+                .collect { (source, target) ->
+                    val src = source?.let { code ->
+                        TranslateLanguage.entries.firstOrNull { it.code == code && it != TranslateLanguage.AUTO }
+                    }
+                    val tgt = target?.let { code ->
+                        TranslateLanguage.entries.firstOrNull { it.code == code }
+                    }
+                    if (src != null && tgt != null) {
+                        update { it.copy(sourceLang = src, targetLang = tgt) }
+                        refreshTranslationAvailability()
+                    }
+                }
+        }
+        viewModelScope.launch {
+            // Флаг онбординга (issue #33): sheet показывается только пока флаг
+            // не установлен; значение по умолчанию false в состоянии — при уже
+            // пройденном онбординге sheet не мелькает до прилета значения из DataStore.
+            preferences.onboardingDone.collect { done ->
+                update { it.copy(showOnboarding = !done) }
             }
         }
         viewModelScope.launch {
@@ -124,10 +191,50 @@ class TranslateViewModel @Inject constructor(
 
     fun onSourceLangChange(lang: TranslateLanguage) {
         update { it.copy(sourceLang = lang, error = null) }
+        saveLastDirection()
+        refreshTranslationAvailability()
     }
 
     fun onTargetLangChange(lang: TranslateLanguage) {
         update { it.copy(targetLang = lang, error = null) }
+        saveLastDirection()
+        refreshTranslationAvailability()
+    }
+
+    /**
+     * Сохранить текущее направление перевода в настройки (issue #33).
+     * AUTO-источник не сохраняется — сохранённое направление остаётся прежним.
+     */
+    private fun saveLastDirection() {
+        val state = _uiState.value
+        if (state.sourceLang == TranslateLanguage.AUTO) return
+        viewModelScope.launch {
+            preferences.setLastDirection(state.sourceLang.code, state.targetLang.code)
+        }
+    }
+
+    /**
+     * Выбрать направление из онбординга (issue #33): применить языки через
+     * обычные обработчики смены (сохраняют направление в настройки и
+     * пересчитывают подсказку недостающих моделей) и закрыть sheet.
+     */
+    fun onOnboardingOption(index: Int) {
+        val option = OnboardingOption.byIndex(index) ?: return
+        onSourceLangChange(option.sourceLang)
+        onTargetLangChange(option.targetLang)
+        markOnboardingDone()
+    }
+
+    /** Пропустить онбординг (кнопка «Пропустить» или закрытие sheet). */
+    fun onOnboardingSkip() {
+        markOnboardingDone()
+    }
+
+    private fun markOnboardingDone() {
+        update { it.copy(showOnboarding = false) }
+        viewModelScope.launch {
+            preferences.setOnboardingDone()
+        }
     }
 
     fun onInputTextChanged(text: String) {
@@ -469,6 +576,67 @@ class TranslateViewModel @Inject constructor(
         }
         val detected = LanguageDetector.detect(state.inputText)
         return TranslateLanguage.entries.firstOrNull { it.code == detected }
+    }
+
+    /**
+     * Пересчитать доступность перевода для текущего направления: наличие
+     * готовой цепочки моделей и список недостающих карточек каталога (issue #33).
+     * Для AUTO-источника рассматриваются все ненулевые языки, кроме целевого.
+     */
+    private fun refreshTranslationAvailability() {
+        val state = _uiState.value
+        val ready = translationModels.filter { it.isReady }
+        val target = state.targetLang.code
+        val sources = if (state.sourceLang != TranslateLanguage.AUTO) {
+            listOf(state.sourceLang.code)
+        } else {
+            TranslateLanguage.entries
+                .filter { it != TranslateLanguage.AUTO && it.code != target }
+                .map { it.code }
+        }.filter { it != target }
+
+        // Совпадение языков: цепочка не строится — считаем доступность по наличию
+        // готовых моделей (translate() сам подскажет «Выберите разные языки»).
+        val hasChain = if (sources.isEmpty()) {
+            ready.isNotEmpty()
+        } else {
+            sources.any { source ->
+                TranslationModelSelector.selectChain(ready, source, target) != null
+            }
+        }
+        val missing = if (hasChain || sources.isEmpty()) {
+            emptyList()
+        } else {
+            val cards = LinkedHashSet<ModelCard>()
+            for (source in sources) {
+                cards.addAll(
+                    TranslationModelSelector.missingChain(catalogCards, translationModels, source, target)
+                )
+            }
+            cards.toList()
+        }
+
+        _uiState.value = state.copy(
+            hasTranslationModel = hasChain,
+            missingModels = missing,
+            downloadingProgress = translationModels
+                .filter { it.status == ModelStatus.DOWNLOADING }
+                .associate { it.id to it.progress }
+        )
+    }
+
+    /**
+     * Начать скачивание всех недостающих для текущего направления моделей
+     * (карточка подсказки на экране «Перевод», issue #33). Уже скачиваемые
+     * модели пропускаются.
+     */
+    fun downloadMissingModels() {
+        val state = _uiState.value
+        for (card in state.missingModels) {
+            if (!state.downloadingProgress.containsKey(card.id)) {
+                modelManager.startDownload(card)
+            }
+        }
     }
 
     private fun update(transform: (TranslateUiState) -> TranslateUiState) {

@@ -15,14 +15,34 @@ object TranslationModelSelector {
     private val DIRECTION_REGEX = Regex("""([a-z]+)\s*→\s*([a-z]+)""")
 
     /**
-     * Определяет направление модели (from→to).
+     * Определяет направление установленной модели (from→to).
      * @return пара (исходный, целевой) или null, если направление не определено.
      */
-    fun directionOf(model: InstalledModel): Pair<String, String>? {
-        val langs = model.languages.toSet()
+    fun directionOf(model: InstalledModel): Pair<String, String>? =
+        directionOfFields(model.id, model.displayName, model.description, model.languages)
+
+    /**
+     * Определяет направление модели из каталога (from→to) по тем же признакам,
+     * что и для установленных моделей (issue #33).
+     * @return пара (исходный, целевой) или null, если направление не определено.
+     */
+    fun directionOf(card: ModelCard): Pair<String, String>? =
+        directionOfFields(card.id, card.displayName, card.description, card.languages)
+
+    /**
+     * Общая логика определения направления по полям модели
+     * (id, имя, описание, языки) — общая для каталога и установленных моделей.
+     */
+    private fun directionOfFields(
+        rawId: String,
+        displayName: String,
+        description: String,
+        languages: List<String>
+    ): Pair<String, String>? {
+        val langs = languages.toSet()
 
         // 1) Явная стрелка в имени/описании: "RU→EN", "ru→en".
-        val text = (model.displayName + " " + model.description).lowercase()
+        val text = (displayName + " " + description).lowercase()
         for (m in DIRECTION_REGEX.findAll(text)) {
             val a = m.groupValues[1]
             val b = m.groupValues[2]
@@ -30,7 +50,7 @@ object TranslationModelSelector {
         }
 
         // 2) Пара кодов языков через разделитель в id: "ru-en", "en-ru".
-        val id = model.id.lowercase()
+        val id = rawId.lowercase()
         val parts = id.split('-', '_', ' ')
         for (i in 0 until parts.size - 1) {
             val a = parts[i]
@@ -40,11 +60,11 @@ object TranslationModelSelector {
 
         // 3) IndicTrans2: "indic-en" (из индийских в en) / "en-indic" (из en в индийские).
         if (id.contains("indic-en")) {
-            val src = model.languages.firstOrNull { it != HUB_LANG } ?: return null
+            val src = languages.firstOrNull { it != HUB_LANG } ?: return null
             return src to HUB_LANG
         }
         if (id.contains("en-indic")) {
-            val tgt = model.languages.firstOrNull { it != HUB_LANG } ?: return null
+            val tgt = languages.firstOrNull { it != HUB_LANG } ?: return null
             return HUB_LANG to tgt
         }
 
@@ -68,5 +88,50 @@ object TranslationModelSelector {
         if (toHub != null && fromHub != null) return listOf(toHub, fromHub)
 
         return null
+    }
+
+    /**
+     * Подбирает недостающие звенья цепочки from→to из каталога (issue #33):
+     * карточки категории TRANSLATION, образующие прямую цепочку или цепочку
+     * через английский, за исключением звеньев, уже покрытых установленными
+     * (готовыми) моделями.
+     *
+     * @return карточки для скачивания; пустой список, если цепочка уже
+     *         установлена или каталог её не покрывает.
+     */
+    fun missingChain(
+        catalog: List<ModelCard>,
+        installed: List<InstalledModel>,
+        from: String,
+        to: String
+    ): List<ModelCard> {
+        if (from == to) return emptyList()
+
+        // Цепочка уже закрыта готовыми установленными моделями.
+        val ready = installed.filter { it.isReady }
+        if (selectChain(ready, from, to) != null) return emptyList()
+
+        val translationCatalog = catalog.filter { it.category == ModelCategory.TRANSLATION }
+
+        // Карточка каталога для звена нужна, если это звено не закрыто
+        // готовой моделью (по id каталога или по направлению).
+        fun neededCard(direction: Pair<String, String>): ModelCard? {
+            val card = translationCatalog.firstOrNull { directionOf(it) == direction } ?: return null
+            val covered = ready.any { it.id == card.id || directionOf(it) == direction }
+            return if (covered) null else card
+        }
+
+        // Прямая цепочка имеет приоритет, как в selectChain.
+        val direct = translationCatalog.firstOrNull { directionOf(it) == (from to to) }
+        if (direct != null) {
+            return neededCard(from to to)?.let { listOf(it) } ?: emptyList()
+        }
+
+        // Цепочка через хаб: каталог должен покрывать оба звена.
+        val toHub = translationCatalog.firstOrNull { directionOf(it) == (from to HUB_LANG) }
+        val fromHub = translationCatalog.firstOrNull { directionOf(it) == (HUB_LANG to to) }
+        if (toHub == null || fromHub == null) return emptyList()
+
+        return listOfNotNull(neededCard(from to HUB_LANG), neededCard(HUB_LANG to to))
     }
 }
