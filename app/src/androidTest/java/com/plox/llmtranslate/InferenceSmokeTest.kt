@@ -126,6 +126,19 @@ class InferenceSmokeTest {
         runBlocking { engine.release() }
     }
 
+    /**
+     * Вывод не должен содержать следов дубля: повтор, не схлопнутый триммером,
+     * означает, что рантайм вернул артефакт декодера (issue #28, issue #30).
+     */
+    private fun assertNoDuplication(text: String) {
+        assertTrue("Пустой перевод", text.isNotBlank())
+        assertEquals(
+            "Остался повтор в выводе: «$text»",
+            text,
+            RepetitionTrimmer.trim(text)
+        )
+    }
+
     @Test
     fun indicTransEnNeWelcomeTranslation() {
         val dir = modelDir("INDICTRANS_ONNX", "indictrans2-en-indic-int8")
@@ -143,13 +156,41 @@ class InferenceSmokeTest {
         assertTrue("Ошибка перевода: ${result.exceptionOrNull()}", result.isSuccess)
         val text = result.getOrThrow()
         println("INDICTRANS EN->NE: «Welcome» => $text")
-        assertTrue("Пустой перевод", text.isNotBlank())
         // Артефакт «स्वागत छ स्वागत छ ।» должен быть схлопнут триммером.
-        assertEquals(
-            "Остался повтор в выводе: «$text»",
-            text,
-            RepetitionTrimmer.trim(text)
+        assertNoDuplication(text)
+
+        // Диагностика бага issue #30: дубль ОДНОГО слова («Hello» =>
+        // «नमस्कार , नमस्कार ।») — тоже обязан быть схлопнут.
+        val hello = runBlocking { engine.translate("Hello", "en", "ne") }
+        assertTrue("Ошибка перевода: ${hello.exceptionOrNull()}", hello.isSuccess)
+        val helloText = hello.getOrThrow()
+        println("INDICTRANS EN->NE: «Hello» => $helloText")
+        assertNoDuplication(helloText)
+        runBlocking { engine.release() }
+    }
+
+    /**
+     * Issue #30: NE→EN одиночное слово «नमस्कार» — IndicTrans2 дублировал
+     * перевод («Hello , Hello .»). Вывод обязан быть без дубля.
+     */
+    @Test
+    fun indicTransIndicEnDuplication() {
+        val dir = modelDir("INDICTRANS_ONNX", "indictrans2-indic-en-int8")
+        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        val model = readyModel(
+            "indictrans2-indic-en-int8", ModelCategory.TRANSLATION,
+            RuntimeType.INDICTRANS_ONNX, dir.absolutePath
         )
+        val engine = IndicTransOnnxRuntime()
+        val error = runBlocking { engine.ensureLoaded(model) }
+        assertTrue("Ошибка загрузки: $error", error == null)
+
+        val neText = "नमस्कार"
+        val result = runBlocking { engine.translate(neText, "ne", "en") }
+        assertTrue("Ошибка перевода: ${result.exceptionOrNull()}", result.isSuccess)
+        val text = result.getOrThrow()
+        println("INDICTRANS NE->EN: «$neText» => $text")
+        assertNoDuplication(text)
         runBlocking { engine.release() }
     }
 

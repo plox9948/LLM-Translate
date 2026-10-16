@@ -46,11 +46,55 @@ class RepetitionTrimmerTest {
 
     @Test
     fun `single word repeats are never touched`() {
-        // Легитимная эмфаза и полное дублирование одного слова — не трогается.
+        // Легитимная эмфаза и полное дублирование одного слова без
+        // обрамляющей пунктуации — не трогается (правило 2 не срабатывает).
         assertEquals("very very good", RepetitionTrimmer.trim("very very good"))
         assertEquals("hi hi", RepetitionTrimmer.trim("hi hi"))
         assertEquals("да да да", RepetitionTrimmer.trim("да да да"))
         assertEquals("да да да да", RepetitionTrimmer.trim("да да да да"))
+    }
+
+    @Test
+    fun `collapses single word tail duplicate separated by punctuation from issue 30`() {
+        // «Hello» => «नमस्कार , नमस्कार ।» (EN->NE, issue #30).
+        assertEquals(
+            "नमस्कार ।",
+            RepetitionTrimmer.trim("नमस्कार , नमस्कार ।")
+        )
+        // «नमस्कार» => «Hello , Hello .» (NE->EN, issue #30).
+        assertEquals(
+            "Hello .",
+            RepetitionTrimmer.trim("Hello , Hello .")
+        )
+    }
+
+    @Test
+    fun `collapses single word duplicate with attached punctuation and mixed case`() {
+        // Пунктуация прилипает к первому вхождению, регистр разный — тот же дубль.
+        assertEquals(
+            "Привет, .",
+            RepetitionTrimmer.trim("Привет, привет .")
+        )
+        assertEquals(
+            "hello .",
+            RepetitionTrimmer.trim("hello , HELLO .")
+        )
+        // Замыкающая пунктуация второго вхождения переносится отдельным токеном.
+        assertEquals(
+            "Hello .",
+            RepetitionTrimmer.trim("Hello , Hello.")
+        )
+    }
+
+    @Test
+    fun `single word duplicate without punctuation is emphasis and kept`() {
+        // Критерий: без единого знака препинания между/после — не трогаем.
+        assertEquals("да да", RepetitionTrimmer.trim("да да"))
+        assertEquals(
+            "X X X",
+            RepetitionTrimmer.trim("X X X")
+        )
+        assertEquals("thank you very much", RepetitionTrimmer.trim("thank you very much"))
     }
 
     @Test
@@ -102,6 +146,14 @@ class RepetitionTrimmerTest {
         val onceRu = RepetitionTrimmer.trim("спасибо вам спасибо вам спасибо вам друг")
         assertEquals("спасибо вам друг", onceRu)
         assertEquals(onceRu, RepetitionTrimmer.trim(onceRu))
+        // Правило 2 тоже идемпотентно: хвост «.» остаётся, дубля больше нет.
+        val onceEn = RepetitionTrimmer.trim("नमस्कार , नमस्कार ।")
+        assertEquals(onceEn, RepetitionTrimmer.trim(onceEn))
+        // Цепной двойной дубль схлопывается итеративно до одного вхождения.
+        assertEquals(
+            "Hello .",
+            RepetitionTrimmer.trim("Hello , Hello . Hello , Hello .")
+        )
     }
 
     @Test
