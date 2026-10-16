@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -38,7 +39,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -53,6 +56,9 @@ fun TranslateScreen(
     viewModel: TranslateViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // Буфер обмена для кнопки копирования результата.
+    val clipboard = LocalClipboardManager.current
 
     // Разрешение на запись с микрофона.
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -207,6 +213,18 @@ fun TranslateScreen(
                             style = MaterialTheme.typography.labelMedium
                         )
                         Spacer(modifier = Modifier.weight(1f))
+                        // Копирование перевода в буфер обмена.
+                        IconButton(
+                            onClick = {
+                                clipboard.setText(AnnotatedString(state.resultText))
+                            },
+                            enabled = state.resultText.isNotEmpty()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.ContentCopy,
+                                contentDescription = stringResource(R.string.translate_copy_cd)
+                            )
+                        }
                         // Озвучивание.
                         IconButton(onClick = {
                             if (state.isSpeaking) viewModel.stopSpeaking()

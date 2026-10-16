@@ -317,7 +317,19 @@ class IndicTransOnnxRuntime @Inject constructor() : TranslationEngine {
                         }
 
                         // Декодирование (skip-специальные), id зажимаем размером словаря.
-                        resultText = tgtTok.decode(generatedIds.map { clampId(it, tgtDictSize) })
+                        val rawText = tgtTok.decode(generatedIds.map { clampId(it, tgtDictSize) })
+                        Timber.d(
+                            "IndicTrans: сгенерировано ${generatedIds.size} токенов, " +
+                                "сырой вывод: «$rawText»"
+                        )
+                        // Дедупликация полного повтора фразы декодером (issue #28):
+                        // post-processing без штрафов в логитах — penalty менял
+                        // бы качество IndicTrans2-переводов (у Marian свой penalty).
+                        val trimmed = RepetitionTrimmer.trim(rawText)
+                        if (trimmed != rawText) {
+                            Timber.d("IndicTrans: схлопнут повтор: «$rawText» => «$trimmed»")
+                        }
+                        resultText = trimmed
                     } finally {
                         encOutput.close()
                     }

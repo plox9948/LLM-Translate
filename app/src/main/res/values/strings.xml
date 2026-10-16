@@ -30,6 +30,7 @@
     <string name="translate_in_progress">Перевод…</string>
     <string name="translate_no_model">Скачайте модель перевода на экране «Модели»</string>
     <string name="translate_speak_cd">Озвучить</string>
+    <string name="translate_copy_cd">Скопировать перевод</string>
     <string name="translate_recording_hint">● Идёт запись… Нажмите на микрофон, чтобы остановить</string>
     <string name="translate_select_language">Выберите язык</string>
     <string name="translate_clear">Очистить</string>

@@ -30,6 +30,7 @@
     <string name="translate_in_progress">Translating…</string>
     <string name="translate_no_model">Download a translation model on the \"Models\" screen</string>
     <string name="translate_speak_cd">Read aloud</string>
+    <string name="translate_copy_cd">Copy translation</string>
     <string name="translate_recording_hint">● Recording… Tap the microphone to stop</string>
     <string name="translate_select_language">Select language</string>
     <string name="translate_clear">Clear</string>
