@@ -51,8 +51,7 @@ class ModelRamProfileTest {
         Target("firefox-bergamot-en-ru", "MARIAN_SLIMT", ModelCategory.TRANSLATION, RuntimeType.MARIAN_SLIMT),
         Target("indictrans2-indic-en-int8", "INDICTRANS_ONNX", ModelCategory.TRANSLATION, RuntimeType.INDICTRANS_ONNX),
         Target("indictrans2-en-indic-int8", "INDICTRANS_ONNX", ModelCategory.TRANSLATION, RuntimeType.INDICTRANS_ONNX),
-        Target("stt-ru-zipformer-2024-09-18", "SHERPA", ModelCategory.STT, RuntimeType.SHERPA),
-        Target("stt-ru-gigaam-v2-ctc", "SHERPA", ModelCategory.STT, RuntimeType.SHERPA),
+        Target("stt-ru-gigaam-v3-ctc", "SHERPA", ModelCategory.STT, RuntimeType.SHERPA),
         Target("stt-en-parakeet-110m", "SHERPA", ModelCategory.STT, RuntimeType.SHERPA),
         Target("stt-ne-indicconformer", "SHERPA", ModelCategory.STT, RuntimeType.SHERPA),
         Target("stt-whisper-small-multilingual", "SHERPA", ModelCategory.STT, RuntimeType.SHERPA)

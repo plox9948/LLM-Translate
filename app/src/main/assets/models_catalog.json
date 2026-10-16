@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "models": [
     {
       "id": "firefox-bergamot-en-ru",
@@ -150,32 +150,10 @@
       "recommendedRamMb": 3072
     },
     {
-      "id": "stt-ru-zipformer-2024-09-18",
+      "id": "stt-ru-gigaam-v3-ctc",
       "category": "STT",
-      "displayName": "Zipformer RU (sherpa-onnx)",
-      "description": "Transducer, русский, ~90 МБ (int8)",
-      "runtime": "SHERPA",
-      "sizeBytes": 94371840,
-      "ramRequiredMb": 310,
-      "languages": [
-        "ru"
-      ],
-      "quality": 4,
-      "speed": 5,
-      "url": "",
-      "urls": [
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ru-2024-09-18.tar.bz2"
-      ],
-      "sha256": "7659a018a61d9774672720ce653a253e97e707d8bb7ccabd44a80e992d4ab121",
-      "license": "Apache-2.0",
-      "minAndroidSdk": 26,
-      "recommendedRamMb": 2048
-    },
-    {
-      "id": "stt-ru-gigaam-v2-ctc",
-      "category": "STT",
-      "displayName": "GigaAM v2 RU (sherpa-onnx)",
-      "description": "NeMo CTC, русский, ~230 МБ",
+      "displayName": "GigaAM v3 RU (sherpa-onnx)",
+      "description": "NeMo CTC, русский, ~230 МБ (int8)",
       "runtime": "SHERPA",
       "sizeBytes": 241172480,
       "ramRequiredMb": 320,
@@ -186,9 +164,9 @@
       "speed": 4,
       "url": "",
       "urls": [
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-giga-am-v2-russian-2025-04-19.tar.bz2"
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-ctc-giga-am-v3-russian-2025-12-16.tar.bz2"
       ],
-      "sha256": "777be8717d8aaf04861823671290f7687f7579fd9ac63a2124955573f920caf5",
+      "sha256": "e1291d704460cab4a01716081170c86c12f6b15338a1534f71cc5956922adb52",
       "license": "Apache-2.0",
       "minAndroidSdk": 26,
       "recommendedRamMb": 2560

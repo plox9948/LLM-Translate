@@ -215,16 +215,16 @@ class InferenceSmokeTest {
     }
 
     @Test
-    fun sherpaZipformerSttLoads() {
-        val dir = modelDir("SHERPA", "stt-ru-zipformer-2024-09-18")
+    fun sherpaGigaAmV3SttLoads() {
+        val dir = modelDir("SHERPA", "stt-ru-gigaam-v3-ctc")
         assertTrue("Каталог модели не найден: $dir", dir.exists())
         val model = readyModel(
-            "stt-ru-zipformer-2024-09-18", ModelCategory.STT,
+            "stt-ru-gigaam-v3-ctc", ModelCategory.STT,
             RuntimeType.SHERPA, dir.absolutePath
         )
         val engine = SherpaSttEngine()
         val error = runBlocking { engine.ensureLoaded(model) }
-        assertTrue("Ошибка загрузки sherpa-модели (transducer): $error", error == null)
+        assertTrue("Ошибка загрузки sherpa-модели (nemo ctc): $error", error == null)
         runBlocking { engine.release() }
     }
 

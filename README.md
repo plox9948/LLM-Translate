@@ -7,7 +7,7 @@
 
 - **Перевод текста** между русским, английским и непальским через локальные модели
   (языковые паки Firefox Translations / Bergamot RU⇄EN, IndicTrans2 для непальского).
-- **Распознавание речи** (STT) через sherpa-onnx: Zipformer/GigaAM (ru), Parakeet (en),
+- **Распознавание речи** (STT) через sherpa-onnx: GigaAM v3 (ru), Parakeet (en),
   IndicConformer (ne), Whisper Small (мультиязычный).
 - **Синтез речи** (TTS) через системный Android TextToSpeech
   (с поддержкой RHVoice / eSpeak NG как альтернативных движков).
@@ -258,8 +258,7 @@ sherpa — по таймауту фонового простоя. Таймаут
 | Firefox Translations RU→EN (Bergamot/slimt, int8 intgemm) | Перевод | ru⇄en | 21 МБ | 300 МБ | 2 ГБ |
 | IndicTrans2 (Indic→EN, int8) | Перевод | ne→en | ~320 МБ | 650 МБ | 3 ГБ |
 | IndicTrans2 (EN→Indic, int8) | Перевод | en→ne | ~320 МБ | 600 МБ | 3 ГБ |
-| Zipformer RU (sherpa-onnx) | STT | ru | ~90 МБ (int8) | 310 МБ | 2 ГБ |
-| GigaAM v2 RU (sherpa-onnx) | STT | ru | ~230 МБ | 320 МБ | 2.5 ГБ |
+| GigaAM v3 RU (sherpa-onnx) | STT | ru | ~230 МБ (int8) | 320 МБ | 2.5 ГБ |
 | Parakeet 110M EN (sherpa-onnx) | STT | en | ~110 МБ (int8) | 250 МБ | 2 ГБ |
 | IndicConformer NE (sherpa-onnx) | STT | ne | ~190 МБ (int8) | 280 МБ | 2.5 ГБ |
 | Whisper Small Multilingual (sherpa-onnx) | STT | ru/en/ne | ~360 МБ (int8) | 700 МБ | 3 ГБ |
@@ -284,9 +283,7 @@ v0.4.1+ (issue #32): инструментационный тест `ModelRamProf
 | Firefox Translations RU→EN (Bergamot/slimt) | 232 МБ (+85) | 233 МБ | 150 МБ (+3) |
 | IndicTrans2 indic→EN (int8) | 475 МБ (+328) | 549 МБ | 167 МБ (+20) |
 | IndicTrans2 EN→indic (int8) | 569 МБ (+422) | 659 МБ | 167 МБ (+20) |
-| Zipformer RU fp32 (текущая сборка выбирает fp32 при его наличии) | 542 МБ (+395) | 810 МБ | 168 МБ (+21) |
-| Zipformer RU int8 | 332 МБ (+181) | 389 МБ | 168 МБ (+17) |
-| GigaAM v2 CTC RU | 419 МБ (+272) | 420 МБ | 167 МБ (+20) |
+| GigaAM v3 CTC RU | 419 МБ (+272) | 420 МБ | 167 МБ (+20) |
 | Parakeet 110M EN | 358 МБ (+211) | 360 МБ | 167 МБ (+20) |
 | IndicConformer NE | 388 МБ (+241) | 410 МБ | 168 МБ (+21) |
 | Whisper Small Multilingual | 912 МБ (+765) | 928 МБ | 168 МБ (+21) |
@@ -308,11 +305,7 @@ v0.4.1+ (issue #32): инструментационный тест `ModelRamProf
 - Whisper: пик при смене языка (пересоздание распознавателем) в текущей серии
   не переснимался — тест выполняет один transcribe; steady +765 МБ, пик в рамках
   одного распознавания ~928 МБ. На устройствах с 4 ГБ ОЗУ для распознавания лучше
-  использовать Zipformer/GigaAM, Whisper — при 6 ГБ.
-- Zipformer: текущая сборка при наличии fp32-файлов в каталоге модели грузит их —
-  дельта примерно вдвое выше int8 (steady +395 МБ против +181 МБ, пик 810 против
-  389 МБ). Рекомендация: не держать fp32- и int8-файлы одной модели в одном
-  каталоге.
+  использовать GigaAM, Whisper — при 6 ГБ.
 - slimt (Bergamot): файл модели отображается в память через **mmap**, поэтому
   `Debug.MemoryInfo` в `ModelRamProfileTest` показывает дельту 0 (mmap-страницы
   в него не входят). Честные числа даёт только **TOTAL PSS из `dumpsys meminfo`
@@ -383,10 +376,9 @@ llm_translate_backup.zip
     │       ├── lex.50.50.ruen.s2t.bin
     │       └── vocab.ruen.spm
     └── SHERPA/
-        └── stt-ru-zipformer-2024-09-18/
-            ├── encoder.int8.onnx
-            ├── decoder.int8.onnx
-            └── joiner.int8.onnx
+        └── stt-ru-gigaam-v3-ctc/
+            ├── model.int8.onnx
+            └── tokens.txt
 ```
 
 **manifest.json** — список моделей с путями:
@@ -426,7 +418,7 @@ llm_translate_backup.zip
 ```json
 {
   "activeTranslation": "firefox-bergamot-ru-en",
-  "activeStt": "stt-ru-zipformer-2024-09-18",
+  "activeStt": "stt-ru-gigaam-v3-ctc",
   "activeTts": "tts-system",
   "ttsEngine": "system",
   "uiLanguage": "ru",
