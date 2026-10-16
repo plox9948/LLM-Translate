@@ -59,6 +59,15 @@ class MainActivity : ComponentActivity() {
         private var backgroundUnload: BackgroundUnloadScheduler? = null
 
         /**
+         * Признак выполненной регистрации [processReleaseObserver]: onCreate
+         * вызывается и после recreate() (смена языка), а addObserver одного и
+         * того же экземпляра на ProcessLifecycleOwner повторно увеличивает
+         * счётчик — колбэки дублировались бы.
+         */
+        @Volatile
+        private var observerRegistered = false
+
+        /**
          * Единственный на процесс observer разгрузки: регистрируется один раз
          * при первом создании активности и не снимается. Анонимный observer
          * в каждом onCreate() накапливал наблюдателей, удерживая уничтоженные
@@ -68,15 +77,6 @@ class MainActivity : ComponentActivity() {
          * (читается на момент сворачивания); ON_START процесса — отменяет её,
          * если пользователь вернулся до истечения тайм-аута.
          */
-        /**
-         * Признак выполненной регистрации [processReleaseObserver]: onCreate
-         * вызывается и после recreate() (смена языка), а addObserver одного и
-         * того же экземпляра на ProcessLifecycleOwner повторно увеличивает
-         * счётчик — колбэки дублировались бы.
-         */
-        @Volatile
-        private var observerRegistered = false
-
         private val processReleaseObserver = object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 backgroundUnload?.cancel()
