@@ -106,6 +106,38 @@ class EngineModelCacheTest {
     }
 
     @Test
+    fun `remove drops only deleted model and keeps others`() {
+        // Issue #40: путь удаления модели — remove(id) возвращает пучок для
+        // освобождения, остальные записи и их порядок использования целы.
+        val cache = EngineModelCache<String>(capacity = 3)
+        cache.put("ru-en", "A")
+        cache.put("en-ru", "B")
+        cache.get("ru-en")
+
+        assertEquals("B", cache.remove("en-ru"))
+        assertNull(cache.get("en-ru"))
+        assertEquals(1, cache.size)
+        // Оставшийся пучок — самый недавно использованный, при эвикции
+        // сверх ёмкости он не вытесняется.
+        cache.put("ru-ne", "C")
+        cache.put("ne-ru", "D")
+        assertTrue(cache.evictOverCapacity().isEmpty())
+        assertEquals(listOf("ru-en", "ru-ne", "ne-ru"), cache.all().map { it.first })
+    }
+
+    @Test
+    fun `cache empty after removing the only entry`() {
+        val cache = EngineModelCache<String>(capacity = 3)
+        cache.put("only", "A")
+
+        assertEquals("A", cache.remove("only"))
+
+        assertTrue(cache.all().isEmpty())
+        assertEquals(0, cache.size)
+        assertNull(cache.get("only"))
+    }
+
+    @Test
     fun `values are returned by identity`() {
         val cache = EngineModelCache<Any>(capacity = 2)
         val value = Any()

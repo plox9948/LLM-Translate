@@ -320,6 +320,12 @@ abstract class BaseDownloader {
     /**
      * Скачать несколько файлов в каталог модели (прогресс суммируется).
      * Каждый файл сверяется со своим SHA-256 из [sha256s] (null — пропуск).
+     * Уже скачанные целевые файлы предыдущих попыток не перекачиваются:
+     * при WorkManager-повторе (issue #40) завершённые файлы пакета
+     * пересчитываются по SHA-256 (дорого, но дешевле повторной загрузки GB-файла)
+     * и пропускаются; без контрольной суммы доверяемся целому целевому файлу
+     * (он появляется только после полной загрузки, переименованием из `.part`)
+     * при отсутствии не завершённой докачки рядом.
      * @return результат: [DownloadOutcome.Success] с путём к каталогу.
      */
     protected suspend fun downloadFiles(
@@ -334,7 +340,17 @@ abstract class BaseDownloader {
 
         urls.forEachIndexed { index, url ->
             val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
-            val fileOutcome = downloadFile(url, modelDir, fileName, sha256s.getOrNull(index)) { fileProgress ->
+            val expectedSha = sha256s.getOrNull(index)
+            val doneFile = File(modelDir, fileName)
+            if (doneFile.isFile && canReuseDownloaded(doneFile, expectedSha)) {
+                Timber.d("Файл $fileName уже скачан ранее — пропуск загрузки")
+                // Мусор докачки от прерванной попытки рядом с целым целевым
+                // файлом больше не нужен.
+                discardPart(File(modelDir, "$fileName.part"), File(modelDir, "$fileName.part.meta"))
+                onProgress(scaleFileProgress(index, urls.size, 100))
+                return@forEachIndexed
+            }
+            val fileOutcome = downloadFile(url, modelDir, fileName, expectedSha) { fileProgress ->
                 // Прогресс по всем файлам: вес каждого файла одинаков.
                 onProgress(scaleFileProgress(index, urls.size, fileProgress))
             }
@@ -346,6 +362,18 @@ abstract class BaseDownloader {
         }
         onProgress(100)
         return DownloadOutcome.Success(modelDir)
+    }
+
+    /**
+     * Можно ли переиспользовать уже существующий целевой файл вместо загрузки.
+     * С известной контрольной суммой — сверяем SHA-256 (пересчёт дешевле
+     * перекачки); без неё — доверяем факту существования файла, если рядом
+     * нет незавершённой `.part` докачки (она означает прерванную попытку,
+     * а целевой файл мог остаться от другого содержимого источника).
+     */
+    private suspend fun canReuseDownloaded(doneFile: File, expectedSha: String?): Boolean {
+        if (!expectedSha.isNullOrBlank()) return verifySha256(doneFile, expectedSha)
+        return File(doneFile.parentFile, "${doneFile.name}.part").length() == 0L
     }
 
     /**

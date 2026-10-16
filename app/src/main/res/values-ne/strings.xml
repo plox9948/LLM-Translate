@@ -81,6 +81,10 @@
     <string name="models_category_translation">अनुवाद (LLM)</string>
     <string name="models_category_stt">वाणी पहिचान (STT)</string>
     <string name="models_category_tts">वाणी संश्लेषण (TTS)</string>
+    <string name="models_import_done">मोडेल आयात गरियो।</string>
+    <string name="models_import_failed">मोडेल आयात असफल भयो</string>
+    <string name="models_export_done">मोडेल निर्यात गरियो।</string>
+    <string name="models_export_failed">मोडेल निर्यात असफल भयो</string>
 
     <!-- Экран «Настройки» -->
     <string name="settings_tts_engine">वाणी संश्लेषण इन्जिन</string>

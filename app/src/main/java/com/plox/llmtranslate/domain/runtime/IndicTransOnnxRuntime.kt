@@ -434,6 +434,25 @@ class IndicTransOnnxRuntime @Inject constructor(
     }
 
     /**
+     * Извлечь и освободить пучок модели [modelId] (удаление модели, issue #40).
+     * Ждёт окончания активного инференса под [sessionMutex]; если пучок был
+     * активным — сбрасывает [activeId] и публикует новый список
+     * [loadedModels]. Отсутствующий в кэше id — no-op.
+     */
+    override suspend fun releaseModel(modelId: String) {
+        sessionMutex.withLock {
+            cache.remove(modelId)?.let { bundle ->
+                bundle.release()
+                Timber.d("IndicTrans: пучок удалённой модели $modelId освобождён")
+            }
+            if (activeId == modelId) {
+                activeId = null
+            }
+            publishLoadedUnlocked()
+        }
+    }
+
+    /**
      * Непосредственная разгрузка всех пучков. Вызывать только под [sessionMutex],
      * чтобы не пересекаться с активным инференсом.
      */

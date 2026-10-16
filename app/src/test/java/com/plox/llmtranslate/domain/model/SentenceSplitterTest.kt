@@ -59,6 +59,40 @@ class SentenceSplitterTest {
     }
 
     @Test
+    fun `short word before period is a real boundary`() {
+        // Issue #40: эвристика «слово 1-3 буквы = сокращение» глушила
+        // границу после «you.» — теперь режет корректно.
+        assertEquals(
+            listOf("Thank you.", "Good night."),
+            SentenceSplitter.split("Thank you. Good night.")
+        )
+    }
+
+    @Test
+    fun `english abbreviation keeps sentence together`() {
+        assertEquals(
+            listOf("Mr. Smith went home.", "He locked the door."),
+            SentenceSplitter.split("Mr. Smith went home. He locked the door.")
+        )
+    }
+
+    @Test
+    fun `capital city abbreviation with trailing dot is not a boundary`() {
+        assertEquals(
+            listOf("Мы приехали в Г. Москве.", "Погода ясная."),
+            SentenceSplitter.split("Мы приехали в Г. Москве. Погода ясная.")
+        )
+    }
+
+    @Test
+    fun `initials are not sentence boundaries`() {
+        assertEquals(
+            listOf("А. С. Пушкин писал стихи.", "Он жил в Михайловском."),
+            SentenceSplitter.split("А. С. Пушкин писал стихи. Он жил в Михайловском.")
+        )
+    }
+
+    @Test
     fun `single sentence returned as is`() {
         assertEquals(
             listOf("A man in a knitted fleece smiles."),

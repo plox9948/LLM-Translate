@@ -144,6 +144,11 @@ fun ModelsScreen(
     // Запуск экспорта бэкапа при появлении запроса.
     LaunchedEffect(uiState.backupExportRequest) {
         uiState.backupExportRequest?.let { request ->
+            // Сброс ДО launch(): при recreation активности с открытым пикером
+            // эффект не поднимет второй пикер поверх первого — запрос живёт
+            // только в лаунчере; отмена (uri == null) чистится колбэком
+            // результата onBackupExportResult (issue #40).
+            viewModel.consumeBackupExportRequest()
             backupExportLauncher.launch(request.fileName)
         }
     }
@@ -158,6 +163,9 @@ fun ModelsScreen(
     // Запуск экспорта при появлении запроса.
     LaunchedEffect(uiState.exportRequest) {
         uiState.exportRequest?.let { request ->
+            // Как с бэкапом: запрос обнуляется до launch(), содержимое
+            // остаётся в VM до колбэка результата (issue #40).
+            viewModel.consumeExportRequest()
             exportLauncher.launch(request.fileName)
         }
     }

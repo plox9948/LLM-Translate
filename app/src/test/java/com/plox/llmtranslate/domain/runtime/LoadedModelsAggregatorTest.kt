@@ -44,6 +44,10 @@ class LoadedModelsAggregatorTest {
         override suspend fun release() {
             state.value = emptyList()
         }
+
+        override suspend fun releaseModel(modelId: String) {
+            state.value = state.value.filterNot { it.modelId == modelId }
+        }
     }
 
     /** Фейковый STT-движок. */
@@ -68,6 +72,10 @@ class LoadedModelsAggregatorTest {
 
         override suspend fun release() {
             state.value = emptyList()
+        }
+
+        override suspend fun releaseModel(modelId: String) {
+            state.value = state.value.filterNot { it.modelId == modelId }
         }
     }
 
@@ -182,6 +190,34 @@ class LoadedModelsAggregatorTest {
 
         marian.release()
         assertEquals(emptyList<LoadedModelInfo>(), snapshot())
+    }
+
+    @Test
+    fun `releaseModel drops only the deleted model from loaded list`() = runTest {
+        // Issue #40: удаление модели освобождает её пучок в движке —
+        // loadedModels перестаёт содержать id, остальные модели целы.
+        marian.ensureLoaded(translation("opus-ru-en", "Opus-MT Tiny (RU→EN)", 480))
+        indicTrans.ensureLoaded(translation("indictrans-en-ne", "IndicTrans2 (EN→Ne)", 650))
+        stt.ensureLoaded(sttModel("zipformer-ru", "Zipformer (RU)", 310))
+
+        marian.releaseModel("opus-ru-en")
+
+        assertEquals(
+            listOf(
+                LoadedModelInfo("indictrans-en-ne", "IndicTrans2 (EN→Ne)", ModelCategory.TRANSLATION, 650),
+                LoadedModelInfo("zipformer-ru", "Zipformer (RU)", ModelCategory.STT, 310)
+            ),
+            snapshot()
+        )
+
+        marian.releaseModel("opus-ru-en")
+        assertEquals(
+            listOf(
+                LoadedModelInfo("indictrans-en-ne", "IndicTrans2 (EN→Ne)", ModelCategory.TRANSLATION, 650),
+                LoadedModelInfo("zipformer-ru", "Zipformer (RU)", ModelCategory.STT, 310)
+            ),
+            snapshot()
+        )
     }
 
     @Test

@@ -1,8 +1,10 @@
 package com.plox.llmtranslate.ui.models
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.backup.ModelBackupManager
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.DiskUsage
@@ -19,6 +21,7 @@ import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import com.plox.llmtranslate.domain.runtime.ProcessMemoryReader
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -75,7 +78,10 @@ class ModelsViewModel @Inject constructor(
     private val modelManager: ModelManager,
     private val backupManager: ModelBackupManager,
     private val processMemoryReader: ProcessMemoryReader,
-    private val preferences: ModelPreferences
+    private val preferences: ModelPreferences,
+    // Прикладной контекст — только для локализованных статусных сообщений
+    // импорта/экспорта (значения из ресурсов, утечки нет).
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     internal companion object {
@@ -284,7 +290,16 @@ class ModelsViewModel @Inject constructor(
 
     fun onImportResult(uri: Uri) {
         viewModelScope.launch {
-            modelManager.importFromUri(uri)
+            // Результат импорта показываем статусным сообщением, как в
+            // бэкап-ветках: молчаливый null при ошибке не оставлял UI без ответа.
+            val imported = modelManager.importFromUri(uri) != null
+            _uiState.value = _uiState.value.copy(
+                statusMessage = if (imported) {
+                    context.getString(R.string.models_import_done)
+                } else {
+                    context.getString(R.string.models_import_failed)
+                }
+            )
         }
     }
 
@@ -302,6 +317,15 @@ class ModelsViewModel @Inject constructor(
     }
 
     /**
+     * Pending-запрос экспорта модели: live-копия хранится в
+     * [ModelsUiState.exportRequest] только до запуска SAF-пикера, далее —
+     * здесь (до колбэка результата), чтобы recreation активности с открытым
+     * пикером не перезапускала эффект и второй пикер не вставал поверх
+     * первого (issue #40).
+     */
+    private var pendingExportRequest: ExportRequest? = null
+
+    /**
      * Подготовить запрос экспорта модели (UI запустит SAF-лаунчер).
      */
     fun onExportClick(model: InstalledModel) {
@@ -315,24 +339,56 @@ class ModelsViewModel @Inject constructor(
             source.isDirectory -> "zip"
             else -> "gguf"
         }
+        val request = ExportRequest(model.id, "${model.displayName}.$finalExt")
+        pendingExportRequest = request
+        // exportingModelId ставится сразу: карточка заблокирована на всё время
+        // выбора цели в пикере и записи ZIP (issue #31), даже когда
+        // exportRequest уже обнулён после запуска пикера.
         _uiState.value = _uiState.value.copy(
-            exportRequest = ExportRequest(model.id, "${model.displayName}.$finalExt")
+            exportRequest = request,
+            exportingModelId = model.id
         )
+    }
+
+    /**
+     * Обнучить показанный запрос экспорта — вызывается UI сразу после launch()
+     * пикера; содержимое запроса остаётся в [pendingExportRequest] до колбэка.
+     */
+    fun consumeExportRequest() {
+        _uiState.value = _uiState.value.copy(exportRequest = null)
+    }
+
+    /**
+     * Обнучить показанный запрос экспорта бэкапа — сразу после launch()
+     * пикера (см. [consumeExportRequest]).
+     */
+    fun consumeBackupExportRequest() {
+        _uiState.value = _uiState.value.copy(backupExportRequest = null)
     }
 
     /**
      * Завершить экспорт: скопировать модель в выбранный SAF-uri.
      */
     fun onExportResult(uri: Uri?) {
-        val request = uiState.value.exportRequest
-        _uiState.value = _uiState.value.copy(exportRequest = null)
+        val request = pendingExportRequest
+        pendingExportRequest = null
+        // Отмена пикера (uri == null) тоже чистит состояние: флаг блокировки
+        // карточки снимается, запрос сброшен.
+        _uiState.value = _uiState.value.copy(exportRequest = null, exportingModelId = null)
         if (uri == null || request == null) return
         // Пока идёт запись ZIP, карточка этой модели блокируется (issue #31):
         // удаление mid-экспорта обрезает архив, и импорт даёт неполную модель.
-        _uiState.value = _uiState.value.copy(exportingModelId = request.modelId)
         viewModelScope.launch {
-            modelManager.exportToUri(request.modelId, uri)
-            _uiState.value = _uiState.value.copy(exportingModelId = null)
+            _uiState.value = _uiState.value.copy(exportingModelId = request.modelId)
+            val ok = modelManager.exportToUri(request.modelId, uri)
+            _uiState.value = _uiState.value.copy(
+                exportingModelId = null,
+                statusMessage = if (ok) {
+                    context.getString(R.string.models_export_done)
+                } else {
+                    context.getString(R.string.models_export_failed)
+                }
+            )
         }
     }
 

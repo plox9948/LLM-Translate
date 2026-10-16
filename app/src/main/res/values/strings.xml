@@ -81,6 +81,10 @@
     <string name="models_category_translation">Перевод (LLM)</string>
     <string name="models_category_stt">Распознавание речи (STT)</string>
     <string name="models_category_tts">Синтез речи (TTS)</string>
+    <string name="models_import_done">Модель импортирована.</string>
+    <string name="models_import_failed">Ошибка импорта модели</string>
+    <string name="models_export_done">Модель экспортирована.</string>
+    <string name="models_export_failed">Ошибка экспорта модели</string>
 
     <!-- Экран «Настройки» -->
     <string name="settings_tts_engine">Движок синтеза речи</string>

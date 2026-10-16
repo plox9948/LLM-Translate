@@ -81,6 +81,10 @@
     <string name="models_category_translation">Translation (LLM)</string>
     <string name="models_category_stt">Speech recognition (STT)</string>
     <string name="models_category_tts">Speech synthesis (TTS)</string>
+    <string name="models_import_done">Model imported.</string>
+    <string name="models_import_failed">Model import failed</string>
+    <string name="models_export_done">Model exported.</string>
+    <string name="models_export_failed">Model export failed</string>
 
     <!-- Экран «Настройки» -->
     <string name="settings_tts_engine">Speech synthesis engine</string>

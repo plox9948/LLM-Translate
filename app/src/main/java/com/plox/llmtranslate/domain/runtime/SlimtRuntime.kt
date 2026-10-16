@@ -233,6 +233,25 @@ class SlimtRuntime @Inject constructor(
      */
     override suspend fun release() = engineMutex.withLock { releaseUnlocked() }
 
+    /**
+     * Извлечь и уничтожить пучок модели [modelId] (удаление модели, issue #40).
+     * Ждёт окончания активного перевода под [engineMutex]; если пучок был
+     * активным — сбрасывает [activeId] и публикует новый список
+     * [loadedModels]. Отсутствующий в кэше id — no-op.
+     */
+    override suspend fun releaseModel(modelId: String) = engineMutex.withLock {
+        cache.remove(modelId)?.let { bundle ->
+            if (bundle.handle != 0L) {
+                SlimtNative.nativeDestroy(bundle.handle)
+            }
+            Timber.d("slimt: пучок удалённой модели $modelId освобождён")
+        }
+        if (activeId == modelId) {
+            activeId = null
+        }
+        publishLoadedUnlocked()
+    }
+
     private fun releaseUnlocked() {
         cache.clear().forEach { (_, bundle) ->
             if (bundle.handle != 0L) {

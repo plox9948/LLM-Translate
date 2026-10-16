@@ -1,5 +1,7 @@
 package com.plox.llmtranslate.domain.runtime
 
+import com.plox.llmtranslate.domain.model.InstalledModel
+import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeType
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
@@ -47,6 +49,23 @@ class RuntimeRouter @Inject constructor(
      * Движок распознавания речи: sherpa-onnx — единственный STT-рантайм.
      */
     fun sttEngine(): SttEngine = sherpaSttEngine
+
+    /**
+     * Убрать пучки удалённой модели из кэшей движков её категории (issue #40):
+     * после удаления файлов запись в LRU-кэше с тем же id продолжала
+     * «показывать» модель загруженной, а повторная загрузка того же id
+     * молча использовала старый нативный handle. Под мью텍сом движка
+     * дожидается окончания активного инференса; модели вне движков
+     * (системный TTS) — no-op.
+     */
+    suspend fun releaseModel(model: InstalledModel) {
+        when (model.category) {
+            ModelCategory.TRANSLATION ->
+                translationEngine(model.runtime).releaseModel(model.id)
+            ModelCategory.STT -> sherpaSttEngine.releaseModel(model.id)
+            ModelCategory.TTS -> Unit
+        }
+    }
 
     /**
      * Разгрузить все рантаймы (при ON_STOP). Каждый движок под мьютексом

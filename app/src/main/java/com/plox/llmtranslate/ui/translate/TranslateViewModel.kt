@@ -341,9 +341,11 @@ class TranslateViewModel @Inject constructor(
                     )
                 }
 
-                // Автовыбор цепочки моделей для направления.
+                // Автовыбор цепочки моделей для направления — только готовые
+                // модели (симметрично refreshTranslationAvailability): скачиваемая
+                // модель дала бы цепочку с заведомо нерабочим файлом.
                 val chain = TranslationModelSelector.selectChain(
-                    translationModels, sourceLang.code, state.targetLang.code
+                    translationModels.filter { it.isReady }, sourceLang.code, state.targetLang.code
                 )
                 if (chain.isNullOrEmpty()) {
                     update {
@@ -558,17 +560,32 @@ class TranslateViewModel @Inject constructor(
     }
 
     /**
+     * Признак идущей остановки записи: повторный тап по микрофону в окне
+     * stopRecording() (uiState.isRecording ещё true, audioRecorder.isRecording
+     * уже false) игнорируется — иначе второй stopRecording() вернёт null и
+     * покажет ложную «Запись пуста или не удалась» (issue #40). Флаг трогается
+     * только из viewModelScope (главный поток), атомарности не требуется.
+     */
+    private var stopRecordingInProgress = false
+
+    /**
      * Остановить запись и сразу распознать речь.
      */
     fun stopRecordingAndTranscribe() {
+        if (stopRecordingInProgress) return
+        stopRecordingInProgress = true
         viewModelScope.launch {
-            val wavPath = audioRecorder.stopRecording()
-            update { it.copy(isRecording = false) }
-            if (wavPath == null) {
-                update { it.copy(error = "Запись пуста или не удалась") }
-                return@launch
+            try {
+                val wavPath = audioRecorder.stopRecording()
+                update { it.copy(isRecording = false) }
+                if (wavPath == null) {
+                    update { it.copy(error = "Запись пуста или не удалась") }
+                    return@launch
+                }
+                transcribeAudio(wavPath)
+            } finally {
+                stopRecordingInProgress = false
             }
-            transcribeAudio(wavPath)
         }
     }
 

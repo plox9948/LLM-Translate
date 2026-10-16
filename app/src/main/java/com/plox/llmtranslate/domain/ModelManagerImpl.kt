@@ -55,6 +55,9 @@ class ModelManagerImpl @Inject constructor(
     private companion object {
         /** Имя записи с метаданными в ZIP-экспорте мультифайловой модели. */
         const val META_ENTRY_NAME = "model_meta.json"
+
+        /** Префикс файлов одиночного импорта в корне каталога моделей. */
+        const val IMPORT_FILE_PREFIX = "imported_"
     }
 
     private val modelsDir: File
@@ -181,14 +184,24 @@ class ModelManagerImpl @Inject constructor(
     }
 
     /**
-     * Удалить недокачанные .part-файлы отменённой модели, их метаданные
-     * докачки (конвенция BaseDownloader: рядом с целевым файлом `<имя>.part`
-     * и `<имя>.part.meta`) и осиротевшие целые архивы (ArchiveInstaller
-     * скачивает архив в корень каталога рантайма; при отмене распаковки он
-     * мог остаться до внедрения немедленного удаления).
+     * Удалить осиротевшие файлы незавершённой установки модели (issue #2, #40).
+     * Вызывается только после [ModelDownloadWorker.cancel] (явная отмена в UI
+     * или удаление записи), поэтому живой WorkManager-загрузки по этому id нет
+     * и все файлы по URL записи — остатки её же прерванной установки: и
+     * недокачанные `.part` с метаданными докачки (конвенция BaseDownloader:
+     * рядом с целевым файлом `<имя>.part` и `<имя>.part.meta`), и уже
+     * переименованные целевые файлы, и остаток архива в корне каталога
+     * рантайма (ArchiveInstaller распаковывает в каталог модели). Пока
+     * загрузка жива (сетевые повторы `Result.retry()`), метод не вызывается —
+     * докачка по `.part`-файлам сохраняется.
+     *
      * Размещение файлов задаёт общий с инсталляторами [DownloadLayout]
-     * (см. [ModelDownloadWorker]): ONNX мультифайл и обычные файлы sherpa —
-     * в каталог модели, одиночные ONNX-файлы и архивы — в корень каталога рантайма.
+     * (см. [ModelDownloadWorker]): мультифайловые пачки, одиночные файлы
+     * sherpa и распакованное содержимое архивов — в каталог модели
+     * `models/<RUNTIME>/<id>`; каталог принадлежит только этой записи
+     * (ключ — id), поэтому сносится целиком — иначе переименованные
+     * целевые файлы прерванной мультифайловой установки остаются навсегда.
+     * Одиночные ONNX-файлы и архивы — в корень каталога рантайма.
      * Модель не READY (проверяется вызывающим кодом), поэтому файлы по её URL
      * относятся только к её незавершённой загрузке — файлы READY-моделей
      * не затрагиваются.
@@ -197,22 +210,34 @@ class ModelManagerImpl @Inject constructor(
         val urls = model.downloadUrls()
         if (urls.isEmpty()) return
         val runtimeDir = File(modelsDir, model.runtime.name)
+        val modelDir = DownloadLayout.modelDir(runtimeDir, model.id)
+
+        var usesModelDir = false
         urls.forEachIndexed { index, url ->
             val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
             val dir = DownloadLayout.fileDir(runtimeDir, model.runtime, model.id, urls, fileName)
+            if (dir == modelDir) {
+                usesModelDir = true
+                return@forEachIndexed
+            }
+            // Корень каталога рантайма: части докачки, метаданные докачки и
+            // осиротевший целый целевой файл — одиночный ONNX или архив до
+            // распаковки (для не READY-модели это остаток её же загрузки).
             listOf(File(dir, "$fileName.part"), File(dir, "$fileName.part.meta")).forEach { part ->
                 if (part.isFile && !part.delete()) {
                     Timber.w("Не удалось удалить осиротевший ${part.name}")
                 }
             }
-            // Целый архив лежит только в корне каталога рантайма (см. ArchiveInstaller);
-            // для не READY-модели это остаток её же незавершённой распаковки.
-            if (DownloadLayout.isArchive(fileName) && dir == runtimeDir) {
-                val archiveFile = File(dir, fileName)
-                if (archiveFile.isFile && !archiveFile.delete()) {
-                    Timber.w("Не удалось удалить осиротевший архив ${archiveFile.name}")
-                }
+            val doneFile = File(dir, fileName)
+            if (doneFile.isFile && !doneFile.delete()) {
+                Timber.w("Не удалось удалить осиротевший ${doneFile.name}")
             }
+        }
+        // Каталог осиротевшей модели: переименованные целевые файлы
+        // мультифайловой установки, её .part/.part.meta и распакованное
+        // содержимое архива.
+        if (usesModelDir && modelDir.isDirectory && !modelDir.deleteRecursively()) {
+            Timber.w("Не удалось удалить каталог осиротевшей модели ${modelDir.name}")
         }
     }
 
@@ -238,6 +263,9 @@ class ModelManagerImpl @Inject constructor(
                 }
 
                 val modelId = fileName.removeSuffix(".gguf").removeSuffix(".onnx")
+                // Старая запись под этим id (до upsert) — нужна для удаления
+                // осиротевшего файла предыдущего импорта (issue #40).
+                val previousRecord = repository.getById(modelId)
                 val model = InstalledModel(
                     id = modelId,
                     category = guessCategory(fileName),
@@ -262,6 +290,9 @@ class ModelManagerImpl @Inject constructor(
                     isBuiltin = false
                 )
                 repository.upsert(model)
+                // Повторный импорт той же модели: copyFromUri каждый раз пишет
+                // новый imported_* файл, старый осиротел (issue #40).
+                deleteSupersededImportFile(previousRecord, targetFile)
                 Timber.d("Импортирована модель $modelId из $uri")
                 modelId
             } catch (e: Exception) {
@@ -322,8 +353,20 @@ class ModelManagerImpl @Inject constructor(
                 if (!path.isNullOrBlank()) {
                     val file = File(path)
                     if (file.isDirectory) file.deleteRecursively() else file.delete()
+                } else {
+                    // У записи нет пути при прерванной установке — чистим
+                    // известные места раскладки DownloadLayout (issue #40:
+                    // иначе переименованные целевые файлы установки, снятой
+                    // до finalizeDownload, остаются на диске навсегда).
+                    deleteOrphanParts(model)
                 }
                 repository.deleteById(modelId)
+                // Кэш движков по id модели (issue #40): без eviction удалённая
+                // модель остаётся «загруженной» в loadedModels, а повторная
+                // загрузка того же id берёт из LRU-кэша старый нативный handle
+                // по уже удалённым файлам. Движок под своим мьютексом ждёт
+                // окончания активного инференса — use-after-free исключён.
+                runtimeRouter.releaseModel(model)
                 // Если удалена активная модель — переключаемся на первую доступную.
                 if (preferences.getActiveModelId(model.category) == modelId) {
                     val fallback = repository.getFirstReady(model.category)
@@ -359,7 +402,7 @@ class ModelManagerImpl @Inject constructor(
     }
 
     private suspend fun copyFromUri(uri: Uri): File? {
-        val targetFile = File(modelsDir, "imported_${System.currentTimeMillis()}")
+        val targetFile = File(modelsDir, "$IMPORT_FILE_PREFIX${System.currentTimeMillis()}")
         try {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 targetFile.outputStream().use { output ->
@@ -375,6 +418,25 @@ class ModelManagerImpl @Inject constructor(
             throw e
         }
         return targetFile
+    }
+
+    /**
+     * Удалить файл предыдущего импорта, вытеснённый повторным импортом той же
+     * модели (issue #40): copyFromUri создаёт каждый раз новый путь
+     * `imported_<ts>`, и без очистки старый файл остаётся мусором без записи
+     * в БД. Удаляем только при отличии путей и только файлы зоны импорта
+     * (`imported_*` в корне каталога моделей) — файлы каталожных моделей по
+     * путям рантаймов не затрагиваются.
+     */
+    private fun deleteSupersededImportFile(previous: InstalledModel?, newFile: File) {
+        val oldPath = previous?.filePath ?: return
+        if (oldPath == newFile.absolutePath) return
+        val oldFile = File(oldPath)
+        if (oldFile.parentFile?.absolutePath != modelsDir.absolutePath) return
+        if (!oldFile.name.startsWith(IMPORT_FILE_PREFIX) || !oldFile.isFile) return
+        if (!oldFile.delete()) {
+            Timber.w("Не удалось удалить осиротевший файл импорта: $oldPath")
+        }
     }
 
     /** Проверка сигнатуры ZIP (PK\x03\x04) по первым байтам документа SAF. */

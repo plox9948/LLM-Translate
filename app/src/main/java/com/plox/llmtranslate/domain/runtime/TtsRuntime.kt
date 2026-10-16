@@ -16,6 +16,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
@@ -41,8 +42,13 @@ class TtsRuntime @Inject constructor(
     private var ready = false
     private var lastEngine: String? = null
 
-    /** Id последней поставленной в очередь фразы — для фильтрации колбэков. */
-    private var currentUtteranceId: String? = null
+    /**
+     * Незавершённые озвучивания: utteranceId → колбэк завершения. При старте
+     * новой фразы (QUEUE_FLUSH) перехваченная старая фраза не даёт колбэк
+     * слушателя, поэтому её pending-колбэк изымается и вызывается сразу —
+     * иначе вызывающий экран остаётся с залипшим флагом «озвучиваем» (issue #40).
+     */
+    private val utterances = TtsUtteranceRegistry()
 
     /**
      * Сериализует инициализацию: несколько подписчиков настройки ttsEngine
@@ -155,7 +161,9 @@ class TtsRuntime @Inject constructor(
      * Колбэк [onDone] приходит с фонового потока UtteranceProgressListener —
      * перебрасывается в главный, как обещает контракт. Состояние «озвучиваем»
      * вызывающий код обязан выставить ДО вызова speak(): короткая фраза может
-     * завершиться (onDone) раньше возврата speak().
+     * завершиться (onDone) раньше возврата speak(). Прежняя незавершённая фраза
+     * перехватывается QUEUE_FLUSH — её onDone вызывается при старте новой
+     * (см. [TtsUtteranceRegistry], issue #40).
      * @param onDone колбэк завершения озвучивания (вызывается на главном потоке).
      * @return null при успехе или [RuntimeError].
      */
@@ -173,25 +181,33 @@ class TtsRuntime @Inject constructor(
         }
 
         val utteranceId = UUID.randomUUID().toString()
-        currentUtteranceId = utteranceId
+        // Перехват QUEUE_FLUSH: из реестра изымаются колбэки всех прежних
+        // незавершённых фраз и вызываются сейчас — слушатель для перехваченной
+        // фразы больше не сработает, а без вызова у прежнего экрана останется
+        // залипший флаг «озвучиваем» (issue #40).
+        val previous = utterances.start(utteranceId, onDone)
+        previous.forEach { callback ->
+            scope.launch(Dispatchers.Main) { callback() }
+        }
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
             override fun onDone(utteranceId: String?) {
-                // Завершение старой (отменённой/перезаписанной) фразы не должно
-                // сбрасывать состояние текущей — фильтруем по utteranceId.
-                if (utteranceId == null || utteranceId != currentUtteranceId) return
-                currentUtteranceId = null
+                // Завершение старой (перехваченной/перезаписанной) фразы не должно
+                // сбрасывать состояние текущей — реестр отдаёт колбэк только для
+                // ещё незавершённой фразы с этим utteranceId.
+                val done = utterances.finish(utteranceId) ?: return
                 Timber.d("TTS завершён: $utteranceId")
                 // Колбэк приходит на фоновом потоке TTS — в главный, по контракту.
-                scope.launch(Dispatchers.Main) { onDone?.invoke() }
+                scope.launch(Dispatchers.Main) { done() }
             }
 
             @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String?) {
                 Timber.e("TTS ошибка: $utteranceId")
-                if (utteranceId != null && utteranceId == currentUtteranceId) {
-                    currentUtteranceId = null
-                }
+                // Ошибка тоже завершает фразу: колбэк обязателен, иначе у
+                // вызывающего экрана останется залипший флаг «озвучиваем».
+                val done = utterances.finish(utteranceId) ?: return
+                scope.launch(Dispatchers.Main) { done() }
             }
         })
 
@@ -216,6 +232,56 @@ class TtsRuntime @Inject constructor(
         tts = null
         ready = false
         lastEngine = null
-        currentUtteranceId = null
+        // Незавершённые озвучивания после shutdown колбэка не получат —
+        // реестр очищаем, их вызовы больше не нужны (вызывающие экраны
+        // при пересоздании начинают speak заново).
+        utterances.clear()
     }
+}
+
+/**
+ * Реестр незавершённых озвучиваний TTS: utteranceId → колбэк завершения.
+ *
+ * Проблема (issue #40): при QUEUE_FLUSH новая фраза перехватывает очередь,
+ * и слушатель не сообщает о завершении перехваченной прежней фразы — её
+ * колбэк не вызывался, и вызывающий экран (например «Перевод») оставался
+ * с залипшим флагом «озвучиваем», пока озвучка шла с другого экрана.
+ *
+ * Решение: при старте новой фразы все прежние pending-колбэки изымаются из
+ * реестра ([start]) и вызываются вызывающим кодом; [finish] атомарно отдаёт
+ * колбэк только ещё незавершённой фразы (старый utteranceId перехваченной
+ * фразы получает null — состояние текущей не трогается).
+ *
+ * Реестр потокобезопасен: [start] вызывается из [TtsRuntime.speak] (поток
+ * вызывающего кода), [finish] — из фонового потока UtteranceProgressListener;
+ * атомарный remove гарантирует однократную выдачу колбэка.
+ */
+internal class TtsUtteranceRegistry {
+
+    private val callbacks = ConcurrentHashMap<String, () -> Unit>()
+
+    /**
+     * Зарегистрировать новую фразу [utteranceId] с колбэком [onDone]
+     * (null — колбэк не нужен). Возвращает колбэки всех прежних
+     * незавершённых фраз — вызывающий код обязан известить их экраны
+     * о завершении (QUEUE_FLUSH снял их из очереди).
+     */
+    fun start(utteranceId: String, onDone: (() -> Unit)?): List<() -> Unit> {
+        val previous = mutableListOf<() -> Unit>()
+        for (id in callbacks.keys().toList()) {
+            callbacks.remove(id)?.let { previous.add(it) }
+        }
+        if (onDone != null) callbacks[utteranceId] = onDone
+        return previous
+    }
+
+    /**
+     * Изымать и вернуть колбэк незавершённой фразы [utteranceId];
+     * null — фраза уже завершена, перехвачена QUEUE_FLUSH или неизвестна.
+     */
+    fun finish(utteranceId: String?): (() -> Unit)? =
+        if (utteranceId == null) null else callbacks.remove(utteranceId)
+
+    /** Очистить реестр без вызова колбэков (разгрузка движка). */
+    fun clear() = callbacks.clear()
 }
