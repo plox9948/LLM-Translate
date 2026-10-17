@@ -19,6 +19,7 @@ import timber.log.Timber
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -150,6 +151,16 @@ class AudioRecorder @Inject constructor(
     private var readJob: Job? = null
 
     /**
+     * Флаг поколения текущей записи (ревью раунд 3): цикл чтения захватывает
+     * его локально и завершается при смене поколения — условие while больше
+     * не зависит от глобального isRecording, который stop()+startRecording()
+     * возвращают в true, оставляя старый цикл читать уже освобождённый
+     * AudioRecord. Переприсваивается, как и [audioRecord], только потоком,
+     * переводившим _recordingFlow.
+     */
+    private var generation: AtomicBoolean? = null
+
+    /**
      * Начать запись с микрофона.
      * @return true при успехе, false при ошибке (нет разрешения/устройства).
      */
@@ -193,6 +204,11 @@ class AudioRecorder @Inject constructor(
         }
 
         audioRecord = record
+        // Поколение этой записи: цикл чтения ниже замыкает локальную ссылку
+        // и выходит, когда stop()/cancel() снимают именно это поколение,
+        // даже если к тому моменту уже стартовала новая запись.
+        val currentGeneration = AtomicBoolean(true)
+        generation = currentGeneration
         val buffer = ByteArrayOutputStream()
         pcmBuffer = buffer
         record.startRecording()
@@ -200,7 +216,11 @@ class AudioRecorder @Inject constructor(
 
         readJob = scope.launch {
             val readBuffer = ByteArray(minBuffer)
-            while (isRecording) {
+            // Условие — флаг поколения (ревью раунд 3), а не глобальный
+            // isRecording: при stop()+startRecording() пре-generation цикл
+            // обязан завершиться, а не читать освобождённый AudioRecord
+            // новой записи (IllegalStateException / гонка освобождения).
+            while (currentGeneration.get()) {
                 val read = record.read(readBuffer, 0, readBuffer.size)
                 if (read > 0) {
                     synchronized(buffer) {
@@ -235,6 +255,13 @@ class AudioRecorder @Inject constructor(
         // снятый рекордер, а поле обнуляется лишь пока в нём всё ещё он же.
         val captured = audioRecord
         val capturedBuffer = pcmBuffer
+        // Снятие поколения этой записи (ревью раунд 3): цикл чтения выходит
+        // сам, независимо от возможного startRecording() в окне join().
+        val capturedGeneration = generation
+        capturedGeneration?.set(false)
+        if (generation === capturedGeneration) {
+            generation = null
+        }
         scope.launch {
             // Дожидаемся выхода цикла чтения, чтобы не освободить AudioRecord
             // посреди блокирующего read() (тот же порядок, что в stopRecording).
@@ -267,6 +294,13 @@ class AudioRecorder @Inject constructor(
         // вызовом не освобождается и не сохраняется.
         val captured = audioRecord
         val capturedBuffer = pcmBuffer
+        // Поколение снимается до join() (ревью раунд 3): цикл чтения
+        // завершается по своему флагу, а не по глобальному isRecording.
+        val capturedGeneration = generation
+        capturedGeneration?.set(false)
+        if (generation === capturedGeneration) {
+            generation = null
+        }
         job?.join()
         if (audioRecord === captured) {
             audioRecord = null

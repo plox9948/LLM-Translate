@@ -450,24 +450,32 @@ class PiperTtsRuntime @Inject constructor(
     /**
      * Пути файлов Piper-каталога модели.
      */
-    private data class PiperLayout(
+    internal data class PiperLayout(
         val modelPath: String,
         val tokensPath: String,
         val espeakDataPath: String
     )
 
     /**
-     * Найти в каталоге модели файлы: .onnx (приоритет model.onnx, иначе
-     * крупнейший), tokens.txt (обязателен), espeak-ng-data/ (если есть).
+     * Найти в каталоге модели файлы: .onnx (приоритет файлу model.onnx —
+     * каноническое имя piper-экспортов, сравнение без учёта регистра, —
+     * иначе крупнейший по размеру), tokens.txt (обязателен),
+     * espeak-ng-data/ (если есть).
      * @return null, если обязательные файлы не найдены.
      */
-    private fun discoverLayout(dir: File): PiperLayout? {
+    internal fun discoverLayout(dir: File): PiperLayout? {
         val files = dir.listFiles() ?: return null
         val tokens = files.firstOrNull { it.isFile && it.name == "tokens.txt" }
             ?: return null
-        val onnx = files.filter {
-            it.isFile && it.name.endsWith(".onnx")
-        }.maxByOrNull { it.length() } ?: return null
+        val onnxFiles = files.filter {
+            it.isFile && it.name.endsWith(".onnx", ignoreCase = true)
+        }
+        // Приоритет канонического model.onnx (KDoc обещал его с issue #50,
+        // ревью раунд 3): крупный попутный *.onnx (напр. словарь/резервная
+        // копия) не должен вытеснять основную модель по размеру.
+        val onnx = onnxFiles.firstOrNull { it.name.equals("model.onnx", ignoreCase = true) }
+            ?: onnxFiles.maxByOrNull { it.length() }
+            ?: return null
         val espeak = files.firstOrNull { it.isDirectory && it.name == "espeak-ng-data" }
         return PiperLayout(
             modelPath = onnx.absolutePath,

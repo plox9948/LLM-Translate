@@ -366,7 +366,8 @@ class TtsPlaybackCoordinatorTest {
         assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
 
         // Прогресс доходит, затем запись карточки удалена/отменена —
-        // эмиссия установленного списка БЕЗ записи наблюдаемой модели.
+        // эмиссии установленного списка БЕЗ записи наблюдаемой модели.
+        // Сверх допуска пропусков (ревью раунд 3) — устойчивое отсутствие.
         installedFlow.value = listOf(
             readyPiper("tts-ru-piper-ruslan").copy(
                 status = ModelStatus.DOWNLOADING,
@@ -375,6 +376,10 @@ class TtsPlaybackCoordinatorTest {
             )
         )
         assertEquals(17, coordinator.status.value.downloadProgress)
+        // Список обязан меняться между эмиссиями (StateFlow дедуплицирует
+        // равные значения): три последовательные эмиссии без строки.
+        installedFlow.value = emptyList()
+        installedFlow.value = listOf(readyPiper("tts-en-piper-other"))
         installedFlow.value = emptyList()
 
         // Залипший DOWNLOADING-баннер снят, статус NONE, id сброшен.
@@ -389,6 +394,60 @@ class TtsPlaybackCoordinatorTest {
             modelManager.setTtsForLanguage("ru", "tts-ru-piper-ruslan")
         }
         assertEquals(TtsDownloadStatus.NONE, coordinator.status.value.downloadStatus)
+    }
+
+    // ── ревью раунд 3: гонка watch-установки (асинхронный upsert записи) ──
+
+    @Test
+    fun `watch tolerates first emissions without row before async download upsert`() {
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        coordinator.speak("текст", "ru")
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+        assertEquals("tts-ru-piper-ruslan", coordinator.status.value.downloadModelId)
+
+        // startDownload создаёт запись в Room асинхронно: ранние эмиссии
+        // списка без строки наблюдаемой карточки статус не сбрасывают
+        // (список заведомо отличается от предыдущего — StateFlow не
+        // дедуплицирует эмиссию).
+        installedFlow.value = listOf(readyPiper("tts-en-piper-other"))
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+        assertEquals("tts-ru-piper-ruslan", coordinator.status.value.downloadModelId)
+
+        // Асинхронный upsert появился — счётчик пропусков обнуляется,
+        // прогресс проходит в статус.
+        installedFlow.value = listOf(
+            readyPiper("tts-ru-piper-ruslan").copy(
+                status = ModelStatus.DOWNLOADING,
+                progress = 8,
+                filePath = null
+            )
+        )
+        assertEquals(8, coordinator.status.value.downloadProgress)
+
+        // После нахождения строки допуск восстановлен: одинокая эмиссия
+        // без записи снова не сбрасывает watch-статус.
+        installedFlow.value = emptyList()
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+        assertEquals("tts-ru-piper-ruslan", coordinator.status.value.downloadModelId)
+    }
+
+    @Test
+    fun `persistent absence beyond tolerance resets watch status`() {
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        coordinator.speak("текст", "ru")
+
+        // Устойчивое отсутствие (список меняется между эмиссиями, строки
+        // нет) — watch-статус сбрасывается после превышения допуска.
+        installedFlow.value = listOf(readyPiper("tts-en-piper-other"))
+        installedFlow.value = emptyList()
+        installedFlow.value = listOf(readyPiper("tts-de-piper-third"))
+
+        assertEquals(TtsDownloadStatus.NONE, coordinator.status.value.downloadStatus)
+        assertNull(coordinator.status.value.downloadModelId)
     }
 
     // ── ревью #55: монотонные id ошибок и ERROR-стадии для анти-повтора в UI ──

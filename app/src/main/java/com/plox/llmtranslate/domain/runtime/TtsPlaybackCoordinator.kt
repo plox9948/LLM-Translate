@@ -13,9 +13,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 import android.content.Context
@@ -111,10 +113,20 @@ class TtsPlaybackCoordinator @Inject constructor(
     // Мутируемое состояние синглтона читается и пишется из разных потоков
     // (app-scope на Dispatchers.IO: коллекторы flow, speak()/stop() из UI,
     // колбэки рантаймов): @Volatile гарантирует междупоточную видимость
-    // happens-before (запись доvolatile-поля происходит-before чтения того же
-    // поля другим потоком). Инкременты счётчиков не атомарны — допустимо:
-    // монотонность важна только относительно каждого эмиссера своего поля,
-    // а все мутации статуса идут через атомарный MutableStateFlow.
+    // happens-before (запись volatile-поля происходит-before чтения того же
+    // поля другим потоком). Токен фразы — AtomicLong (ревью раунд 3):
+    // одинаковый токен из двух потоков ломает фильтрацию старых колбэков;
+    // все мутации статуса — через CAS-мутацию MutableStateFlow.update.
+
+    private companion object {
+        /**
+         * Допуск эмиссий без записи наблюдаемой карточки до сброса
+         * watch-статуса: сразу после startFallback запись ещё не создана
+         * ([ModelManager.startDownload] асинхронен и выполняет upsert не
+         * мгновенно).
+         */
+        const val WATCH_MISSING_TOLERANCE = 2
+    }
 
     /** Job текущего озвучивания (piper-синтез или подготовка фолбэка). */
     @Volatile
@@ -124,13 +136,26 @@ class TtsPlaybackCoordinator @Inject constructor(
      * Монотонный токен активной фразы. Колбэк завершения прежней фразы
      * (QUEUE_FLUSH-перехват в [TtsRuntime], отмена piper-джоба) не должен
      * снимать флаг «озвучиваем» новой фразы — same-паттерн issue #40.
+     * AtomicLong (ревью раунд 3): два потока не должны получить одинаковый
+     * токен — иначе колбэк прежней фразы пройдёт фильтрацию и снимет флаг
+     * активной фразы.
      */
-    @Volatile
-    private var utteranceToken = 0L
+    private val utteranceToken = AtomicLong(0)
 
     /** Наблюдаемая координатором автоскачиваемая карточка (null — нет). */
     @Volatile
     private var watchedDownloadId: String? = null
+
+    /**
+     * Счётчик подряд идущих эмиссий installedModels БЕЗ записи наблюдаемой
+     * карточки (ревью раунд 3): [ModelManager.startDownload] создаёт запись
+     * в Room асинхронно, поэтому первые эмиссии списка вправе прийти раньше
+     * upsert-а — это не удаление записи. Сброс watch-статуса только при
+     * устойчивом отсутствии строки (сверх [WATCH_MISSING_TOLERANCE] подряд);
+     * обнуляется при нахождении записи и при установке наблюдения.
+     */
+    @Volatile
+    private var watchedDownloadMisses = 0
 
     /** Исходная фраза, которую нужно озвучить один раз после READY модели. */
     private data class PendingRetry(val text: String, val language: String)
@@ -177,18 +202,20 @@ class TtsPlaybackCoordinator @Inject constructor(
         // Прежняя piper-озвучка координатора снимается; системный TTS
         // перехватывает новую фразу сам (QUEUE_FLUSH).
         speakJob?.cancel()
-        val token = ++utteranceToken
+        val token = utteranceToken.incrementAndGet()
         val watching = watchedDownloadId != null
-        _status.value = _status.value.copy(
-            isSpeaking = true,
-            language = language,
-            text = text,
-            error = null,
-            // Активное автоскачивание сохраняется, зависшее — снимается.
-            downloadModelId = if (watching) _status.value.downloadModelId else null,
-            downloadStatus = if (watching) _status.value.downloadStatus else TtsDownloadStatus.NONE,
-            downloadProgress = if (watching) _status.value.downloadProgress else 0
-        )
+        _status.update { s ->
+            s.copy(
+                isSpeaking = true,
+                language = language,
+                text = text,
+                error = null,
+                // Активное автоскачивание сохраняется, зависшее — снимается.
+                downloadModelId = if (watching) s.downloadModelId else null,
+                downloadStatus = if (watching) s.downloadStatus else TtsDownloadStatus.NONE,
+                downloadProgress = if (watching) s.downloadProgress else 0
+            )
+        }
         speakJob = scope.launch {
             try {
                 runSpeak(text, language, token)
@@ -211,12 +238,14 @@ class TtsPlaybackCoordinator @Inject constructor(
         pendingRetry = null
         ttsRuntime.stop()
         piperRuntime.stop()
-        _status.value = _status.value.copy(isSpeaking = false, language = null, text = null)
+        _status.update {
+            it.copy(isSpeaking = false, language = null, text = null)
+        }
     }
 
     /** Снять показанную ошибку озвучивания (закрыта UI-диалогом/баннером). */
     fun clearError() {
-        _status.value = _status.value.copy(error = null)
+        _status.update { it.copy(error = null) }
     }
 
     /** Основной путь озвучивания: выбор движка по языку, вызов рантайма. */
@@ -290,28 +319,37 @@ class TtsPlaybackCoordinator @Inject constructor(
         // Без сети WorkManager просто waited на constraint CONNECTED и никогда
         // не придёт в ERROR — сообщаем о необходимости сети сразу (issue #50).
         if (installed?.status != ModelStatus.DOWNLOADING && !isNetworkAvailable()) {
-            _status.value = _status.value.copy(
-                isSpeaking = false,
-                language = null,
-                text = null,
-                downloadModelId = cardId,
-                downloadStatus = TtsDownloadStatus.ERROR,
-                downloadProgress = 0,
-                downloadErrorId = ++downloadErrorSeq
-            )
+            val errorId = ++downloadErrorSeq
+            _status.update {
+                it.copy(
+                    isSpeaking = false,
+                    language = null,
+                    text = null,
+                    downloadModelId = cardId,
+                    downloadStatus = TtsDownloadStatus.ERROR,
+                    downloadProgress = 0,
+                    downloadErrorId = errorId
+                )
+            }
             Timber.w("Автоскачивание Piper-модели $cardId отменено: нет сети")
             return
         }
         pendingRetry = PendingRetry(text, language)
         watchedDownloadId = cardId
-        _status.value = _status.value.copy(
-            isSpeaking = false,
-            language = null,
-            text = null,
-            downloadModelId = cardId,
-            downloadStatus = TtsDownloadStatus.DOWNLOADING,
-            downloadProgress = installed?.progress ?: 0
-        )
+        // Наблюдение ставится до асинхронного upsert-а записи (startDownload
+        // ниже) — первые эмиссии без строки терпит счётчик пропусков,
+        // поэтому сбрасывать предыдущий допуск при смене цели не нужно.
+        watchedDownloadMisses = 0
+        _status.update {
+            it.copy(
+                isSpeaking = false,
+                language = null,
+                text = null,
+                downloadModelId = cardId,
+                downloadStatus = TtsDownloadStatus.DOWNLOADING,
+                downloadProgress = installed?.progress ?: 0
+            )
+        }
         when (installed?.status) {
             // Уже качается — только наблюдаем; null/ERROR — ставим на скачивание
             // (startDownload идемпотентен для отсутствующей записи и повторной
@@ -333,14 +371,16 @@ class TtsPlaybackCoordinator @Inject constructor(
     /** Готовая карточка: автоназначение языку и немедленная Piper-озвучка. */
     private fun autoAssignAndSpeakPiper(cardId: String, text: String, language: String, token: Long) {
         scope.launch { modelManager.setTtsForLanguage(language, cardId) }
-        _status.value = _status.value.copy(
-            isSpeaking = true,
-            language = language,
-            text = text,
-            downloadModelId = null,
-            downloadStatus = TtsDownloadStatus.NONE,
-            downloadProgress = 0
-        )
+        _status.update {
+            it.copy(
+                isSpeaking = true,
+                language = language,
+                text = text,
+                downloadModelId = null,
+                downloadStatus = TtsDownloadStatus.NONE,
+                downloadProgress = 0
+            )
+        }
         speakJob = scope.launch {
             try {
                 val error = speakWithPiper(cardId, text, token)
@@ -360,31 +400,49 @@ class TtsPlaybackCoordinator @Inject constructor(
         val cardId = watchedDownloadId ?: return
         val model = models.firstOrNull { it.id == cardId }
         if (model == null) {
-            // Запись карточки удалена/снят запрос скачивания во время
-            // автоскачивания (ревью раунд 2): без сброса залипал DOWNLOADING
-            // баннер и оставался поздний авто-ретрай озвучки при последующей
+            // Гонка установки наблюдения (ревью раунд 3): [ModelManager.startDownload]
+            // выполняет upsert записи асинхронно, поэтому первые эмиссии списка
+            // вправе прийти без строки наблюдаемой карточки. Пропуск в пределах
+            // допуска ([WATCH_MISSING_TOLERANCE]) — продолжаем ждать;
+            // устойчивое отсутствие — запись удалена/снят запрос скачивания
+            // (ревью раунд 2): без сброса залипал DOWNLOADING баннер и
+            // оставался поздний авто-ретрай озвучки при последующей
             // установке модели с тем же id.
+            if (watchedDownloadMisses < WATCH_MISSING_TOLERANCE) {
+                watchedDownloadMisses++
+                Timber.d(
+                    "Piper-модель $cardId: запись ещё не появилась (пропуск $watchedDownloadMisses)"
+                )
+                return
+            }
             watchedDownloadId = null
             pendingRetry = null
-            _status.value = _status.value.copy(
-                downloadModelId = null,
-                downloadStatus = TtsDownloadStatus.NONE,
-                downloadProgress = 0
-            )
+            _status.update {
+                it.copy(
+                    downloadModelId = null,
+                    downloadStatus = TtsDownloadStatus.NONE,
+                    downloadProgress = 0
+                )
+            }
             Timber.w("Автоскачивание Piper-модели $cardId прервано: запись удалена")
             return
         }
+        // Строка на месте — допуск пропусков старта наблюдения обнуляется.
+        watchedDownloadMisses = 0
         when (model.status) {
             ModelStatus.DOWNLOADING ->
-                _status.value = _status.value.copy(downloadProgress = model.progress)
+                _status.update { it.copy(downloadProgress = model.progress) }
 
             ModelStatus.ERROR -> {
                 watchedDownloadId = null
                 pendingRetry = null
-                _status.value = _status.value.copy(
-                    downloadStatus = TtsDownloadStatus.ERROR,
-                    downloadErrorId = ++downloadErrorSeq
-                )
+                val errorId = ++downloadErrorSeq
+                _status.update {
+                    it.copy(
+                        downloadStatus = TtsDownloadStatus.ERROR,
+                        downloadErrorId = errorId
+                    )
+                }
                 Timber.w("Автоскачивание Piper-модели $cardId завершилось ошибкой")
             }
 
@@ -392,13 +450,20 @@ class TtsPlaybackCoordinator @Inject constructor(
                 watchedDownloadId = null
                 val retry = pendingRetry
                 pendingRetry = null
-                _status.value = _status.value.copy(
-                    downloadModelId = null,
-                    downloadStatus = TtsDownloadStatus.NONE,
-                    downloadProgress = 0
-                )
+                _status.update {
+                    it.copy(
+                        downloadModelId = null,
+                        downloadStatus = TtsDownloadStatus.NONE,
+                        downloadProgress = 0
+                    )
+                }
                 if (retry != null && model.isReady) {
-                    autoAssignAndSpeakPiper(cardId, retry.text, retry.language, ++utteranceToken)
+                    autoAssignAndSpeakPiper(
+                        cardId,
+                        retry.text,
+                        retry.language,
+                        utteranceToken.incrementAndGet()
+                    )
                 }
             }
         }
@@ -406,19 +471,26 @@ class TtsPlaybackCoordinator @Inject constructor(
 
     /** Колбэк завершения активной фразы (токен-страховка от прежних фраз). */
     private fun onSpeakDone(token: Long) {
-        if (token != utteranceToken) return
-        _status.value = _status.value.copy(isSpeaking = false, language = null, text = null)
+        if (token != utteranceToken.get()) return
+        _status.update {
+            it.copy(isSpeaking = false, language = null, text = null)
+        }
     }
 
     /** Финализация неуспешной попытки озвучивания текущей фразы-токена. */
     private fun finishWithError(error: RuntimeError, token: Long) {
-        if (token != utteranceToken) return
-        _status.value = _status.value.copy(
-            error = error,
-            errorId = ++errorSeq,
-            isSpeaking = false,
-            language = null,
-            text = null
-        )
+        if (token != utteranceToken.get()) return
+        // Id снимается до CAS-мутации: лямбда update может выполниться
+        // повторно при гонке, инкремент внутри неё удвоил бы id.
+        val errorId = ++errorSeq
+        _status.update {
+            it.copy(
+                error = error,
+                errorId = errorId,
+                isSpeaking = false,
+                language = null,
+                text = null
+            )
+        }
     }
 }
