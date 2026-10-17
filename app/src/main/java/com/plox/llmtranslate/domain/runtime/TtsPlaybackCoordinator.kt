@@ -24,7 +24,7 @@ import android.content.Context
  * Статус автоскачивания Piper-модели при фолбэке озвучивания (issue #50).
  */
 enum class TtsDownloadStatus {
-    /** Автоскачивание не активна. */
+    /** Автоскачивание не активно. */
     NONE,
 
     /** Модель карточки качается, [.progress] актуален. */
@@ -251,7 +251,9 @@ class TtsPlaybackCoordinator @Inject constructor(
         token: Long,
         engineError: RuntimeError
     ) {
-        val cardId = TtsModelSelector.defaultCardId(language)
+        // Default-карточка языка: сначала поле каталога default_for_language,
+        // резервная константа селектора — только если каталог default не задаёт.
+        val cardId = TtsModelSelector.defaultCardId(language, catalogCards)
         if (cardId == null) {
             finishWithError(engineError, token)
             return

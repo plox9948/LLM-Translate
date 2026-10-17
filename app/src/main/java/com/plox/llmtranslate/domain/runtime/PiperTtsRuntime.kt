@@ -114,7 +114,26 @@ class PiperTtsRuntime @Inject constructor(
             engineMutex.withLock {
                 val path = modelDir.absolutePath
                 val current = loaded
-                if (current != null && current.dirPath == path) return@withLock null
+                if (current != null && current.dirPath == path) {
+                    // No-op повторной загрузки того же каталога: метаданные
+                    // опубликованной карточки обновляем из переданной записи
+                    // (имя/оценка ОЗУ/id могли измениться после edits каталога
+                    // или перескачивания) и ре-публикуем список (ревью).
+                    if (model != null) {
+                        loaded = LoadedPiper(
+                            tts = current.tts,
+                            dirPath = path,
+                            info = LoadedModelInfo(
+                                modelId = model.id,
+                                displayName = model.displayName,
+                                category = ModelCategory.TTS,
+                                ramRequiredMb = model.ramRequiredMb
+                            )
+                        )
+                        publishLoadedUnlocked()
+                    }
+                    return@withLock null
+                }
 
                 val layout = discoverLayout(modelDir)
                     ?: return@withLock RuntimeError.LoadFailed(

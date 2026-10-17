@@ -80,7 +80,7 @@ class RuntimeModelReleaseTest {
             val piper = mockk<PiperTtsRuntime>(relaxed = true)
             coEvery { piper.releaseModel(any()) } returns Unit
 
-            val router = RuntimeRouter(marian, indic, slimt, sherpa, piper)
+            val router = RuntimeRouter(marian, indic, slimt, sherpa, piper, mockk(relaxed = true))
             router.releaseModel(ttsModel("tts-ru-piper-ruslan"))
 
             coVerify(exactly = 1) {
@@ -101,7 +101,7 @@ class RuntimeModelReleaseTest {
             val sherpa = mockk<SherpaSttEngine>(relaxed = true)
             val piper = mockk<PiperTtsRuntime>(relaxed = true)
 
-            val router = RuntimeRouter(marian, indic, slimt, sherpa, piper)
+            val router = RuntimeRouter(marian, indic, slimt, sherpa, piper, mockk(relaxed = true))
             router.releaseModel(ttsModel("trans-ru-en").copy(
                 category = ModelCategory.TRANSLATION,
                 runtime = RuntimeType.MARIAN_SLIMT

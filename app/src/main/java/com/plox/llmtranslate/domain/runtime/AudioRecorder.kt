@@ -203,6 +203,35 @@ class AudioRecorder @Inject constructor(
     }
 
     /**
+     * Принудительно остановить запись без сохранения WAV (выгрузка рантаймов
+     * при ON_STOP, ревью): рекордер — app-scope синглтон и без остановки
+     * микрофон оставался захваченным после сворачивания приложения.
+     * Несозранённые PCM-данные отбрасываются; активное [stopRecording]
+     * (isRecording уже false) не трогается.
+     */
+    fun cancel() {
+        if (!isRecording) return
+        isRecording = false
+        val job = readJob
+        readJob = null
+        scope.launch {
+            // Дожидаемся выхода цикла чтения, чтобы не освободить AudioRecord
+            // посреди блокирующего read() (тот же порядок, что в stopRecording).
+            job?.join()
+            val record = audioRecord
+            audioRecord = null
+            try {
+                record?.stop()
+            } catch (e: IllegalStateException) {
+                // Буфер мог быть пуст — не критично.
+            }
+            record?.release()
+            synchronized(pcmBuffer) { pcmBuffer.reset() }
+            Timber.d("Запись с микрофона снята при выгрузке рантаймов")
+        }
+    }
+
+    /**
      * Остановить запись и сохранить WAV-файл.
      * @return путь к WAV-файлу или null при ошибке.
      */

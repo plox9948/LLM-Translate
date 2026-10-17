@@ -279,29 +279,31 @@ fun TranslateScreen(
                             fontWeight = FontWeight.Medium
                         )
                     }
-                    // Автоскачивание Piper-модели озвучки при фолбэке (issue #50):
-                    // прогресс по образцу карточки недостающих моделей перевода.
-                    state.ttsDownloadProgress?.let { progress ->
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LinearProgressIndicator(
-                            progress = { progress / 100f },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            text = stringResource(R.string.translate_tts_downloading, progress),
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
-                    if (state.ttsDownloadFailed) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = stringResource(R.string.translate_tts_download_failed),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
                 }
             }
+        }
+
+        // Автоскачивание Piper-модели озвучки при фолбэке (issue #50):
+        // баннер на уровне экрана, а не внутри карточки результата — не
+        // исчезает при очистке ввода, прогресс/ошибка видны всегда (ревью).
+        state.ttsDownloadProgress?.let { progress ->
+            Spacer(modifier = Modifier.height(8.dp))
+            LinearProgressIndicator(
+                progress = { progress / 100f },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                text = stringResource(R.string.translate_tts_downloading, progress),
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+        if (state.ttsDownloadFailed) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.translate_tts_download_failed),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
         }
 
         // Индикатор записи.

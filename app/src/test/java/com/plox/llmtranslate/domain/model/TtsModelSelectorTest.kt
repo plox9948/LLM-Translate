@@ -152,4 +152,42 @@ class TtsModelSelectorTest {
         assertNull(TtsModelSelector.defaultCardId("de"))
         assertNull(TtsModelSelector.defaultCardId(""))
     }
+
+    /** Карточка каталога TTS с возможным default-языком. */
+    private fun catalogCard(id: String, defaultFor: String?) = ModelCard(
+        id = id,
+        category = ModelCategory.TTS,
+        displayName = id,
+        description = "",
+        runtime = RuntimeType.PIPER_ONNX,
+        sizeBytes = 1L,
+        ramRequiredMb = 0,
+        languages = listOf("ru"),
+        quality = 4,
+        speed = 4,
+        url = "",
+        urls = emptyList(),
+        sha256 = null,
+        license = "",
+        minAndroidSdk = 24,
+        recommendedRamMb = 0,
+        defaultForLanguage = defaultFor
+    )
+
+    @Test
+    fun `catalog default overrides fallback constant`() {
+        // default_for_language из каталога приоритетнее константы
+        // DEFAULT_LANGUAGE_CARDS (ревью).
+        val cards = listOf(catalogCard("tts-custom-ru", "ru"))
+        assertEquals("tts-custom-ru", TtsModelSelector.defaultCardId("ru", cards))
+    }
+
+    @Test
+    fun `fallback constant used when catalog has no default for language`() {
+        // В каталоге default только для de — для ru применяется резерв.
+        val cards = listOf(catalogCard("tts-custom-de", "de"))
+        assertEquals("tts-ru-piper-ruslan", TtsModelSelector.defaultCardId("ru", cards))
+        assertEquals("tts-custom-de", TtsModelSelector.defaultCardId("de", cards))
+        assertNull(TtsModelSelector.defaultCardId("fr", cards))
+    }
 }

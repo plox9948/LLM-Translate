@@ -186,7 +186,8 @@ class SherpaSttEngine @Inject constructor(
 
     /**
      * Распознать речь в WAV-файле по активному пучку кэша.
-     * @param language подсказка языка (ru/en/ne); для whisper переключает распознавание.
+     * @param language подсказка языка (ru/en/ne); для whisper переключает распознавание,
+     *   null (AUTO) — возвращает мультиязычный режим "auto".
      * @return текст или [RuntimeError].
      */
     override suspend fun transcribe(wavPath: String, language: String?): Result<String> =
@@ -196,19 +197,23 @@ class SherpaSttEngine @Inject constructor(
                     ?: return@withContext Result.failure(RuntimeError.ModelNotSelected)
 
                 // Для whisper при смене языка пересоздаём распознаватель.
-                if (bundle.type == TYPE_WHISPER && language != null && language != bundle.whisperLanguage) {
+                // AUTO (language == null) — эффективный "auto": без этого после
+                // распознавания с явной подсказкой мультиязычный whisper
+                // оставался бы зафиксирован на прошлом языке (ревью).
+                val effectiveLanguage = language ?: "auto"
+                if (bundle.type == TYPE_WHISPER && effectiveLanguage != bundle.whisperLanguage) {
                     try {
                         // Обязательно освобождаем старый распознаватель — иначе
                         // утечка сотен МБ нативной памяти при каждой смене языка.
                         bundle.recognizer.release()
-                        bundle.recognizer = buildRecognizer(bundle.modelMeta, language)
-                        bundle.whisperLanguage = language
-                        Timber.d("Whisper переключён на язык: $language")
+                        bundle.recognizer = buildRecognizer(bundle.modelMeta, effectiveLanguage)
+                        bundle.whisperLanguage = effectiveLanguage
+                        Timber.d("Whisper переключён на язык: $effectiveLanguage")
                     } catch (e: Exception) {
                         // Старый распознаватель уже освобождён, новый не создан —
                         // пучок неконсистентен: снимаем его с кэша и с активного
                         // id (пучки других моделей не затрагиваются).
-                        Timber.e(e, "Не удалось пересоздать whisper для языка $language")
+                        Timber.e(e, "Не удалось пересоздать whisper для языка $effectiveLanguage")
                         val failedId = activeId
                         if (failedId != null) {
                             cache.remove(failedId)

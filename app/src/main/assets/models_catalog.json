@@ -1,5 +1,10 @@
 {
-  "version": 12,
+  "version": 13,
+  "default_for_language": {
+    "ru": "tts-ru-piper-ruslan",
+    "en": "tts-en-piper-ryan",
+    "ne": "tts-ne-piper-google"
+  },
   "models": [
     {
       "id": "firefox-bergamot-en-ru",

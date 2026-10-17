@@ -219,9 +219,18 @@ class TtsRuntime @Inject constructor(
         }
     }
 
-    /** Остановить озвучивание. */
+    /**
+     * Остановить озвучивание. Снятые фразы не доходят до onDone/onError —
+     * их pending-колбэки изымаются из реестра и вызываются по тому же
+     * паттерну, что в [release]/[speak]: иначе у вызывающего экрана
+     * остаётся залипший флаг «озвучиваем» (ревью).
+     */
     fun stop() {
         tts?.stop()
+        val pending = utterances.drain()
+        pending.forEach { callback ->
+            scope.launch(Dispatchers.Main) { callback() }
+        }
     }
 
     /**

@@ -308,7 +308,9 @@ fun ModelsScreen(
                         assigned == null || assigned == TtsModelSelector.SYSTEM_SENTINEL
                     }
                 val isActive = when (card.category) {
-                    ModelCategory.TTS -> isPiperTts && ttsAssignedAny || systemTtsActive
+                    // Явные скобки (ревью): && связывается сильнее ||, но
+                    // группировка улучшает читаемость и безопаснее при правках.
+                    ModelCategory.TTS -> (isPiperTts && ttsAssignedAny) || systemTtsActive
                     else -> activeId == card.id
                 }
                 val check = deviceInfo?.let { viewModel.checkInstall(card, it) }

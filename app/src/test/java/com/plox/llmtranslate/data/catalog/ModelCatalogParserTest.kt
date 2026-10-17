@@ -260,8 +260,8 @@ class ModelCatalogParserTest {
 
         val raw = file!!.readText(Charsets.UTF_8)
         // Версия каталога assets (после #55 — 12: Whisper/RHVoice/eSpeak NG
-        // помечены hidden).
-        assertEquals(12, parser.parseVersion(raw))
+        // помечены hidden; ревью — 13: добавлено поле default_for_language).
+        assertEquals(13, parser.parseVersion(raw))
 
         val cards = parser.parse(raw)
         // Число карточек = текущему составу каталога assets (после #50 —
@@ -315,6 +315,16 @@ class ModelCatalogParserTest {
             assertTrue(
                 card.downloadUrls().single().endsWith(".tar.bz2")
             )
+            // Каталог задаёт default_for_language для каждой Piper-карточки.
+            assertEquals(language, card.defaultForLanguage)
+        }
+        // Остальные карточки default не имеют.
+        for (card in cards.filter { it.id !in expectedPiper.keys }) {
+            assertEquals(
+                "${card.id}: не должна быть default-карточкой языка",
+                null,
+                card.defaultForLanguage
+            )
         }
     }
 
@@ -348,6 +358,51 @@ class ModelCatalogParserTest {
         assertTrue(cards.first { it.id == "tts-espeak" }.hidden)
         // Поле отсутствует в JSON — значение по умолчанию false.
         assertFalse(cards.first { it.id == "tts-system" }.hidden)
+    }
+
+    @Test
+    fun `parses default_for_language map onto cards`() {
+        val json = """
+            {
+              "version": 13,
+              "default_for_language": { "ru": "tts-custom-ru" },
+              "models": [
+                {
+                  "id": "tts-custom-ru",
+                  "category": "TTS",
+                  "displayName": "Custom RU",
+                  "runtime": "PIPER_ONNX",
+                  "sizeBytes": 10
+                },
+                {
+                  "id": "tts-other",
+                  "category": "TTS",
+                  "displayName": "Other",
+                  "runtime": "PIPER_ONNX",
+                  "sizeBytes": 10
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val cards = parser.parse(json)
+        assertEquals("ru", cards.first { it.id == "tts-custom-ru" }.defaultForLanguage)
+        // Поле не заполнено для карточки — null (применится резерв селектора).
+        assertEquals(null, cards.first { it.id == "tts-other" }.defaultForLanguage)
+
+        // Поле отсутствует в JSON каталога — defaultForLanguage null у всех.
+        val withoutDefaults = parser.parse("""
+            {
+              "version": 1,
+              "models": [
+                {
+                  "id": "tts-x", "category": "TTS", "displayName": "X",
+                  "runtime": "PIPER_ONNX", "sizeBytes": 1
+                }
+              ]
+            }
+        """.trimIndent())
+        assertEquals(null, withoutDefaults[0].defaultForLanguage)
     }
 
     @Test(expected = Exception::class)

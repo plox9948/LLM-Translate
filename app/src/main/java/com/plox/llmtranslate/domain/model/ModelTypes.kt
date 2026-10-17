@@ -108,7 +108,14 @@ data class ModelCard(
      * в секциях экрана «Модели» и не предлагается чипами направления;
      * в каталоге и коде модель остаётся (быстрый возврат).
      */
-    val hidden: Boolean = false
+    val hidden: Boolean = false,
+    /**
+     * Язык, для которого эта карточка — TTS-карточка по умолчанию в каталоге
+     * (поле каталога default_for_language, ревью); null — в каталоге не
+     * задана (тогда применяется резервная константа
+     * [TtsModelSelector.DEFAULT_LANGUAGE_CARDS]).
+     */
+    val defaultForLanguage: String? = null
 ) {
     /** Лицензия требует подтверждения (некоммерческая). */
     val requiresLicenseConfirmation: Boolean

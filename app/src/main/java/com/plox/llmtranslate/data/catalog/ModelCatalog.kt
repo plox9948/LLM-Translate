@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import timber.log.Timber
@@ -42,6 +43,13 @@ data class CatalogModelDto(
 @Serializable
 data class ModelCatalogDto(
     val version: Int = 1,
+    /**
+     * Карта «язык → id карточки TTS по умолчанию» (ревью): карточка,
+     * используемая фолбэком озвучивания для языка. Пуста — применяется
+     * резервная константа [com.plox.llmtranslate.domain.model.TtsModelSelector.DEFAULT_LANGUAGE_CARDS].
+     */
+    @SerialName("default_for_language")
+    val defaultForLanguage: Map<String, String> = emptyMap(),
     val models: List<CatalogModelDto> = emptyList()
 )
 
@@ -61,9 +69,13 @@ class ModelCatalogParser(
      */
     fun parse(raw: String): List<ModelCard> {
         val dto = json.decodeFromString(ModelCatalogDto.serializer(), raw)
+        // Реверс карты defaults: id карточки → язык, для которого она назначена.
+        val defaultByModel = dto.defaultForLanguage.entries
+            .sortedBy { it.key }
+            .associate { (language, modelId) -> modelId to language }
         return dto.models.mapNotNull { modelDto ->
             try {
-                modelDto.toCard()
+                modelDto.toCard(defaultByModel[modelDto.id])
             } catch (e: IllegalStateException) {
                 Timber.w("Модель ${modelDto.id} пропущена: ${e.message}")
                 null
@@ -85,7 +97,7 @@ class ModelCatalogParser(
     }
 }
 
-private fun CatalogModelDto.toCard(): ModelCard {
+private fun CatalogModelDto.toCard(defaultLanguage: String?): ModelCard {
     val categoryValue = ModelCategory.entries.firstOrNull { it.name == category.uppercase() }
         ?: throw IllegalStateException("Неизвестная категория: ${this.category}")
     val runtimeValue = RuntimeType.entries.firstOrNull { it.name == runtime.uppercase() }
@@ -108,7 +120,8 @@ private fun CatalogModelDto.toCard(): ModelCard {
         license = license,
         minAndroidSdk = minAndroidSdk,
         recommendedRamMb = recommendedRamMb,
-        hidden = hidden
+        hidden = hidden,
+        defaultForLanguage = defaultLanguage
     )
 }
 

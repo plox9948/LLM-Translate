@@ -17,7 +17,8 @@ class RuntimeRouter @Inject constructor(
     private val indicTransOnnxRuntime: IndicTransOnnxRuntime,
     private val slimtRuntime: SlimtRuntime,
     private val sherpaSttEngine: SherpaSttEngine,
-    private val piperTtsRuntime: PiperTtsRuntime
+    private val piperTtsRuntime: PiperTtsRuntime,
+    private val audioRecorder: AudioRecorder
 ) {
 
     /**
@@ -78,8 +79,12 @@ class RuntimeRouter @Inject constructor(
      * ждёт окончания активного инференса — это нормально для onStop-разгрузки,
      * но вызывать нужно вне главного потока. Последовательный вызов release()
      * разных движков безопасен: их мьютексы независимы, deadlock невозможен.
+     * Запись с микрофона снимается первой: рекордер — app-scope синглтон,
+     * без этого AudioRecord оставался бы захваченным при разгруженных
+     * рантаймах (ревью).
      */
     suspend fun releaseAll() {
+        audioRecorder.cancel()
         marianOnnxRuntime.release()
         indicTransOnnxRuntime.release()
         slimtRuntime.release()

@@ -27,7 +27,11 @@ object TtsModelSelector {
         data class Model(val id: String) : TtsChoice()
     }
 
-    /** Карта «язык → карточка Piper по умолчанию» (для пресета настроек). */
+    /**
+     * Резервная карта «язык → карточка Piper по умолчанию» (для пресета
+     * настроек): применяется, только если в каталоге для языка нет поля
+     * default_for_language (ревью).
+     */
     val DEFAULT_LANGUAGE_CARDS = mapOf(
         "ru" to "tts-ru-piper-ruslan",
         "en" to "tts-en-piper-ryan",
@@ -65,7 +69,14 @@ object TtsModelSelector {
 
     /**
      * Id карточки Piper, предлагаемой по умолчанию для языка, или null
-     * для языка без заготовки.
+     * для языка без заготовки. Приоритет — поле каталога
+     * default_for_language ([ModelCard.defaultForLanguage]):
+     * карточка, назначенная языку в каталоге; константа
+     * [DEFAULT_LANGUAGE_CARDS] — только резерв, когда в переданном
+     * каталоге default для языка отсутствует (пустой каталог, удалённый
+     * каталог без поля — ревью).
      */
-    fun defaultCardId(language: String): String? = DEFAULT_LANGUAGE_CARDS[language]
+    fun defaultCardId(language: String, catalogCards: List<ModelCard> = emptyList()): String? =
+        catalogCards.firstOrNull { it.defaultForLanguage == language }?.id
+            ?: DEFAULT_LANGUAGE_CARDS[language]
 }

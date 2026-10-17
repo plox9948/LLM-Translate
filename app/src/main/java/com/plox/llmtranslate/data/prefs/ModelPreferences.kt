@@ -12,7 +12,6 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.TtsEngines
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -33,7 +32,11 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 @Singleton
 class ModelPreferences @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val json: Json
+    private val json: Json,
+    // App-scope из DomainModule (SupervisorJob + Dispatchers.IO + handler):
+    // фоновые правки DataStore живут со всем процессом, а не с разовой
+    // ad-hoc корутиной (ревью).
+    private val scope: CoroutineScope
 ) {
 
     private val activeModelKeys = mapOf(
@@ -96,7 +99,7 @@ class ModelPreferences @Inject constructor(
      * из пусто-карты вместо явного сброса.
      */
     private fun clearCorruptedSttByLanguage() {
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch {
             try {
                 context.dataStore.edit { prefs -> prefs.remove(STT_BY_LANGUAGE_KEY) }
             } catch (e: Exception) {
@@ -147,7 +150,7 @@ class ModelPreferences @Inject constructor(
      * [clearCorruptedSttByLanguage]).
      */
     private fun clearCorruptedTtsByLanguage() {
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch {
             try {
                 context.dataStore.edit { prefs -> prefs.remove(TTS_BY_LANGUAGE_KEY) }
             } catch (e: Exception) {
@@ -218,7 +221,7 @@ class ModelPreferences @Inject constructor(
      */
     fun prefetchUiLanguage() {
         if (uiLanguageCacheRef.get() != null) return
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch {
             try {
                 val value = uiLanguage.first()
                 // CAS: не перетирать кэш, обновлённый setUiLanguage() во время чтения DataStore.
