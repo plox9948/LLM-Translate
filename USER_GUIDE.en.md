@@ -36,7 +36,10 @@ Nepali" (or "Skip").
 Right below the input fields, cards for the models missing in the chosen
 direction appear ("Translation models required"), each with its file size and a
 "Download" button. Tap "Download" — the download starts with a progress
-indicator. Until the models are downloaded, translation is not possible.
+indicator. Until the models are downloaded, translation is not possible. The
+same reminder has a separate "Speech recognition" section listing the missing
+speech recognition model for the source language — you can download it right
+there and start talking into the microphone straight away.
 
 ## Models (the "Models" tab)
 
@@ -50,9 +53,12 @@ offline.
 - "Export" / "Delete" — on the card of an installed model.
 - "Import" — on the card of a not-yet-downloaded model: unpack a model from a
   ZIP file received from another phone, without downloading.
-- "Select" — only for TTS engines; the translation model is picked
+- "Select" — only on TTS engine cards; the translation model is picked
   automatically by direction, and a recognition model is assigned with the
   "Speech recognition language:" chips on the STT model cards.
+- "Speech synthesis language:" — the language chips (RU/EN/NE) on cards in the
+  "Speech synthesis (TTS)" section (details in the "Speech input and read
+  aloud" section).
 
 How much phone memory you need:
 
@@ -60,12 +66,18 @@ How much phone memory you need:
 |----------------------|--------------|
 | Russian ⇄ English translation | 2 GB or more |
 | Translation to/from Nepali (via English) | 3–4 GB |
-| Whisper speech recognition (multilingual) | 6 GB |
-| Other speech recognition models | 2 GB or more |
+| Speech recognition (GigaAM, Parakeet, IndicConformer) | 2 GB or more |
+| Read aloud with local Piper voices | 2 GB or more |
 
 If memory or free storage is not enough, the app shows a warning on the
 "Models" screen. Deleting a model ("Delete") frees space — the model can be
-downloaded again or imported.
+downloaded again or imported. The "Loaded into memory" card on the "Models"
+screen lists the models currently held in RAM (including loaded Piper voice
+models) together with an estimated memory consumption.
+
+> ℹ Temporarily hidden from the "Models" screen: Whisper (recognition),
+> RHVoice and eSpeak NG (synthesis engines). If RHVoice or eSpeak NG was
+> picked in the settings earlier, that choice is kept.
 
 ## The "Translate" screen
 
@@ -99,6 +111,10 @@ downloaded again or imported.
 ## The "Settings" screen
 
 - "Interface language": "System default", "Русский", "English", "नेपाली".
+- "Speech synthesis engine": only "Android system TTS" is offered now (RHVoice
+  and eSpeak NG are temporarily hidden; an earlier choice of them is kept).
+  Per-language read aloud is configured with the "Speech synthesis language:"
+  chips on the "Models" screen.
 - "Theme": "System default", "Light", "Dark".
 - "Model unloading" — how many minutes after the app is minimized the models
   are released from RAM: "Immediately", "After 5 minutes (default)",
@@ -112,14 +128,30 @@ downloaded again or imported.
 ## Speech input and read aloud
 
 - Speech recognition: GigaAM (Russian), Parakeet (English), IndicConformer
-  (Nepali), Whisper (all three languages). Models are downloaded in the "Speech
-  recognition (STT)" section, and the "Speech recognition language:" chips on a
-  card set which model handles which language.
-- Read aloud uses the phone's voice engines. Pick an engine in
-  "Settings" → "Speech synthesis engine": "Android system TTS",
-  "RHVoice (ru, ne)" or "eSpeak NG (100+ languages)". The engine itself (for
-  example Google TTS or RHVoice) and a voice for the needed language must be
-  installed on the phone — otherwise read aloud will not work.
+  (Nepali). Models are downloaded in the "Speech recognition (STT)" section,
+  and the "Speech recognition language:" chips on a card set which model
+  handles which language. If the recognition model for the source language is
+  missing, the "Translate" screen shows it in the "Translation models
+  required" reminder under the "Speech recognition" section with a "Download"
+  button.
+- Read aloud. By default every language is read by the phone's voice engine
+  ("Android system TTS"). Per language you can switch it to a local Piper TTS
+  model (Russian, English, Nepali) with the "Speech synthesis language:" chips
+  (RU / EN / NE) on the cards in the "Speech synthesis (TTS)" section:
+  - tapping a language chip on a Piper model card (the model must be
+    downloaded) assigns that language to the model, and the same chip on the
+    "Android system TTS" card goes off;
+  - tapping a language chip on the "Android system TTS" card returns that
+    language to the system engine.
+  The "Selected" highlight on TTS cards works per language: a card is
+  highlighted if it is assigned at least one language. Tap the language icon
+  on a card to make it active for that language (the hint at the top of the
+  TTS section reminds about this).
+- If the phone's system TTS does not support a language (for example, the
+  device has no Nepali voice), the app offers and starts downloading the voice
+  model for that language on its own, and read aloud continues with the local
+  model. Local Piper voices play a phrase to the very end, without cutting
+  the tail off.
 
 ## Moving to another phone
 
@@ -149,8 +181,12 @@ CPU; for the Russian ⇄ Nepali direction two translation models work at the
 same time (via English).
 
 **The microphone does not recognize speech.**
-Check that an STT model for that language has been downloaded and assigned the
-language with the "Speech recognition language:" chips on the "Models" screen.
+The message on the screen tells you the cause: "Microphone recording
+permission is not granted…" — allow microphone access in the app settings;
+"To recognize speech, download a speech recognition model…" — download the
+STT model for the language (right from the "Speech recognition" section of the
+reminder on the "Translate" screen) and assign the language with the "Speech
+recognition language:" chips on the "Models" screen.
 
 **Why is there an "Import" button on a model card?** It lets you bring a model
 over from another phone (a ZIP export made by this same app) or from a
