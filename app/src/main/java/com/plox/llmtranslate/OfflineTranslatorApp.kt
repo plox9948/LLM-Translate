@@ -9,7 +9,6 @@ import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.launch
@@ -34,6 +33,12 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
 
     @Inject
     lateinit var preferences: ModelPreferences
+
+    // Инъекционный app-scope домена (SupervisorJob + IO + обработчик ошибок,
+    // ревью раунд 2) — тот же, что у ModelPreferences; ad-hoc CoroutineScope
+    // не имел ни SupervisorJob, ни обработки необработанных ошибок.
+    @Inject
+    lateinit var appScope: CoroutineScope
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -64,7 +69,7 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
      * модели удалённого каталога не должны считаться устаревшими.
      */
     private fun syncDatabaseWithCatalog() {
-        CoroutineScope(Dispatchers.IO).launch {
+        appScope.launch {
             try {
                 cleanupAudioRecords()
                 val obsoletePaths = modelRepository.cleanObsoleteRuntimes().toMutableList()

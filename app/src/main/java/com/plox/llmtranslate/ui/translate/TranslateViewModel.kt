@@ -229,6 +229,14 @@ class TranslateViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            // Состояние записи из рекордера — потоком (ревью раунд 2): внешний
+            // AudioRecorder.cancel() (разгрузка рантаймов при ON_STOP) гасит
+            // индикатор «идёт запись», не давая ему залипться в UI экрана.
+            audioRecorder.recordingFlow.collect { recording ->
+                update { it.copy(isRecording = recording) }
+            }
+        }
+        viewModelScope.launch {
             // Инициализация TTS текущим движком и переконфигурация при смене настройки.
             preferences.ttsEngine.collect { engine ->
                 val error = ttsRuntime.init(engine)

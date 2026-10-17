@@ -355,6 +355,42 @@ class TtsPlaybackCoordinatorTest {
         coVerify(exactly = 1) { piperRuntime.speak("нужный повтор", any(), any(), any()) }
     }
 
+    // ── ревью раунд 2 (Н-1): удаление/отмена скачиваемой карточки ──
+
+    @Test
+    fun `removed watched card resets download status to none without late retry`() {
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        coordinator.speak("текст", "ru")
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+
+        // Прогресс доходит, затем запись карточки удалена/отменена —
+        // эмиссия установленного списка БЕЗ записи наблюдаемой модели.
+        installedFlow.value = listOf(
+            readyPiper("tts-ru-piper-ruslan").copy(
+                status = ModelStatus.DOWNLOADING,
+                progress = 17,
+                filePath = null
+            )
+        )
+        assertEquals(17, coordinator.status.value.downloadProgress)
+        installedFlow.value = emptyList()
+
+        // Залипший DOWNLOADING-баннер снят, статус NONE, id сброшен.
+        assertEquals(TtsDownloadStatus.NONE, coordinator.status.value.downloadStatus)
+        assertNull(coordinator.status.value.downloadModelId)
+        assertEquals(0, coordinator.status.value.downloadProgress)
+
+        // Поздний авто-ретрай не срабатывает даже при повторной READY-установке.
+        installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
+        coVerify(exactly = 0) { piperRuntime.speak(any(), any(), any(), any()) }
+        coVerify(exactly = 0) {
+            modelManager.setTtsForLanguage("ru", "tts-ru-piper-ruslan")
+        }
+        assertEquals(TtsDownloadStatus.NONE, coordinator.status.value.downloadStatus)
+    }
+
     // ── ревью #55: монотонные id ошибок и ERROR-стадии для анти-повтора в UI ──
 
     @Test

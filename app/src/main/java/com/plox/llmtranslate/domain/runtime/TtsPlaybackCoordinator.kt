@@ -99,12 +99,25 @@ class TtsPlaybackCoordinator @Inject constructor(
     private val _status = MutableStateFlow(TtsPlaybackStatus())
     val status: StateFlow<TtsPlaybackStatus> = _status
 
-    // Снимки настроек/каталога для выбора движка (обновляются коллекторами init).
+    // Снимки настроек/каталога для выбора движка (обновляются коллекторами init;
+    // @Volatile — видимость между потоком-коллектором и корутинами озвучивания).
+    @Volatile
     private var ttsAssignments: Map<String, String> = emptyMap()
+    @Volatile
     private var piperModels: List<InstalledModel> = emptyList()
+    @Volatile
     private var catalogCards: List<ModelCard> = emptyList()
 
+    // Мутируемое состояние синглтона читается и пишется из разных потоков
+    // (app-scope на Dispatchers.IO: коллекторы flow, speak()/stop() из UI,
+    // колбэки рантаймов): @Volatile гарантирует междупоточную видимость
+    // happens-before (запись доvolatile-поля происходит-before чтения того же
+    // поля другим потоком). Инкременты счётчиков не атомарны — допустимо:
+    // монотонность важна только относительно каждого эмиссера своего поля,
+    // а все мутации статуса идут через атомарный MutableStateFlow.
+
     /** Job текущего озвучивания (piper-синтез или подготовка фолбэка). */
+    @Volatile
     private var speakJob: Job? = null
 
     /**
@@ -112,14 +125,17 @@ class TtsPlaybackCoordinator @Inject constructor(
      * (QUEUE_FLUSH-перехват в [TtsRuntime], отмена piper-джоба) не должен
      * снимать флаг «озвучиваем» новой фразы — same-паттерн issue #40.
      */
+    @Volatile
     private var utteranceToken = 0L
 
     /** Наблюдаемая координатором автоскачиваемая карточка (null — нет). */
+    @Volatile
     private var watchedDownloadId: String? = null
 
     /** Исходная фраза, которую нужно озвучить один раз после READY модели. */
     private data class PendingRetry(val text: String, val language: String)
 
+    @Volatile
     private var pendingRetry: PendingRetry? = null
 
     /**
@@ -127,7 +143,9 @@ class TtsPlaybackCoordinator @Inject constructor(
      * экземпляр ошибки/стадии ERROR получает новый id, экран запоминает
      * показанный и не показывает тот же повторно.
      */
+    @Volatile
     private var errorSeq = 0L
+    @Volatile
     private var downloadErrorSeq = 0L
 
     init {
@@ -340,7 +358,22 @@ class TtsPlaybackCoordinator @Inject constructor(
      */
     private fun handleWatchedDownload(models: List<InstalledModel>) {
         val cardId = watchedDownloadId ?: return
-        val model = models.firstOrNull { it.id == cardId } ?: return
+        val model = models.firstOrNull { it.id == cardId }
+        if (model == null) {
+            // Запись карточки удалена/снят запрос скачивания во время
+            // автоскачивания (ревью раунд 2): без сброса залипал DOWNLOADING
+            // баннер и оставался поздний авто-ретрай озвучки при последующей
+            // установке модели с тем же id.
+            watchedDownloadId = null
+            pendingRetry = null
+            _status.value = _status.value.copy(
+                downloadModelId = null,
+                downloadStatus = TtsDownloadStatus.NONE,
+                downloadProgress = 0
+            )
+            Timber.w("Автоскачивание Piper-модели $cardId прервано: запись удалена")
+            return
+        }
         when (model.status) {
             ModelStatus.DOWNLOADING ->
                 _status.value = _status.value.copy(downloadProgress = model.progress)

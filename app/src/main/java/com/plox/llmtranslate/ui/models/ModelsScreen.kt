@@ -258,13 +258,12 @@ fun ModelsScreen(
 
         ModelCategory.entries.forEach { category ->
             val installed = uiState.installed.filter { it.category == category }
-            // Скрытые карточки (hidden, issue #55) показываются в секции только
-            // при наличии установленной записи — иначе удалённую/перескачанную
-            // hidden-модель нельзя ни удалить, ни скачать заново (ревью #52).
-            val installedIds = installed.map { it.id }.toSet()
-            val cards = uiState.catalog.filter {
-                it.category == category && (!it.hidden || it.id in installedIds)
-            }
+            // Карточки секции: каталог (с фильтром hidden) + синтетические
+            // карточки для установленных вне каталога записей (см. helper).
+            val cards = sectionCards(
+                uiState.catalog.filter { it.category == category },
+                installed
+            )
             val activeId = uiState.activeIds[category]
 
             item(key = "header_$category") {
@@ -435,6 +434,50 @@ fun ModelsScreen(
         )
     }
 }
+
+/**
+ * Карточки секции категории: каталожные карточки (скрытые hidden-карточки,
+ * issue #55, показываются только при наличии установленной записи — ревью #52)
+ * плюс синтетические карточки для установленных записей, отсутствующих в
+ * каталоге (импортные модели, ревью раунд 2): без них импортированная модель
+ * не видна на экране и её нельзя удалить/экспортировать. Поля синтетической
+ * карточки берутся из записи, каталожные поля — значения по умолчанию.
+ * Чистая логика — вынесена для unit-теста.
+ */
+internal fun sectionCards(
+    catalog: List<ModelCard>,
+    installed: List<InstalledModel>
+): List<ModelCard> {
+    val installedIds = installed.map { it.id }.toSet()
+    val cards = catalog.filter { !it.hidden || it.id in installedIds }.toMutableList()
+    val catalogIds = catalog.map { it.id }.toSet()
+    installed.forEach { model ->
+        if (model.id !in catalogIds) cards.add(syntheticInstalledCard(model))
+    }
+    return cards
+}
+
+/** Синтетическая карточка установленной модели вне каталога (ревью раунд 2). */
+private fun syntheticInstalledCard(model: InstalledModel): ModelCard = ModelCard(
+    id = model.id,
+    category = model.category,
+    displayName = model.displayName,
+    description = model.description,
+    runtime = model.runtime,
+    sizeBytes = model.sizeBytes,
+    ramRequiredMb = model.ramRequiredMb,
+    languages = model.languages,
+    quality = model.quality,
+    speed = model.speed,
+    url = model.url,
+    urls = model.urls,
+    sha256 = model.sha256,
+    sha256s = model.sha256s,
+    license = model.license,
+    minAndroidSdk = model.minAndroidSdk,
+    recommendedRamMb = model.recommendedRamMb,
+    hidden = false
+)
 
 /**
  * Баннер ошибки/предупреждения на весь экран.

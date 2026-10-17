@@ -11,6 +11,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -126,10 +128,23 @@ class AudioRecorder @Inject constructor(
         const val BITS_PER_SAMPLE = 16
     }
 
-    @Volatile
-    var isRecording: Boolean = false
-        private set
+    /**
+     * Флаг активной записи: пишет рекордер (start/cancel/stop), читают цикл
+     * чтения (другой поток) и UI. Бэкинг — [recordingFlow] (re-view раунд 2):
+     * StateFlow даёт и междупоточную видимость (happens-before), и реактивную
+     * подписку ViewModel, чтобы индикатор не залипал при внешнем cancel().
+     */
+    private val _recordingFlow = MutableStateFlow(false)
 
+    /** Реактивное состояние записи для UI (true — идёт запись с микрофона). */
+    val recordingFlow: StateFlow<Boolean> = _recordingFlow
+
+    /** Активна ли запись сейчас. */
+    val isRecording: Boolean
+        get() = _recordingFlow.value
+
+    // Поле освобождается/подменяется только потоком, переводившим
+    // _recordingFlow; видимость — через volatile-механизм StateFlow.
     private var audioRecord: AudioRecord? = null
     private var pcmBuffer = ByteArrayOutputStream()
     private var readJob: Job? = null
@@ -178,17 +193,18 @@ class AudioRecorder @Inject constructor(
         }
 
         audioRecord = record
-        pcmBuffer = ByteArrayOutputStream()
+        val buffer = ByteArrayOutputStream()
+        pcmBuffer = buffer
         record.startRecording()
-        isRecording = true
+        _recordingFlow.value = true
 
         readJob = scope.launch {
-            val buffer = ByteArray(minBuffer)
+            val readBuffer = ByteArray(minBuffer)
             while (isRecording) {
-                val read = record.read(buffer, 0, buffer.size)
+                val read = record.read(readBuffer, 0, readBuffer.size)
                 if (read > 0) {
-                    synchronized(pcmBuffer) {
-                        pcmBuffer.write(buffer, 0, read)
+                    synchronized(buffer) {
+                        buffer.write(readBuffer, 0, read)
                     }
                 } else if (read < 0) {
                     // Ошибка чтения: continue превратился бы в busy-spin
@@ -211,22 +227,28 @@ class AudioRecorder @Inject constructor(
      */
     fun cancel() {
         if (!isRecording) return
-        isRecording = false
+        _recordingFlow.value = false
         val job = readJob
         readJob = null
+        // Целевой AudioRecord захватывается в момент вызова (ревью раунд 2):
+        // если в окне join() стартует новая запись, освобождается только
+        // снятый рекордер, а поле обнуляется лишь пока в нём всё ещё он же.
+        val captured = audioRecord
+        val capturedBuffer = pcmBuffer
         scope.launch {
             // Дожидаемся выхода цикла чтения, чтобы не освободить AudioRecord
             // посреди блокирующего read() (тот же порядок, что в stopRecording).
             job?.join()
-            val record = audioRecord
-            audioRecord = null
+            if (audioRecord === captured) {
+                audioRecord = null
+            }
             try {
-                record?.stop()
+                captured?.stop()
             } catch (e: IllegalStateException) {
                 // Буфер мог быть пуст — не критично.
             }
-            record?.release()
-            synchronized(pcmBuffer) { pcmBuffer.reset() }
+            captured?.release()
+            synchronized(capturedBuffer) { capturedBuffer.reset() }
             Timber.d("Запись с микрофона снята при выгрузке рантаймов")
         }
     }
@@ -237,23 +259,29 @@ class AudioRecorder @Inject constructor(
      */
     suspend fun stopRecording(): String? {
         if (!isRecording) return null
-        isRecording = false
-        readJob?.join()
+        _recordingFlow.value = false
+        val job = readJob
         readJob = null
-
-        val record = audioRecord
-        audioRecord = null
+        // Тот же захват целевых объектов в момент вызова, что в cancel()
+        // (ревью раунд 2): новая запись, стартованная в окне join(), этим
+        // вызовом не освобождается и не сохраняется.
+        val captured = audioRecord
+        val capturedBuffer = pcmBuffer
+        job?.join()
+        if (audioRecord === captured) {
+            audioRecord = null
+        }
 
         // Блокирующие вызовы (AudioRecord.stop/release, запись WAV) — на IO.
         return withContext(Dispatchers.IO) {
             try {
-                record?.stop()
+                captured?.stop()
             } catch (e: IllegalStateException) {
                 // Буфер мог быть пуст — не критично.
             }
-            record?.release()
+            captured?.release()
 
-            val pcm = synchronized(pcmBuffer) { pcmBuffer.toByteArray() }
+            val pcm = synchronized(capturedBuffer) { capturedBuffer.toByteArray() }
             if (pcm.isEmpty()) {
                 Timber.w("Пустая запись: PCM-данных нет")
                 return@withContext null

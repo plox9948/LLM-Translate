@@ -309,6 +309,25 @@ class TranslateViewModelTest {
         assertEquals("MIC_STT", viewModel.uiState.value.error)
     }
 
+    // ── Индикация записи из потокового состояния рекордера (ревью раунд 2, Н-7) ──
+
+    @Test
+    fun `external recorder cancel resets isRecording indicator in ui state`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val recording = kotlinx.coroutines.flow.MutableStateFlow(false)
+        every { audioRecorder.recordingFlow } returns recording
+        createViewModel()
+
+        // Старт записи (эмит рекордера) — индикатор поднят.
+        recording.value = true
+        assertTrue(viewModel.uiState.value.isRecording)
+
+        // Внешний AudioRecorder.cancel() (разгрузка рантаймов при ON_STOP) —
+        // эмит false: индикатор гаснет, не залипая.
+        recording.value = false
+        assertFalse(viewModel.uiState.value.isRecording)
+    }
+
     // ── Анти-повтор sticky-статусов координатора (ревью #55) ──
 
     @Test

@@ -81,7 +81,13 @@ class PiperTtsRuntime @Inject constructor(
      */
     private val engineMutex = Mutex()
 
-    /** Текущий пучок; меняется только под [engineMutex]. */
+    /**
+     * Текущий пучок; меняется только под [engineMutex]. @Volatile — чтение
+     * готовности ([speak], [releaseModel]) идёт вне мьютекса из других потоков:
+     * без guaranteed-видимости (happens-before) готовность модели могла не
+     * проявиться читающему потоку.
+     */
+    @Volatile
     private var loaded: LoadedPiper? = null
 
     private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
