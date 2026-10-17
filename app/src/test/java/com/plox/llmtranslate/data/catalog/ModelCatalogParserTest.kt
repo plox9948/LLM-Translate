@@ -259,13 +259,29 @@ class ModelCatalogParserTest {
         assertTrue("models_catalog.json не найден относительно $candidates", file != null)
 
         val raw = file!!.readText(Charsets.UTF_8)
-        // Версия каталога assets (после #50 — 11: добавлены 3 Piper TTS-модели).
-        assertEquals(11, parser.parseVersion(raw))
+        // Версия каталога assets (после #55 — 12: Whisper/RHVoice/eSpeak NG
+        // помечены hidden).
+        assertEquals(12, parser.parseVersion(raw))
 
         val cards = parser.parse(raw)
         // Число карточек = текущему составу каталога assets (после #50 —
-        // 14 моделей: 11 из #34 + 3 скачиваемых Piper TTS).
+        // 14 моделей: 11 из #34 + 3 скачиваемых Piper TTS; скрытые hidden
+        // карточки issue #55 парсятся и остаются в каталоге).
         assertEquals(14, cards.size)
+        // Скрытые из UI карточки (issue #55): в каталоге есть, hidden=true.
+        val expectedHidden = setOf(
+            "stt-whisper-small-multilingual",
+            "tts-rhvoice",
+            "tts-espeak"
+        )
+        for (id in expectedHidden) {
+            val card = cards.firstOrNull { it.id == id }
+            assertTrue("Скрытая карточка $id не распарсилась", card != null)
+            assertTrue("$id должна быть hidden", card!!.hidden)
+        }
+        for (card in cards.filter { it.id !in expectedHidden }) {
+            assertFalse("${card.id} не должна быть hidden", card.hidden)
+        }
         for (card in cards.filter { it.downloadUrls().isNotEmpty() }) {
             val urls = card.downloadUrls()
             assertEquals("${card.id}: sha256s != urls", urls.size, card.sha256s.size)
@@ -300,6 +316,38 @@ class ModelCatalogParserTest {
                 card.downloadUrls().single().endsWith(".tar.bz2")
             )
         }
+    }
+
+    @Test
+    fun `parses hidden flag`() {
+        val json = """
+            {
+              "version": 12,
+              "models": [
+                {
+                  "id": "tts-espeak",
+                  "category": "TTS",
+                  "displayName": "eSpeak NG",
+                  "runtime": "ESPEAK",
+                  "sizeBytes": 0,
+                  "hidden": true
+                },
+                {
+                  "id": "tts-system",
+                  "category": "TTS",
+                  "displayName": "System",
+                  "runtime": "SYSTEM_TTS",
+                  "sizeBytes": 0
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val cards = parser.parse(json)
+        assertEquals(2, cards.size)
+        assertTrue(cards.first { it.id == "tts-espeak" }.hidden)
+        // Поле отсутствует в JSON — значение по умолчанию false.
+        assertFalse(cards.first { it.id == "tts-system" }.hidden)
     }
 
     @Test(expected = Exception::class)

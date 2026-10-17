@@ -86,7 +86,13 @@ data class ModelCard(
     val sha256s: List<String?> = emptyList(),
     val license: String,
     val minAndroidSdk: Int,
-    val recommendedRamMb: Int
+    val recommendedRamMb: Int,
+    /**
+     * Скрыта из интерфейса каталога (issue #55): карточка не показывается
+     * в секциях экрана «Модели» и не предлагается чипами направления;
+     * в каталоге и коде модель остаётся (быстрый возврат).
+     */
+    val hidden: Boolean = false
 ) {
     /** Лицензия требует подтверждения (некоммерческая). */
     val requiresLicenseConfirmation: Boolean

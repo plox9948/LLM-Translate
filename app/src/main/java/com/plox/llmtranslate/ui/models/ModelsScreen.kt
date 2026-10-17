@@ -257,7 +257,8 @@ fun ModelsScreen(
         }
 
         ModelCategory.entries.forEach { category ->
-            val cards = uiState.catalog.filter { it.category == category }
+            // Скрытые карточки (hidden, issue #55) в секциях не показываются.
+            val cards = uiState.catalog.filter { it.category == category && !it.hidden }
             val installed = uiState.installed.filter { it.category == category }
             val activeId = uiState.activeIds[category]
 

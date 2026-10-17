@@ -34,7 +34,9 @@ data class CatalogModelDto(
     val sha256s: List<String?>? = null,
     val license: String = "Apache-2.0",
     val minAndroidSdk: Int = 26,
-    val recommendedRamMb: Int = 0
+    val recommendedRamMb: Int = 0,
+    /** Скрыта из интерфейса каталога (issue #55), остаётся в каталоге и коде. */
+    val hidden: Boolean = false
 )
 
 @Serializable
@@ -105,7 +107,8 @@ private fun CatalogModelDto.toCard(): ModelCard {
         sha256s = resolveSha256s(sha256, sha256s),
         license = license,
         minAndroidSdk = minAndroidSdk,
-        recommendedRamMb = recommendedRamMb
+        recommendedRamMb = recommendedRamMb,
+        hidden = hidden
     )
 }
 

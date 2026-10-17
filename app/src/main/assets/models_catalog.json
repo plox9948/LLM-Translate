@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 12,
   "models": [
     {
       "id": "firefox-bergamot-en-ru",
@@ -223,6 +223,7 @@
     {
       "id": "stt-whisper-small-multilingual",
       "category": "STT",
+      "hidden": true,
       "displayName": "Whisper Small Multilingual (sherpa-onnx)",
       "description": "Whisper, ru/en/ne и другие, ~360 МБ (int8)",
       "runtime": "SHERPA",
@@ -276,6 +277,7 @@
     {
       "id": "tts-rhvoice",
       "category": "TTS",
+      "hidden": true,
       "displayName": "RHVoice",
       "description": "Синтез речи ru, ne (устанавливается отдельно)",
       "runtime": "RHVOICE",
@@ -297,6 +299,7 @@
     {
       "id": "tts-espeak",
       "category": "TTS",
+      "hidden": true,
       "displayName": "eSpeak NG",
       "description": "100+ языков, включая ne",
       "runtime": "ESPEAK",

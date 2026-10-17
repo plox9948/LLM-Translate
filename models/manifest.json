@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 12,
   "comment": "Единственный источник правды о моделях. Из него генерируются scripts/download_models.* и assets/models_catalog.json. SHA-256 заполняются после первичного скачивания (скрипт печатает их). Версия синхронна с version в assets/models_catalog.json: любое изменение моделей/файлов поднимает версию в обоих файлах одинаково.",
   "models": [
     {
@@ -275,6 +275,7 @@
       "id": "stt-whisper-small-multilingual",
       "category": "STT",
       "runtime": "SHERPA",
+      "hidden": true,
       "displayName": "Whisper Small Multilingual (sherpa-onnx)",
       "description": "Whisper, ru/en/ne и другие, ~360 МБ (int8)",
       "sizeBytes": 377487360,
@@ -323,6 +324,7 @@
       "id": "tts-rhvoice",
       "category": "TTS",
       "runtime": "RHVOICE",
+      "hidden": true,
       "displayName": "RHVoice",
       "description": "Синтез речи ru, ne (устанавливается отдельно)",
       "sizeBytes": 0,
@@ -339,6 +341,7 @@
       "id": "tts-espeak",
       "category": "TTS",
       "runtime": "ESPEAK",
+      "hidden": true,
       "displayName": "eSpeak NG",
       "description": "100+ языков, включая ne",
       "sizeBytes": 0,

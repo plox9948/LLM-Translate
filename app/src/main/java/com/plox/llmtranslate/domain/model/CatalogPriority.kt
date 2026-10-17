@@ -22,7 +22,10 @@ object CatalogPriority {
         to: String
     ): Map<String, String> {
         if (from == to) return emptyMap()
-        return TranslationModelSelector.missingChain(catalog, installed, from, to)
+        // Скрытые карточки (hidden, issue #55) чипами не предлагаются,
+        // хотя остаются в каталоге.
+        val visible = catalog.filterNot { it.hidden }
+        return TranslationModelSelector.missingChain(visible, installed, from, to)
             .associate { card ->
                 card.id to chipLabel(from, to)
             }

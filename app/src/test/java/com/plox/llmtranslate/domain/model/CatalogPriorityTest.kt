@@ -67,6 +67,24 @@ class CatalogPriorityTest {
         assertTrue(CatalogPriority.requiredChips(catalog, emptyList(), "ru", "ru").isEmpty())
     }
 
+    @Test
+    fun `hidden cards are not offered as chips`() {
+        // issue #55: скрытая карточка остаётся в каталоге, но чипы её не предлагают.
+        val hiddenCatalog = catalog.map {
+            if (it.id == ruEn.id) it.copy(hidden = true) else it
+        }
+        assertTrue(CatalogPriority.requiredChips(hiddenCatalog, emptyList(), "ru", "en").isEmpty())
+
+        // Скрыто одно из звеньев цепочки ru→ne (en→ne): каталог цепочку
+        // не покрывает — чипов нет.
+        val hiddenFromHub = catalog.map {
+            if (it.id == enNe.id) it.copy(hidden = true) else it
+        }
+        assertTrue(
+            CatalogPriority.requiredChips(hiddenFromHub, emptyList(), "ru", "ne").isEmpty()
+        )
+    }
+
     private fun card(id: String, displayName: String, languages: List<String>): ModelCard =
         ModelCard(
             id = id,
