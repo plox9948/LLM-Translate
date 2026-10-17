@@ -10,6 +10,14 @@ package com.plox.llmtranslate.domain.model
  */
 object TtsModelSelector {
 
+    /**
+     * Сентинель-значение настройки tts_by_language (issue #53): языку явно
+     * назначен Системный Android TTS. Отличает явный выбор системного движка
+     * от отсутствия назначения; по смыслу равно отсутствующему значению
+     * (значение по умолчанию — тоже системный TTS).
+     */
+    const val SYSTEM_SENTINEL = TtsEngines.SYSTEM
+
     /** Выбор: движок по умолчанию или конкретная Piper-модель. */
     sealed class TtsChoice {
         /** Системный Android TTS (настройка ttsEngine / движок по умолчанию). */
@@ -28,6 +36,12 @@ object TtsModelSelector {
 
     /**
      * Подобрать способ озвучивания языка [language].
+     * Явное назначение имеет приоритет: сентинель [SYSTEM_SENTINEL] —
+     * Системный Android TTS; id Piper-модели — она же при готовности.
+     * Без назначения — [TtsChoice.SystemEngine] (значения по умолчанию),
+     * дефолтная карточка языка ([DEFAULT_LANGUAGE_CARDS]) автоматически
+     * не выбирается — она используется только фолбэком
+     * TtsPlaybackCoordinator при неподдерживаемом системном TTS.
      * @param assignments карта «язык → id» из настроек (ttsByLanguage).
      * @param piperInstalled установленные модели категории TTS (включая
      *   движки-ярлыки SYSTEM_TTS/RHVOICE/ESPEAK — они не участвуют в выборе).
@@ -40,6 +54,7 @@ object TtsModelSelector {
         piperInstalled: List<InstalledModel>
     ): TtsChoice {
         val assignedId = assignments[language] ?: return TtsChoice.SystemEngine
+        if (assignedId == SYSTEM_SENTINEL) return TtsChoice.SystemEngine
         val ready = piperInstalled.firstOrNull {
             it.id == assignedId &&
                 it.runtime == RuntimeType.PIPER_ONNX &&

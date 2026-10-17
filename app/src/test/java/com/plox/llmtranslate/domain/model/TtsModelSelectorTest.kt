@@ -97,6 +97,38 @@ class TtsModelSelectorTest {
     }
 
     @Test
+    fun `system sentinel gives system engine even with ready piper`() {
+        // Issue #53: явное назначение системного TTS перебивает готовую Piper.
+        val installed = listOf(piperModel("tts-ru-piper-ruslan", "ru", ready = true))
+        val choice = TtsModelSelector.select(
+            "ru",
+            mapOf("ru" to TtsModelSelector.SYSTEM_SENTINEL),
+            installed
+        )
+        assertEquals(TtsModelSelector.TtsChoice.SystemEngine, choice)
+    }
+
+    @Test
+    fun `system sentinel value is literal system`() {
+        assertEquals("system", TtsModelSelector.SYSTEM_SENTINEL)
+    }
+
+    @Test
+    fun `sentinel of other language does not affect assigned model`() {
+        // Сентинель другого языка не мешает выбору назначенной модели (ru).
+        val installed = listOf(
+            piperModel("tts-ru-piper-ruslan", "ru", ready = true),
+            piperModel("tts-en-piper-ryan", "en", ready = true)
+        )
+        val choice = TtsModelSelector.select(
+            "ru",
+            mapOf("ru" to "tts-ru-piper-ruslan", "en" to TtsModelSelector.SYSTEM_SENTINEL),
+            installed
+        )
+        assertEquals(TtsModelSelector.TtsChoice.Model("tts-ru-piper-ruslan"), choice)
+    }
+
+    @Test
     fun `engine shortcut cards are never selected as model`() {
         // Ярлык SYSTEM_TTS с id из assignments не должен давать Model-выбор.
         val installed = listOf(engineCard("tts-system", RuntimeType.SYSTEM_TTS))

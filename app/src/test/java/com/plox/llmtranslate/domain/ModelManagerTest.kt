@@ -11,6 +11,7 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -145,6 +146,31 @@ class ModelManagerTest {
         val result = manager.setActive(ModelCategory.TRANSLATION, "m1")
         assertTrue(result)
         coVerify { preferences.setActiveModelId(ModelCategory.TRANSLATION, "m1") }
+    }
+
+    @Test
+    fun `setTtsForLanguage accepts system sentinel without model lookup`() = runTest {
+        // Issue #53: сентинель «system» — явное назначение системного TTS,
+        // карточка модели не проверяется.
+        manager.setTtsForLanguage("ru", TtsModelSelector.SYSTEM_SENTINEL)
+        coVerify(exactly = 0) { repository.getById(TtsModelSelector.SYSTEM_SENTINEL) }
+        coVerify { preferences.setTtsForLanguage("ru", TtsModelSelector.SYSTEM_SENTINEL) }
+    }
+
+    @Test
+    fun `setTtsForLanguage rejects unknown model id`() = runTest {
+        coEvery { repository.getById("garbage") } returns null
+        manager.setTtsForLanguage("ru", "garbage")
+        coVerify(exactly = 0) { preferences.setTtsForLanguage(any(), any()) }
+    }
+
+    @Test
+    fun `setTtsForLanguage accepts ready piper model`() = runTest {
+        val piper = readyModel("tts-ru-piper-ruslan", ModelCategory.TTS)
+            .copy(runtime = RuntimeType.PIPER_ONNX)
+        coEvery { repository.getById("tts-ru-piper-ruslan") } returns piper
+        manager.setTtsForLanguage("ru", "tts-ru-piper-ruslan")
+        coVerify { preferences.setTtsForLanguage("ru", "tts-ru-piper-ruslan") }
     }
 
     @Test

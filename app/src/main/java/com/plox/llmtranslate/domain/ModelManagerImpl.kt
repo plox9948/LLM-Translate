@@ -18,6 +18,7 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelImportMeta
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -100,7 +101,9 @@ class ModelManagerImpl @Inject constructor(
 
     override suspend fun setTtsForLanguage(language: String, modelId: String?) =
         withContext(Dispatchers.IO) {
-            if (modelId != null) {
+            // Сентинель «system» (issue #53) — явное назначение системного
+            // TTS, карточка модели не требуется.
+            if (modelId != null && modelId != TtsModelSelector.SYSTEM_SENTINEL) {
                 // карточка существует (запись синхронизирована с каталогом),
                 // категория TTS, рантайм скачиваемой Piper-модели, готова.
                 val model = repository.getById(modelId)

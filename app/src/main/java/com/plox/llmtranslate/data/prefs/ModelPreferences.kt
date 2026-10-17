@@ -108,14 +108,18 @@ class ModelPreferences @Inject constructor(
     // --- TTS-модель на каждый язык (issue #50) ---
 
     /**
-     * Карта «код языка → id Piper TTS-модели» (языки: "ru"/"en"/"ne").
+     * Карта «код языка → id Piper TTS-модели или сентинель "system"»
+     * (языки: "ru"/"en"/"ne"; issue #53 — явное назначение системного TTS).
+     * Значение отсутствует — тоже системный TTS (по умолчанию).
      * Сериализация значения — JSON-строка в preference `tts_by_language`.
      */
     val ttsByLanguage: Flow<Map<String, String>> =
         context.dataStore.data.map { prefs -> decodeTtsByLanguage(prefs[TTS_BY_LANGUAGE_KEY]) }
 
     /**
-     * Назначить Piper TTS-модель языку; null — снять назначение.
+     * Назначить языку Piper TTS-модель по id или Системный Android TTS
+     * ([com.plox.llmtranslate.domain.model.TtsModelSelector.SYSTEM_SENTINEL]);
+     * null — снять назначение.
      */
     suspend fun setTtsForLanguage(language: String, modelId: String?) {
         context.dataStore.edit { prefs ->
