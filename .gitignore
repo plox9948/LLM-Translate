@@ -9,6 +9,7 @@ captures/
 .cxx/
 *.keystore
 *.jks
+keystore/
 .env
 .DS_Store
 # Скачанные модели (только манифест и аварийный архив models/files в git).

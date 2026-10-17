@@ -92,7 +92,8 @@ scripts/                   # download_models.ps1 / .sh (с проверкой SH
 ## Сборка
 
 Готовые APK релизов публикуются в **Gitea Releases** репозитория
-(актуальная версия — v0.5.4), собирать из исходников не обязательно.
+(начиная с v0.5.7 — подписанные release-сборки, см. «Подписанные релизы»),
+собирать из исходников не обязательно.
 
 ### Требования
 
@@ -128,6 +129,38 @@ scripts/                   # download_models.ps1 / .sh (с проверкой SH
    ```bash
    adb install -r app/build/outputs/apk/debug/app-debug.apk
    ```
+
+### Подписанные релизы (APK по ссылке)
+
+Публичные APK — **release-сборки, подписанные релизным ключом** (не debug):
+обновления поверх установленной версии ставятся только той же подписью, а
+minified-сборка R8 быстрее debug. Ключ и пароли в git не попадают:
+
+- keystore: `keystore/release.keystore` (в `.gitignore`) — **обязателен к резервной
+  копии**: при его утере знакомые не смогут ставить обновления поверх
+  установленных версий (понадобится удаление с потерей истории/избранного);
+- пароли (`RELEASE_STORE_FILE`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`,
+  `RELEASE_KEY_PASSWORD`) — в некоммитируемом `local.properties`.
+
+Создание keystore с нуля (однократно, на машине релизов):
+
+```powershell
+keytool -genkeypair -v -keystore keystore\release.keystore -alias llmtranslate `
+  -keyalg RSA -keysize 2048 -validity 10000 `
+  -dname "CN=LLM-Translate, OU=dev, O=plox, C=US"
+```
+
+Сборка подписанного релиза: `./gradlew assembleRelease` →
+`app/build/outputs/apk/release/app-release.apk`; если `RELEASE_STORE_*` не заданы —
+Gradle падает с понятной ошибкой. Проверка подписи:
+`apksigner verify --print-certs app-release.apk` (SHA-256 отпечаток ключа —
+`067485da0986b64792f3d949b457f65498ec4214538627c3ca1925da0d098240`).
+
+**Правило R8:** C++-части onnxruntime/sherpa/slimt ищут классы и поля по исходным
+именам (`FindClass`/`GetFieldID`) — любые новые JNI-библиотеки требуют keep-правил
+в `app/proguard-rules.pro` (см. `ai.onnxruntime.**`, `com.k2fsa.sherpa.onnx.**`);
+release-APK обязательно прогоняется на устройстве (инференс, STT, бэкап/импорт) —
+ошибки R8 проявляются только в рантайме.
 
 ## Вендореные нативные библиотеки
 

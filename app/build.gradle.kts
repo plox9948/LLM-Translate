@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -20,6 +22,20 @@ configurations.configureEach {
     exclude(module = "sherpa-onnx-jvm")
 }
 
+// Параметры подписи release читаются из local.properties (файл не коммитится:
+// keystore и пароли лежат только локально). Ключи: RELEASE_STORE_FILE,
+// RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD.
+val localProperties = Properties().apply {
+    val propsFile = rootProject.file("local.properties")
+    if (propsFile.exists()) propsFile.inputStream().use { load(it) }
+}
+val releaseSigningKeys = listOf(
+    "RELEASE_STORE_FILE" to localProperties.getProperty("RELEASE_STORE_FILE"),
+    "RELEASE_STORE_PASSWORD" to localProperties.getProperty("RELEASE_STORE_PASSWORD"),
+    "RELEASE_KEY_ALIAS" to localProperties.getProperty("RELEASE_KEY_ALIAS"),
+    "RELEASE_KEY_PASSWORD" to localProperties.getProperty("RELEASE_KEY_PASSWORD"),
+)
+
 android {
     namespace = "com.plox.llmtranslate"
     compileSdk = 34
@@ -28,8 +44,8 @@ android {
         applicationId = "com.plox.llmtranslate"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.5.6"
+        versionCode = 13
+        versionName = "0.5.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -52,6 +68,23 @@ android {
         }
     }
 
+    signingConfigs {
+        val missingKeys = releaseSigningKeys
+            .filter { it.second.isNullOrBlank() }
+            .joinToString(", ") { it.first }
+        if (missingKeys.isNotEmpty()) {
+            throw GradleException(
+                "local.properties: не заданы RELEASE_STORE_* для подписи release (нет: $missingKeys)"
+            )
+        }
+        create("release") {
+            storeFile = rootProject.file(localProperties.getProperty("RELEASE_STORE_FILE")!!)
+            storePassword = localProperties.getProperty("RELEASE_STORE_PASSWORD")
+            keyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS")
+            keyPassword = localProperties.getProperty("RELEASE_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -60,6 +93,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             isMinifyEnabled = false
