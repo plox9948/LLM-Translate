@@ -69,6 +69,13 @@ class ModelBackupManagerRoundTripTest {
         every { preferences.ttsEngine } returns flowOf("system")
         every { preferences.uiLanguage } returns flowOf("system")
         every { preferences.theme } returns flowOf("system")
+        // Настройки, добавленные в бэкап по ревью #53 — потоки для buildSettings.
+        every { preferences.sttByLanguage } returns flowOf(mapOf("ru" to "s1"))
+        every { preferences.ttsByLanguage } returns flowOf(mapOf("ru" to "system"))
+        every { preferences.unloadTimeoutMinutes } returns flowOf(5)
+        every { preferences.modelDirectionRetention } returns flowOf("keep")
+        every { preferences.lastSourceLang } returns flowOf("ru")
+        every { preferences.lastTargetLang } returns flowOf("en")
         coEvery { preferences.getActiveModelId(any()) } returns null
     }
 

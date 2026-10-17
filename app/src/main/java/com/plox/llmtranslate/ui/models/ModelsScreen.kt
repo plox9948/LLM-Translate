@@ -257,9 +257,14 @@ fun ModelsScreen(
         }
 
         ModelCategory.entries.forEach { category ->
-            // Скрытые карточки (hidden, issue #55) в секциях не показываются.
-            val cards = uiState.catalog.filter { it.category == category && !it.hidden }
             val installed = uiState.installed.filter { it.category == category }
+            // Скрытые карточки (hidden, issue #55) показываются в секции только
+            // при наличии установленной записи — иначе удалённую/перескачанную
+            // hidden-модель нельзя ни удалить, ни скачать заново (ревью #52).
+            val installedIds = installed.map { it.id }.toSet()
+            val cards = uiState.catalog.filter {
+                it.category == category && (!it.hidden || it.id in installedIds)
+            }
             val activeId = uiState.activeIds[category]
 
             item(key = "header_$category") {

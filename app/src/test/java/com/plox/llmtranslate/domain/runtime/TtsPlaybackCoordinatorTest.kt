@@ -321,4 +321,76 @@ class TtsPlaybackCoordinatorTest {
         )
         assertEquals(TtsDownloadStatus.NONE, coordinator.status.value.downloadStatus)
     }
+
+    // ── ревью #54: stop() снимает pendingRetry, авто-повтор после READY гасится ──
+
+    @Test
+    fun `stop during downloading cancels pending retry and ready model does not speak`() {
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        coordinator.speak("устаревшая фраза", "ru")
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+
+        coordinator.stop()
+
+        // Скачивание продолжается и доходит до READY — устаревшая фраза
+        // после отмены озвучки не проигрывается.
+        installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
+
+        coVerify(exactly = 0) { piperRuntime.speak(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { piperRuntime.load(any(), any()) }
+        assertEquals(TtsDownloadStatus.NONE, coordinator.status.value.downloadStatus)
+        assertTrue(coordinator.status.value.isSpeaking.not())
+    }
+
+    @Test
+    fun `without stop ready model still re-speaks — pendingRetry contract intact`() {
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        coordinator.speak("нужный повтор", "ru")
+        installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
+
+        coVerify(exactly = 1) { piperRuntime.speak("нужный повтор", any(), any(), any()) }
+    }
+
+    // ── ревью #55: монотонные id ошибок и ERROR-стадии для анти-повтора в UI ──
+
+    @Test
+    fun `repeated speak failures get strictly increasing error ids`() {
+        stubLanguageNotSupported("de")
+
+        coordinator.speak("первая", "de")
+        val first = coordinator.status.value.errorId
+
+        coordinator.clearError()
+        coordinator.speak("вторая", "de")
+        val second = coordinator.status.value.errorId
+
+        assertTrue("id ошибки монотонно растут: $first -> $second", second > first && first > 0)
+        // Промежуточные эмиссии того же экземпляра ошибки id не меняют.
+        val same = coordinator.status.value.copy(isSpeaking = true).errorId
+        assertEquals(second, same)
+    }
+
+    @Test
+    fun `download failure stage stamped with non-zero download error id`() {
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        coordinator.speak("текст", "ru")
+        assertEquals(0L, coordinator.status.value.downloadErrorId)
+
+        installedFlow.value = listOf(
+            readyPiper("tts-ru-piper-ruslan").copy(
+                status = ModelStatus.ERROR,
+                progress = 0,
+                filePath = null
+            )
+        )
+
+        assertEquals(TtsDownloadStatus.ERROR, coordinator.status.value.downloadStatus)
+        assertTrue(coordinator.status.value.downloadErrorId > 0)
+    }
 }

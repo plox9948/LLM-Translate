@@ -12,11 +12,14 @@ import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
+import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
+import com.plox.llmtranslate.domain.runtime.TtsDownloadStatus
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
+import com.plox.llmtranslate.domain.runtime.TtsPlaybackStatus
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -304,5 +307,65 @@ class TranslateViewModelTest {
         viewModel.onSttModelMissing()
 
         assertEquals("MIC_STT", viewModel.uiState.value.error)
+    }
+
+    // ── Анти-повтор sticky-статусов координатора (ревью #55) ──
+
+    @Test
+    fun `stale coordinator tts error not reshown but new error id shown once`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val status = kotlinx.coroutines.flow.MutableStateFlow(
+            TtsPlaybackStatus(
+                error = RuntimeError.LanguageNotSupported("system", "ru"),
+                errorId = 4
+            )
+        )
+        every { ttsCoordinator.status } returns status
+        createViewModel()
+
+        // Ошибка случилась до создания экрана — повторно не показывается.
+        org.junit.Assert.assertNull(viewModel.uiState.value.error)
+
+        // Новый экземпляр ошибки (id вырос) — показывается.
+        status.value = status.value.copy(
+            error = RuntimeError.ModelNotReady,
+            errorId = 5
+        )
+        assertEquals("Модель не готова", viewModel.uiState.value.error)
+
+        // Локальное снятие баннера + новая эмиссия со СТАРЫМ id — не показывается.
+        viewModel.onInputTextChanged("новый текст")
+        status.value = status.value.copy(downloadProgress = 10)
+        org.junit.Assert.assertNull(viewModel.uiState.value.error)
+    }
+
+    @Test
+    fun `stale download failure not shown in new view model, new failure shown`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val status = kotlinx.coroutines.flow.MutableStateFlow(
+            TtsPlaybackStatus(
+                downloadStatus = TtsDownloadStatus.ERROR,
+                downloadErrorId = 2
+            )
+        )
+        every { ttsCoordinator.status } returns status
+        createViewModel()
+
+        // ERROR скачивания из прошлого визита — флаг не поднимается.
+        assertFalse(viewModel.uiState.value.ttsDownloadFailed)
+
+        // Новая ERROR-стадия — показывается и сохраняется при промежуточных
+        // эмиссиях того же экземпляра.
+        status.value = status.value.copy(
+            downloadStatus = TtsDownloadStatus.ERROR,
+            downloadErrorId = 3
+        )
+        assertTrue(viewModel.uiState.value.ttsDownloadFailed)
+        status.value = status.value.copy(isSpeaking = true)
+        assertTrue(viewModel.uiState.value.ttsDownloadFailed)
+
+        // Выход из ERROR — флаг снимается.
+        status.value = status.value.copy(downloadStatus = TtsDownloadStatus.NONE)
+        assertFalse(viewModel.uiState.value.ttsDownloadFailed)
     }
 }

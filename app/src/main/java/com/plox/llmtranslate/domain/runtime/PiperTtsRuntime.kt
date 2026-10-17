@@ -246,6 +246,30 @@ class PiperTtsRuntime @Inject constructor(
     }
 
     /**
+     * Освободить пучок модели [modelId] (удаление/перескачивание Piper-модели,
+     * ревью #51): без этого запись в движке с тем же id продолжала
+     * «показывать» модель загруженной, а повторная загрузка того же пути
+     * молча оставляла stale-нативный OfflineTts по уже удалённым файлам
+     * ([load] — no-op при совпадении каталога). Гасит активное озвучивание
+     * и освобождает native под [engineMutex] (ожидает окончания синтеза —
+     * use-after-free исключён); после освобождения следующий [load] поднимает
+     * свежие файлы. Чужой или отсутствующий id — no-op.
+     */
+    suspend fun releaseModel(modelId: String) {
+        if (loaded?.info?.modelId == modelId) {
+            stop()
+        }
+        engineMutex.withLock {
+            val bundle = loaded ?: return@withLock
+            if (bundle.info.modelId != modelId) return@withLock
+            bundle.releaseNative()
+            loaded = null
+            publishLoadedUnlocked()
+            Timber.d("Piper TTS: пучок удалённой модели $modelId освобождён")
+        }
+    }
+
+    /**
      * Опубликовать состояние загруженной модели (одна активная или пусто).
      * Вызывать только под [engineMutex].
      */

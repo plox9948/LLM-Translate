@@ -138,6 +138,15 @@ class TranslateViewModel @Inject constructor(
     // (issue #38).
     private var favoriteKeys: Set<String> = emptySet()
 
+    // Анти-повтор sticky-состояний синглтон-координатора (ревью #55): id
+    // ошибки TTS и стадии ERROR скачивания, уже показанные этим ViewModel.
+    // -1 — базовая линия ещё не зафиксирована: на первой эмиссии текущие id
+    // статус считаются уже показанными, поэтому ошибка/сбой скачивания из
+    // прошлой жизни экрана (смена вкладки, пересоздание ViewModel) повторно
+    // не показываются; новый экземпляр (id вырос) показывается как обычно.
+    private var shownTtsErrorId = -1L
+    private var shownTtsDownloadErrorId = -1L
+
     init {
         viewModelScope.launch {
             modelManager.installedModels(ModelCategory.TRANSLATION)
@@ -231,15 +240,28 @@ class TranslateViewModel @Inject constructor(
         viewModelScope.launch {
             // Статус общего TTS-плейбека (issue #50): флаг озвучивания,
             // автоскачивание Piper-модели и ошибки, не покрытые фолбэком.
+            // Анти-повтор sticky-значений (ревью #55): показываем только
+            // новые экземпляры ошибки/ERROR-стадии (monotonic id в статусе).
             ttsCoordinator.status.collect { s ->
-                val ttsError = s.error?.userMessage()
+                val baseline = shownTtsErrorId < 0
+                if (baseline) {
+                    shownTtsErrorId = s.errorId
+                    shownTtsDownloadErrorId = s.downloadErrorId
+                }
+                val newTtsError = !baseline && s.error != null && s.errorId != shownTtsErrorId
+                if (newTtsError) shownTtsErrorId = s.errorId
+                val newDownloadError = !baseline &&
+                    s.downloadStatus == TtsDownloadStatus.ERROR &&
+                    s.downloadErrorId != shownTtsDownloadErrorId
+                if (newDownloadError) shownTtsDownloadErrorId = s.downloadErrorId
                 update {
                     it.copy(
                         isSpeaking = s.isSpeaking,
                         ttsDownloadProgress =
                             if (s.downloadStatus == TtsDownloadStatus.DOWNLOADING) s.downloadProgress else null,
-                        ttsDownloadFailed = s.downloadStatus == TtsDownloadStatus.ERROR,
-                        error = ttsError ?: it.error
+                        ttsDownloadFailed = s.downloadStatus == TtsDownloadStatus.ERROR &&
+                            (newDownloadError || it.ttsDownloadFailed),
+                        error = if (newTtsError) s.error?.userMessage() else it.error
                     )
                 }
             }

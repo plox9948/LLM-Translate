@@ -57,16 +57,19 @@ class RuntimeRouter @Inject constructor(
      * Убрать пучки удалённой модели из кэшей движков её категории (issue #40):
      * после удаления файлов запись в LRU-кэше с тем же id продолжала
      * «показывать» модель загруженной, а повторная загрузка того же id
-     * молча использовала старый нативный handle. Под мью텍сом движка
-     * дожидается окончания активного инференса; модели вне движков
-     * (системный TTS) — no-op.
+     * молча использовала старый нативный handle. Под мьютексом движка
+     * дожидается окончания активного инференса; Piper TTS — тот же паттерн
+     * в [PiperTtsRuntime.releaseModel] (ревью #51: ранее TTS был no-op, и
+     * удалённая/перескачанная Piper-модель оставалась в движке со
+     * stale-нативным OfflineTts); встроенные системные TTS-модели в движке
+     * не загружены — no-op по несовпадению id.
      */
     suspend fun releaseModel(model: InstalledModel) {
         when (model.category) {
             ModelCategory.TRANSLATION ->
                 translationEngine(model.runtime).releaseModel(model.id)
             ModelCategory.STT -> sherpaSttEngine.releaseModel(model.id)
-            ModelCategory.TTS -> Unit
+            ModelCategory.TTS -> piperTtsRuntime.releaseModel(model.id)
         }
     }
 

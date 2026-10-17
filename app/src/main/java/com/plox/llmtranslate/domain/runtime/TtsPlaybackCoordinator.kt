@@ -42,18 +42,25 @@ enum class TtsDownloadStatus {
  * @param text текст активной фразы (null — озвучивания нет).
  * @param error ошибка последнего озвучивания, не покрытая автофолбэком
  *   (null — ошибки нет); UI показывает её через [RuntimeError.userMessage].
+ * @param errorId монотонный номер [error] (ревью #55): 0 — ошибки никогда не
+ *   было; UI-экраны запоминают показанный id и не показывают ту же ошибку
+ *   повторно при пересоздании ViewModel.
  * @param downloadModelId id карточки, которую координатор автоскачивает (issue #50).
  * @param downloadProgress прогресс автоскачивания, %.
  * @param downloadStatus стадия автоскачивания.
+ * @param downloadErrorId монотонный номер перехода в [TtsDownloadStatus.ERROR]
+ *   (тот же механизм анти-повтора, что у [errorId]).
  */
 data class TtsPlaybackStatus(
     val isSpeaking: Boolean = false,
     val language: String? = null,
     val text: String? = null,
     val error: RuntimeError? = null,
+    val errorId: Long = 0,
     val downloadModelId: String? = null,
     val downloadProgress: Int = 0,
-    val downloadStatus: TtsDownloadStatus = TtsDownloadStatus.NONE
+    val downloadStatus: TtsDownloadStatus = TtsDownloadStatus.NONE,
+    val downloadErrorId: Long = 0
 )
 
 /**
@@ -115,6 +122,14 @@ class TtsPlaybackCoordinator @Inject constructor(
 
     private var pendingRetry: PendingRetry? = null
 
+    /**
+     * Монотонные счётчики id для анти-повтора показа (ревью #55): каждый новый
+     * экземпляр ошибки/стадии ERROR получает новый id, экран запоминает
+     * показанный и не показывает тот же повторно.
+     */
+    private var errorSeq = 0L
+    private var downloadErrorSeq = 0L
+
     init {
         scope.launch {
             modelManager.ttsByLanguage.collect { assignments ->
@@ -167,11 +182,15 @@ class TtsPlaybackCoordinator @Inject constructor(
 
     /**
      * Остановить озвучивание обоих рантаймов и снять флаг «озвучиваем».
-     * Активное автоскачивание модели продолжается.
+     * Активное автоскачивание модели продолжается, но pendingRetry снимается
+     * (ревью #54): после отмены озвучки дошедшая до READY модель не должна
+     * проигрывать устаревшую фразу — авто-ОЗВУЧКА после READY только пока
+     * pendingRetry активен.
      */
     fun stop() {
         speakJob?.cancel()
         speakJob = null
+        pendingRetry = null
         ttsRuntime.stop()
         piperRuntime.stop()
         _status.value = _status.value.copy(isSpeaking = false, language = null, text = null)
@@ -257,7 +276,8 @@ class TtsPlaybackCoordinator @Inject constructor(
                 text = null,
                 downloadModelId = cardId,
                 downloadStatus = TtsDownloadStatus.ERROR,
-                downloadProgress = 0
+                downloadProgress = 0,
+                downloadErrorId = ++downloadErrorSeq
             )
             Timber.w("Автоскачивание Piper-модели $cardId отменено: нет сети")
             return
@@ -326,7 +346,10 @@ class TtsPlaybackCoordinator @Inject constructor(
             ModelStatus.ERROR -> {
                 watchedDownloadId = null
                 pendingRetry = null
-                _status.value = _status.value.copy(downloadStatus = TtsDownloadStatus.ERROR)
+                _status.value = _status.value.copy(
+                    downloadStatus = TtsDownloadStatus.ERROR,
+                    downloadErrorId = ++downloadErrorSeq
+                )
                 Timber.w("Автоскачивание Piper-модели $cardId завершилось ошибкой")
             }
 
@@ -357,6 +380,7 @@ class TtsPlaybackCoordinator @Inject constructor(
         if (token != utteranceToken) return
         _status.value = _status.value.copy(
             error = error,
+            errorId = ++errorSeq,
             isSpeaking = false,
             language = null,
             text = null

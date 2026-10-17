@@ -22,6 +22,21 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * Чистый маппинг восстановительных операций поязыкового назначения (ревью #53):
+ * [saved] == null (ключа нет в старом архиве) — операций нет, настройку не
+ * трогаем; иначе — по каждому языку union(текущие, сохранённые) установка
+ * сохранённого id либо null (снять). Пустая [saved] снимает все текущие
+ * назначения. Вынесено для unit-теста без Android-специфики.
+ */
+internal fun assignmentOps(
+    current: Map<String, String>,
+    saved: Map<String, String>?
+): List<Pair<String, String?>> {
+    if (saved == null) return emptyList()
+    return (current.keys + saved.keys).map { lang -> lang to saved[lang] }
+}
+
+/**
  * Менеджер резервного копирования моделей и настроек.
  *
  * Формат архива:
@@ -281,7 +296,8 @@ class ModelBackupManager @Inject constructor(
     }
 
     /**
-     * Построить настройки.
+     * Построить настройки (ревью #53: полные поязыковые назначения, тайм-аут
+     * выгрузки, удержание моделей при смене направления, последнее направление).
      */
     private suspend fun buildSettings(): BackupSettings {
         return BackupSettings(
@@ -290,12 +306,20 @@ class ModelBackupManager @Inject constructor(
             activeTts = preferences.getActiveModelId(ModelCategory.TTS),
             ttsEngine = preferences.ttsEngine.first(),
             uiLanguage = preferences.uiLanguage.first(),
-            theme = preferences.theme.first()
+            theme = preferences.theme.first(),
+            sttByLanguage = preferences.sttByLanguage.first(),
+            ttsByLanguage = preferences.ttsByLanguage.first(),
+            unloadTimeoutMinutes = preferences.unloadTimeoutMinutes.first(),
+            modelDirectionRetention = preferences.modelDirectionRetention.first(),
+            lastSourceLang = preferences.lastSourceLang.first(),
+            lastTargetLang = preferences.lastTargetLang.first()
         )
     }
 
     /**
-     * Восстановить настройки.
+     * Восстановить настройки. Presence-семантика (ревью #53): ключ в JSON =
+     * установить (пустая карта = снять все назначения), отсутствие ключа
+     * (null из старого архива) = не трогать.
      */
     private suspend fun restoreSettings(settings: BackupSettings) {
         settings.activeTranslation?.let {
@@ -310,6 +334,26 @@ class ModelBackupManager @Inject constructor(
         preferences.setTtsEngine(settings.ttsEngine)
         preferences.setUiLanguage(settings.uiLanguage)
         preferences.setTheme(settings.theme)
+        // Поязыковые назначения: поверх union(текущие, сохранённые) языков —
+        // сохранённое значение либо null (снять); так пустая сохранённая карта
+        // снимает все текущие назначения.
+        settings.sttByLanguage?.let { saved ->
+            assignmentOps(preferences.sttByLanguage.first(), saved).forEach { (lang, id) ->
+                preferences.setSttForLanguage(lang, id)
+            }
+        }
+        settings.ttsByLanguage?.let { saved ->
+            assignmentOps(preferences.ttsByLanguage.first(), saved).forEach { (lang, id) ->
+                preferences.setTtsForLanguage(lang, id)
+            }
+        }
+        settings.unloadTimeoutMinutes?.let { preferences.setUnloadTimeoutMinutes(it) }
+        settings.modelDirectionRetention?.let { preferences.setModelDirectionRetention(it) }
+        val lastSource = settings.lastSourceLang
+        val lastTarget = settings.lastTargetLang
+        if (lastSource != null && lastTarget != null) {
+            preferences.setLastDirection(lastSource, lastTarget)
+        }
     }
 
     /**
