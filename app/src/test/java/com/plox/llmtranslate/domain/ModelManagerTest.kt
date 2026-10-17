@@ -1,4 +1,4 @@
-package com.plox.llmtranslate.domain
+ackage com.plox.llmtranslate.domain
 
 import android.content.Context
 import android.net.Uri
@@ -18,7 +18,6 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
