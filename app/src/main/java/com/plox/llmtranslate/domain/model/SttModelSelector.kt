@@ -64,6 +64,51 @@ object SttModelSelector {
     }
 
     /**
+     * Недостающая STT-карточка для памятки на экране «Перевод» (issue #56):
+     * если [select] не подобрал готовую STT-модель для [language], подбирается
+     * карточка из STT-секции каталога для скачивания. Скрытые карточки
+     * (whisper, hidden, issue #55) в памятку не добавляются.
+     *
+     * Подбор следует цепочке [select]: сначала карточка с id, назначенным
+     * языку, затем для «ne» карточка IndicConformer (дефолт), затем первая
+     * видимая карточка, поддерживающая язык.
+     *
+     * @return карточка для скачивания; null — для AUTO, если готовая STT-модель
+     *         для языка уже есть, или каталог не покрывает язык видимой
+     *         карточкой.
+     */
+    fun missingCard(
+        catalog: List<ModelCard>,
+        assignments: Map<String, String>,
+        installed: List<InstalledModel>,
+        language: String?
+    ): ModelCard? {
+        // AUTO: мультаязычная/любая модель, язык не задан — не подсказываем.
+        if (language == null) return null
+        if (select(language, assignments, installed) != null) return null
+
+        val visible = catalog.filter { it.category == ModelCategory.STT && !it.hidden }
+
+        assignments[language]?.let { assignedId ->
+            visible.firstOrNull { it.id == assignedId }?.let { return it }
+        }
+        if (language == INDIC_DEFAULT_LANGUAGE) {
+            visible.firstOrNull { isIndicConformerCard(it) }?.let { return it }
+        }
+        return visible.firstOrNull { it.languages.contains(language) }
+    }
+
+    /**
+     * true, если карточка каталога — IndicConformer (runtime SHERPA,
+     * id содержит маркер).
+     */
+    private fun isIndicConformerCard(card: ModelCard): Boolean {
+        if (card.runtime != RuntimeType.SHERPA) return false
+        val id = card.id.lowercase()
+        return INDIC_ID_MARKERS.any { id.contains(it) }
+    }
+
+    /**
      * true, если модель — IndicConformer (runtime SHERPA, id содержит маркер).
      */
     fun isIndicConformer(model: InstalledModel): Boolean {

@@ -32,6 +32,7 @@
     <string name="translate_in_progress">Перевод…</string>
     <string name="translate_no_model">Скачайте модель перевода на экране «Модели»</string>
     <string name="translate_missing_title">Для перевода нужны модели</string>
+    <string name="translate_missing_stt_caption">Распознавание</string>
     <string name="translate_download_progress">Скачивается… %1$d%%</string>
     <string name="translate_tts_downloading">Загрузка модели озвучки… %1$d%%</string>
     <string name="translate_tts_download_failed">Не удалось скачать модель озвучки. Проверьте интернет и скачайте её на экране «Модели»</string>

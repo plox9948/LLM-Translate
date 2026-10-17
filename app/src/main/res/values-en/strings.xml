@@ -32,6 +32,7 @@
     <string name="translate_in_progress">Translating…</string>
     <string name="translate_no_model">Download a translation model on the \"Models\" screen</string>
     <string name="translate_missing_title">Translation models required</string>
+    <string name="translate_missing_stt_caption">Speech recognition</string>
     <string name="translate_download_progress">Downloading… %1$d%%</string>
     <string name="translate_tts_downloading">Downloading voice model… %1$d%%</string>
     <string name="translate_tts_download_failed">Could not download the voice model. Check your connection and download it on the Models screen</string>

@@ -5,7 +5,12 @@ import com.plox.llmtranslate.data.model.TranslationHistoryRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.FavoriteEntry
+import com.plox.llmtranslate.domain.model.InstalledModel
+import com.plox.llmtranslate.domain.model.ModelCard
+import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
+import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
@@ -22,6 +27,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -128,5 +134,146 @@ class TranslateViewModelTest {
 
         viewModel.onTargetLangChange(TranslateLanguage.EN)
         assertFalse(viewModel.uiState.value.resultFavorite)
+    }
+
+    // ── Памятка недостающих STT-моделей исходного языка (issue #56) ──
+
+    /** Готовая модель перевода ru→en (закрывает цепочку направления по умолчанию). */
+    private fun readyTranslationRuEn() = InstalledModel(
+        id = "trans-ru-en",
+        category = ModelCategory.TRANSLATION,
+        displayName = "ru→en",
+        description = "",
+        runtime = RuntimeType.MARIAN_SLIMT,
+        sizeBytes = 100,
+        ramRequiredMb = 100,
+        languages = listOf("ru", "en"),
+        quality = 4,
+        speed = 4,
+        url = "",
+        urls = emptyList(),
+        sha256 = null,
+        license = "Apache-2.0",
+        minAndroidSdk = 26,
+        recommendedRamMb = 0,
+        status = ModelStatus.READY,
+        progress = 100,
+        filePath = "/models/MARIAN_SLIMT/trans-ru-en",
+        bytesDone = 100,
+        isBuiltin = true
+    )
+
+    /** Готовая STT-модель, поддерживающая указанный язык. */
+    private fun readyStt(id: String, languages: List<String>) = InstalledModel(
+        id = id,
+        category = ModelCategory.STT,
+        displayName = id,
+        description = "",
+        runtime = RuntimeType.SHERPA,
+        sizeBytes = 100,
+        ramRequiredMb = 100,
+        languages = languages,
+        quality = 4,
+        speed = 4,
+        url = "",
+        urls = emptyList(),
+        sha256 = null,
+        license = "Apache-2.0",
+        minAndroidSdk = 26,
+        recommendedRamMb = 0,
+        status = ModelStatus.READY,
+        progress = 100,
+        filePath = "/models/SHERPA/$id",
+        bytesDone = 100,
+        isBuiltin = true
+    )
+
+    /** Карточка каталога STT для языка (hidden — скрытая, напр. whisper). */
+    private fun sttCard(id: String, languages: List<String>, hidden: Boolean = false) = ModelCard(
+        id = id,
+        category = ModelCategory.STT,
+        displayName = id,
+        description = "",
+        runtime = RuntimeType.SHERPA,
+        sizeBytes = 100,
+        ramRequiredMb = 100,
+        languages = languages,
+        quality = 4,
+        speed = 4,
+        url = "",
+        urls = emptyList(),
+        sha256 = null,
+        license = "Apache-2.0",
+        minAndroidSdk = 26,
+        recommendedRamMb = 0,
+        hidden = hidden
+    )
+
+    /** Каталог: видимая RU-карточка + скрытая мультаязычная (whisper). */
+    private fun sttCatalog() = listOf(
+        sttCard("stt-ru-gigaam", listOf("ru")),
+        sttCard("stt-whisper-small-multilingual", listOf("ru", "en", "ne"), hidden = true)
+    )
+
+    @Test
+    fun `stt card for source language suggested when translation ready but stt missing`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        every { modelManager.installedModels(ModelCategory.TRANSLATION) } returns
+            flowOf(listOf(readyTranslationRuEn()))
+        every { modelManager.installedModels(ModelCategory.STT) } returns flowOf(emptyList())
+        every { modelManager.catalog } returns flowOf(sttCatalog())
+        every { modelManager.sttByLanguage } returns flowOf(emptyMap())
+        createViewModel()
+
+        // Перевод ru→en готов — гейт hasTranslationModel истинен, пусто по переводу.
+        assertTrue(viewModel.uiState.value.hasTranslationModel)
+        assertTrue(viewModel.uiState.value.missingModels.isEmpty())
+        // STT для исходного «ru» нет → каталожная видимая карточка в памятку;
+        // скрытая whisper-карточка не предлагается.
+        assertEquals(listOf("stt-ru-gigaam"), viewModel.uiState.value.missingSttModels.map { it.id })
+    }
+
+    @Test
+    fun `stt hint empty when ready stt model supports source language`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        every { modelManager.installedModels(ModelCategory.TRANSLATION) } returns
+            flowOf(listOf(readyTranslationRuEn()))
+        every { modelManager.installedModels(ModelCategory.STT) } returns
+            flowOf(listOf(readyStt("stt-ru-gigaam", listOf("ru"))))
+        every { modelManager.catalog } returns flowOf(sttCatalog())
+        every { modelManager.sttByLanguage } returns flowOf(emptyMap())
+        createViewModel()
+
+        assertTrue(viewModel.uiState.value.hasTranslationModel)
+        assertTrue(viewModel.uiState.value.missingSttModels.isEmpty())
+    }
+
+    @Test
+    fun `stt hint empty for auto source language`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        every { modelManager.installedModels(ModelCategory.TRANSLATION) } returns
+            flowOf(listOf(readyTranslationRuEn()))
+        every { modelManager.installedModels(ModelCategory.STT) } returns flowOf(emptyList())
+        every { modelManager.catalog } returns flowOf(sttCatalog())
+        every { modelManager.sttByLanguage } returns flowOf(emptyMap())
+        createViewModel()
+
+        viewModel.onSourceLangChange(TranslateLanguage.AUTO)
+        assertTrue(viewModel.uiState.value.missingSttModels.isEmpty())
+    }
+
+    @Test
+    fun `downloadMissingModel starts stt download via model manager`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        every { modelManager.installedModels(ModelCategory.TRANSLATION) } returns
+            flowOf(listOf(readyTranslationRuEn()))
+        every { modelManager.installedModels(ModelCategory.STT) } returns flowOf(emptyList())
+        every { modelManager.catalog } returns flowOf(sttCatalog())
+        every { modelManager.sttByLanguage } returns flowOf(emptyMap())
+        createViewModel()
+
+        val sttHint = viewModel.uiState.value.missingSttModels.first()
+        viewModel.downloadMissingModel(sttHint)
+        io.mockk.verify(exactly = 1) { modelManager.startDownload(sttCard("stt-ru-gigaam", listOf("ru"))) }
     }
 }

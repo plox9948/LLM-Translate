@@ -203,10 +203,15 @@ fun TranslateScreen(
             }
         }
 
-        if (!state.hasTranslationModel) {
-            if (state.missingModels.isNotEmpty()) {
+        // Памятка недостающих моделей (issues #33, #56): звенья перевода
+        // и/или STT исходного языка — показываем при наличии любых
+        // недостающих; текст-заглушка — только когда перевод не готов
+        // и каталог не предлагает звеньев перевода.
+        if (!state.hasTranslationModel || state.missingSttModels.isNotEmpty()) {
+            if (state.missingModels.isNotEmpty() || state.missingSttModels.isNotEmpty()) {
                 MissingModelsCard(
                     models = state.missingModels,
+                    sttModels = state.missingSttModels,
                     downloadingProgress = state.downloadingProgress,
                     onDownload = viewModel::downloadMissingModel
                 )
@@ -387,14 +392,16 @@ private fun OnboardingSheet(
 }
 
 /**
- * Карточка подсказки недостающих моделей перевода (issue #33): звенья
- * цепочки текущего направления из каталога с размером; кнопка «Скачать»
- * запускает скачивание только своего звена, для уже скачиваемых моделей
+ * Карточка подсказки недостающих моделей (issues #33, #56): звенья цепочки
+ * перевода текущего направления и STT-модель исходного языка для ввода
+ * голосом (отдельная секция с подписью «Распознавание»); кнопка «Скачать»
+ * запускает скачивание только своего элемента, для уже скачиваемых моделей
  * показывается прогресс вместо кнопки.
  */
 @Composable
 private fun MissingModelsCard(
     models: List<ModelCard>,
+    sttModels: List<ModelCard>,
     downloadingProgress: Map<String, Int>,
     onDownload: (ModelCard) -> Unit
 ) {
@@ -406,34 +413,54 @@ private fun MissingModelsCard(
                 fontWeight = FontWeight.SemiBold
             )
             models.forEach { card ->
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = card.displayName,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Text(
-                            text = formatBytes(card.sizeBytes),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    val progress = downloadingProgress[card.id]
-                    if (progress != null) {
-                        Text(
-                            text = stringResource(R.string.translate_download_progress, progress),
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    } else {
-                        OutlinedButton(onClick = { onDownload(card) }) {
-                            Icon(Icons.Filled.Download, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(stringResource(R.string.download))
-                        }
-                    }
+                MissingModelRow(card, downloadingProgress[card.id], onDownload)
+            }
+            if (sttModels.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = stringResource(R.string.translate_missing_stt_caption),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                sttModels.forEach { card ->
+                    MissingModelRow(card, downloadingProgress[card.id], onDownload)
                 }
+            }
+        }
+    }
+}
+
+/** Строка одной недостающей модели: имя, размер и кнопка «Скачать» или прогресс. */
+@Composable
+private fun MissingModelRow(
+    card: ModelCard,
+    progress: Int?,
+    onDownload: (ModelCard) -> Unit
+) {
+    Spacer(modifier = Modifier.height(6.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = card.displayName,
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = formatBytes(card.sizeBytes),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        if (progress != null) {
+            Text(
+                text = stringResource(R.string.translate_download_progress, progress),
+                style = MaterialTheme.typography.labelSmall
+            )
+        } else {
+            OutlinedButton(onClick = { onDownload(card) }) {
+                Icon(Icons.Filled.Download, contentDescription = null)
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(stringResource(R.string.download))
             }
         }
     }

@@ -32,6 +32,7 @@
     <string name="translate_in_progress">अनुवाद हुँदैछ…</string>
     <string name="translate_no_model">\"मोडेलहरू\" स्क्रीनमा अनुवाद मोडेल डाउनलोड गर्नुहोस्</string>
     <string name="translate_missing_title">अनुवादका लागि मोडेलहरू आवश्यक छन्</string>
+    <string name="translate_missing_stt_caption">बोली पहिचान</string>
     <string name="translate_download_progress">डाउनलोड हुँदैछ… %1$d%%</string>
     <string name="translate_tts_downloading">भ्वाइस मोडेल डाउनलोड हुँदैछ… %1$d%%</string>
     <string name="translate_tts_download_failed">भ्वाइस मोडेल डाउनलोड गर्न सकिएन। इन्टरनेट जाँच गर्नुहोस् र «मोडेल» स्क्रिनबाट डाउनलोड गर्नुहोस्</string>

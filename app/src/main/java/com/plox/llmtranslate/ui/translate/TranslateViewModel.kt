@@ -88,6 +88,12 @@ data class TranslateUiState(
     val hasTranslationModel: Boolean = false,
     /** Карточки каталога для недостающего направления перевода (issue #33). */
     val missingModels: List<ModelCard> = emptyList(),
+    /**
+     * Карточки каталога для недостающей STT-модели исходного языка
+     * (issue #56); отдельно от [missingModels], чтобы не ломать гейт
+     * [hasTranslationModel].
+     */
+    val missingSttModels: List<ModelCard> = emptyList(),
     /** Прогресс скачивания по id модели (для карточки недостающих моделей). */
     val downloadingProgress: Map<String, Int> = emptyMap(),
     val hasSttModel: Boolean = false,
@@ -151,11 +157,15 @@ class TranslateViewModel @Inject constructor(
                     _uiState.value = _uiState.value.copy(
                         hasSttModel = models.any { it.isReady }
                     )
+                    // Пересчёт STT-подсказки памятки при установке/скачивании (issue #56).
+                    refreshTranslationAvailability()
                 }
         }
         viewModelScope.launch {
             modelManager.sttByLanguage.collect { assignments ->
                 sttAssignments = assignments
+                // Назначения «язык → модель» влияют на подбор STT-подсказки (issue #56).
+                refreshTranslationAvailability()
             }
         }
         viewModelScope.launch {
@@ -682,8 +692,10 @@ class TranslateViewModel @Inject constructor(
 
     /**
      * Пересчитать доступность перевода для текущего направления: наличие
-     * готовой цепочки моделей и список недостающих карточек каталога (issue #33).
-     * Для AUTO-источника рассматриваются все ненулевые языки, кроме целевого.
+     * готовой цепочки моделей и список недостающих карточек каталога (issue #33),
+     * а также недостающую STT-карточку исходного языка (issue #56).
+     * Для AUTO-источника перевод рассматривается по всем ненулевым языкам,
+     * кроме целевого, а STT не подсказывается (язык определяет детект).
      */
     private fun refreshTranslationAvailability() {
         val state = _uiState.value
@@ -718,18 +730,31 @@ class TranslateViewModel @Inject constructor(
             cards.toList()
         }
 
+        // Недостающая STT-модель исходного языка (issue #56): для явного языка
+        // применяем цепочку доступности SttModelSelector (назначение языка →
+        // дефолт IndicConformer для ne → поддерживающая язык модель); если
+        // готовой STT нет — видимая карточка из STT-секции каталога (скрытые,
+        // например whisper, в памятку не добавляются). Для AUTO — не подсказываем.
+        val sttLanguage =
+            if (state.sourceLang != TranslateLanguage.AUTO) state.sourceLang.code else null
+        val missingStt = listOfNotNull(
+            SttModelSelector.missingCard(catalogCards, sttAssignments, sttModels, sttLanguage)
+        )
+
         _uiState.value = state.copy(
             hasTranslationModel = hasChain,
             missingModels = missing,
-            downloadingProgress = translationModels
+            missingSttModels = missingStt,
+            downloadingProgress = (translationModels + sttModels)
                 .filter { it.status == ModelStatus.DOWNLOADING }
                 .associate { it.id to it.progress }
         )
     }
 
     /**
-     * Начать скачивание конкретной недостающей модели [card]
-     * (кнопка в строке карточки подсказки на экране «Перевод», issue #33).
+     * Начать скачивание конкретной недостающей модели [card] — перевода
+     * (issue #33) или STT (issue #56): путь универсален, категория карточки
+     * не влияет на [ModelManager.startDownload].
      * Уже скачиваемая модель пропускается.
      */
     fun downloadMissingModel(card: ModelCard) {

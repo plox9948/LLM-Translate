@@ -227,4 +227,92 @@ class SttModelSelectorTest {
             )
         )
     }
+
+    // ── Подбор недостающей карточки для памятки (issue #56) ──
+
+    private fun sttCard(
+        id: String,
+        languages: List<String>,
+        hidden: Boolean = false,
+        runtime: RuntimeType = RuntimeType.SHERPA
+    ) = ModelCard(
+        id = id,
+        category = ModelCategory.STT,
+        displayName = id,
+        description = "",
+        runtime = runtime,
+        sizeBytes = 100,
+        ramRequiredMb = 100,
+        languages = languages,
+        quality = 4,
+        speed = 4,
+        url = "",
+        urls = emptyList(),
+        sha256 = null,
+        license = "Apache-2.0",
+        minAndroidSdk = 26,
+        recommendedRamMb = 0,
+        hidden = hidden
+    )
+
+    private val catalog = listOf(
+        sttCard("stt-ru-gigaam", listOf("ru")),
+        sttCard("stt-en-parakeet-110m", listOf("en")),
+        sttCard("stt-ne-indicconformer", listOf("ne")),
+        sttCard("stt-whisper-small-multilingual", listOf("ru", "en", "ne"), hidden = true)
+    )
+
+    @Test
+    fun `missing card for language without any installed stt`() {
+        val card = SttModelSelector.missingCard(
+            catalog = catalog,
+            assignments = emptyMap(),
+            installed = emptyList(),
+            language = "ru"
+        )
+        assertEquals("stt-ru-gigaam", card?.id)
+    }
+
+    @Test
+    fun `missing card skips hidden catalog cards`() {
+        // Язык поддерживают только скрытые карточки — в памятку ничего не добавляем.
+        val hiddenOnly = listOf(
+            sttCard("stt-whisper-small-multilingual", listOf("ru", "en", "ne"), hidden = true)
+        )
+        assertNull(
+            SttModelSelector.missingCard(hiddenOnly, emptyMap(), emptyList(), "ru")
+        )
+    }
+
+    @Test
+    fun `missing card prefers indicconformer default for ne`() {
+        val mixed = listOf(
+            sttCard("stt-ne-other", listOf("ne")),
+            sttCard("stt-ne-indicconformer", listOf("ne"))
+        )
+        val card = SttModelSelector.missingCard(mixed, emptyMap(), emptyList(), "ne")
+        assertEquals("stt-ne-indicconformer", card?.id)
+    }
+
+    @Test
+    fun `missing card prefers card assigned to the language`() {
+        val card = SttModelSelector.missingCard(
+            catalog = catalog,
+            assignments = mapOf("ru" to "stt-en-parakeet-110m"),
+            installed = emptyList(),
+            language = "ru"
+        )
+        assertEquals("stt-en-parakeet-110m", card?.id)
+    }
+
+    @Test
+    fun `no missing card when ready stt already covers the language`() {
+        assertNull(SttModelSelector.missingCard(catalog, emptyMap(), listOf(whisper), "ru"))
+        assertNull(SttModelSelector.missingCard(catalog, emptyMap(), listOf(indic), "ne"))
+    }
+
+    @Test
+    fun `no missing card for auto language`() {
+        assertNull(SttModelSelector.missingCard(catalog, emptyMap(), emptyList(), null))
+    }
 }
