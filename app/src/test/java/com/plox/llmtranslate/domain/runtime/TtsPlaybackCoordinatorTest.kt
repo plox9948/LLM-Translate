@@ -17,6 +17,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -311,6 +314,39 @@ class TtsPlaybackCoordinatorTest {
         assertEquals(TtsDownloadStatus.ERROR, offline.status.value.downloadStatus)
         assertEquals("tts-ru-piper-ruslan", offline.status.value.downloadModelId)
         assertNull(offline.status.value.error)
+    }
+
+    @Test
+    fun `grace timer resets stale downloading when room flow stays silent`() = runTest {
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+        val timerCoordinator = TtsPlaybackCoordinator(
+            ttsRuntime,
+            piperRuntime,
+            modelManager,
+            backgroundScope,
+            DownloadWatchClock { nowMs },
+            contextWithNetwork(true)
+        )
+
+        timerCoordinator.speak("текст", "ru")
+        runCurrent()
+        assertEquals(
+            TtsDownloadStatus.DOWNLOADING,
+            timerCoordinator.status.value.downloadStatus
+        )
+
+        // Скачивание снято (запись удалена), но Room Flow больше не эмиттирует —
+        // DOWNLOADING не должен залипать: проверка срабатывает по таймеру.
+        nowMs = 4_000L
+        advanceTimeBy(
+            TtsPlaybackCoordinator.WATCH_GRACE_MS +
+                TtsPlaybackCoordinator.WATCH_CHECK_BUFFER_MS + 100
+        )
+        runCurrent()
+
+        assertEquals(TtsDownloadStatus.NONE, timerCoordinator.status.value.downloadStatus)
+        assertNull(timerCoordinator.status.value.downloadModelId)
     }
 
     @Test

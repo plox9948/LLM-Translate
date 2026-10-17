@@ -165,6 +165,20 @@ class TtsPlaybackCoordinator @Inject constructor(
     private var watchedDownloadId: String? = null
 
     /**
+     * Замок сериализации [handleWatchedDownload] (ревью раунд 6): обработчик
+     * вызывают коллектор Flow и grace-таймер; тело не блокирующее (статусы
+     * через StateFlow.update, авто-озвучка — scope.launch), deadlock-цепочек
+     * с другими мьютексами нет.
+     */
+    private val watchLock = Any()
+
+    /**
+     * Поколение watch-сцены (ревью раунд 6): одноразовый grace-таймер гасится,
+     * если за время его ожидания наблюдение было переставлено новым fallback-ом.
+     */
+    private val watchGeneration = AtomicLong(0L)
+
+    /**
      * Дедлайн grace-окна наблюдения (ревью раунд 4): фиксируется при установке
      * [watchedDownloadId] как `часы + [WATCH_GRACE_MS]`. [ModelManager.startDownload]
      * создаёт запись в Room асинхронно, поэтому первые эмиссии списка вправе
@@ -353,6 +367,7 @@ class TtsPlaybackCoordinator @Inject constructor(
         }
         pendingRetry = PendingRetry(text, language)
         watchedDownloadId = cardId
+        val watchGen = watchGeneration.incrementAndGet()
         // Наблюдение ставится до асинхронного upsert-а записи (startDownload
         // ниже): окно grace ([WATCH_GRACE_MS] от текущего момента)
         // терпит отсутствие строки, за окном — сброс watch-статуса.
@@ -379,7 +394,9 @@ class TtsPlaybackCoordinator @Inject constructor(
         // снимку [piperModels]; иначе DOWNLOADING-статус может залипнуть.
         scope.launch {
             delay(WATCH_GRACE_MS + WATCH_CHECK_BUFFER_MS)
-            if (watchedDownloadId == cardId && clock.nowMs() > watchGraceUntil) {
+            if (watchGeneration.get() == watchGen &&
+                watchedDownloadId == cardId && clock.nowMs() > watchGraceUntil
+            ) {
                 handleWatchedDownload(piperModels)
             }
         }
@@ -421,8 +438,12 @@ class TtsPlaybackCoordinator @Inject constructor(
      * Реакция на изменения записи автоскачиваемой модели: прогресс, READY →
      * автоназначение + ОДНО повторное озвучивание исходной фразы,
      * ERROR → стадия [TtsDownloadStatus.ERROR].
+     *
+     * Сериализация под `watchLock` (ревью раунд 6): обработчик вызывают
+     * коллектор Room Flow и одноразовый grace-таймер — без замка возможна
+     * гонка двойного входа (двойной авто-ретрай/двойной id ошибки).
      */
-    private fun handleWatchedDownload(models: List<InstalledModel>) {
+    private fun handleWatchedDownload(models: List<InstalledModel>) = synchronized(watchLock) {
         val cardId = watchedDownloadId ?: return
         val model = models.firstOrNull { it.id == cardId }
         if (model == null) {
