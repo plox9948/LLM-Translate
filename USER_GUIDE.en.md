@@ -76,8 +76,11 @@ screen lists the models currently held in RAM (including loaded Piper voice
 models) together with an estimated memory consumption.
 
 > ℹ Temporarily hidden from the "Models" screen: Whisper (recognition),
-> RHVoice and eSpeak NG (synthesis engines). If RHVoice or eSpeak NG was
-> picked in the settings earlier, that choice is kept.
+> RHVoice and eSpeak NG (synthesis engines). Already-installed models of
+> these engines stay visible on the screen and remain manageable ("Delete",
+> "Export") — the same goes for models imported outside the catalog. If
+> RHVoice or eSpeak NG was picked in the settings earlier, that choice is
+> kept.
 
 ## The "Translate" screen
 
@@ -152,6 +155,11 @@ models) together with an estimated memory consumption.
   model for that language on its own, and read aloud continues with the local
   model. Local Piper voices play a phrase to the very end, without cutting
   the tail off.
+- Deleting or re-downloading a Piper model unloads its voice from memory
+  immediately: no "ghost" of the old voice stays in the "Loaded into memory"
+  list, and after a re-download the voice reads from the new files. A
+  cancelled read-aloud no longer comes back as a late repeat of a stale
+  phrase.
 
 ## Moving to another phone
 
@@ -159,6 +167,11 @@ models) together with an estimated memory consumption.
 2. Copy the archive to the new phone (USB, cloud, Bluetooth).
 3. On the new phone: "Models" → "Restore", pick the archive — models and
    settings are restored without downloading.
+
+The settings backup includes: interface language and theme, per-language
+speech recognition and read-aloud assignments, the model unloading timeout,
+the policy on translation direction change, and the last translation
+direction.
 
 > 💡 It is easier to download the models once on one device and move them via
 > the archive than to download everything again.
