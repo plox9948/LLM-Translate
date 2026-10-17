@@ -11,6 +11,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -140,6 +141,9 @@ class TtsPlaybackCoordinator @Inject constructor(
          * за окном отсутствие — запись удалена/снят запрос скачивания.
          */
         const val WATCH_GRACE_MS = 3_000L
+
+        /** Запас к grace-окну для одноразовой проверки по таймеру (ревью раунд 5). */
+        const val WATCH_CHECK_BUFFER_MS = 500L
     }
 
     /** Job текущего озвучивания (piper-синтез или подготовка фолбэка). */
@@ -369,6 +373,15 @@ class TtsPlaybackCoordinator @Inject constructor(
             // установки ERROR-модели).
             null, ModelStatus.ERROR -> modelManager.startDownload(card)
             else -> Unit
+        }
+        // Ревью раунд 5 (info): если после отмены/удаления записи Room Flow больше
+        // не эмиттирует, grace-дедлайн проверит одноразовый таймер по актуальному
+        // снимку [piperModels]; иначе DOWNLOADING-статус может залипнуть.
+        scope.launch {
+            delay(WATCH_GRACE_MS + WATCH_CHECK_BUFFER_MS)
+            if (watchedDownloadId == cardId && clock.nowMs() > watchGraceUntil) {
+                handleWatchedDownload(piperModels)
+            }
         }
     }
 
