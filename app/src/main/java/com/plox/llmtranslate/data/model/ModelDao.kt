@@ -1,7 +1,6 @@
 package com.plox.llmtranslate.data.model
 
 import androidx.room.Dao
-import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -18,9 +17,6 @@ interface ModelDao {
 
     @Query("SELECT * FROM models WHERE category = :category")
     fun observeByCategory(category: String): Flow<List<ModelEntity>>
-
-    @Query("SELECT * FROM models WHERE id = :id")
-    fun observeById(id: String): Flow<ModelEntity?>
 
     @Query("SELECT * FROM models WHERE id = :id")
     suspend fun getById(id: String): ModelEntity?
@@ -107,9 +103,6 @@ interface ModelDao {
         bytesDone: Long,
         updatedAt: Long
     ): Int
-
-    @Delete
-    suspend fun delete(entity: ModelEntity)
 
     @Query("DELETE FROM models WHERE id = :id")
     suspend fun deleteById(id: String)

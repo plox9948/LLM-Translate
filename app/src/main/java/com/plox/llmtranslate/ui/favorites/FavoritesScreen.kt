@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
@@ -35,6 +34,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.FavoriteEntry
+import com.plox.llmtranslate.ui.LanguageDirection
 
 /**
  * Вкладка «Избранное»: избранные переводы с озвучиванием оригинала/перевода.
@@ -85,18 +85,15 @@ fun FavoritesScreen(
                     viewModel.useEntry(entry)
                     onUseEntry()
                 },
-                onSpeakInput = {
-                    if (speaking == inputSelection) {
+                onSpeak = { field ->
+                    // Повторный тап по говорящему полю — стоп, иначе — начать
+                    // озвучивание выбранного поля.
+                    val selection =
+                        if (field == FavoriteSpeakField.INPUT) inputSelection else resultSelection
+                    if (speaking == selection) {
                         viewModel.stopSpeaking()
                     } else {
-                        viewModel.speak(entry, FavoriteSpeakField.INPUT)
-                    }
-                },
-                onSpeakResult = {
-                    if (speaking == resultSelection) {
-                        viewModel.stopSpeaking()
-                    } else {
-                        viewModel.speak(entry, FavoriteSpeakField.RESULT)
+                        viewModel.speak(entry, field)
                     }
                 },
                 onRemove = { viewModel.removeFavorite(entry) }
@@ -115,8 +112,7 @@ private fun FavoriteItem(
     speakingInput: Boolean,
     speakingResult: Boolean,
     onUse: () -> Unit,
-    onSpeakInput: () -> Unit,
-    onSpeakResult: () -> Unit,
+    onSpeak: (FavoriteSpeakField) -> Unit,
     onRemove: () -> Unit
 ) {
     Card(
@@ -131,25 +127,11 @@ private fun FavoriteItem(
             modifier = Modifier.padding(start = 12.dp, top = 8.dp, end = 4.dp, bottom = 8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = entry.sourceLang.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = entry.targetLang.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                LanguageDirection(entry.sourceLang, entry.targetLang)
                 Spacer(modifier = Modifier.weight(1f))
                 // Озвучивание оригинала.
                 IconButton(
-                    onClick = onSpeakInput,
+                    onClick = { onSpeak(FavoriteSpeakField.INPUT) },
                     modifier = Modifier.width(40.dp)
                 ) {
                     Icon(
@@ -160,7 +142,7 @@ private fun FavoriteItem(
                 }
                 // Озвучивание перевода.
                 IconButton(
-                    onClick = onSpeakResult,
+                    onClick = { onSpeak(FavoriteSpeakField.RESULT) },
                     modifier = Modifier.width(40.dp)
                 ) {
                     Icon(

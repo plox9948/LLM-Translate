@@ -637,18 +637,11 @@ class ModelManagerImpl @Inject constructor(
         return null
     }
 
-    /**
-     * Признак архива: архивные расширения скачивает только sherpa-инсталлятор
-     * (см. ArchiveInstaller), языковые паки перевода — это .bin/.spm файлы.
-     */
-    private fun isArchiveName(lower: String): Boolean =
-        lower.endsWith(".zip") || lower.endsWith(".tar.bz2") || lower.endsWith(".tar.gz")
-
     private fun guessCategory(fileName: String): ModelCategory {
         val lower = fileName.lowercase()
         return when {
             lower.contains("whisper") || lower.contains("vosk") ||
-                lower.contains("sherpa") || isArchiveName(lower) ->
+                lower.contains("sherpa") || DownloadLayout.isArchive(lower) ->
                 // sherpa-маркер и безмаркерный архив — STT-пачка (ArchiveInstaller).
                 ModelCategory.STT
             else -> ModelCategory.TRANSLATION
@@ -663,7 +656,7 @@ class ModelManagerImpl @Inject constructor(
         val lower = fileName.lowercase()
         return when {
             lower.contains("indictrans") -> RuntimeType.INDICTRANS_ONNX
-            lower.contains("sherpa") || isArchiveName(lower) ->
+            lower.contains("sherpa") || DownloadLayout.isArchive(lower) ->
                 // Архивы (.zip/.tar.bz2/.tar.gz) без явных признаков ONNX/Marian
                 // — пачки sherpa.
                 RuntimeType.SHERPA

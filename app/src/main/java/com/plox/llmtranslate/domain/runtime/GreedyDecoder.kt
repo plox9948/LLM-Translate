@@ -86,9 +86,7 @@ internal suspend fun greedyDecode(
         }
     },
     pickToken = pickToken,
-    runStep = { step, inputIds, encoderAttentionMask, firstResult, prevResult ->
-        runStep(step, inputIds, encoderAttentionMask, firstResult, prevResult)
-    }
+    runStep = runStep
 )
 
 /**

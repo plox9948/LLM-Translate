@@ -111,6 +111,4 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
             }
         }
     }
-
-    private fun discardPartial(vararg files: File) = discardPartial(files.toList())
 }

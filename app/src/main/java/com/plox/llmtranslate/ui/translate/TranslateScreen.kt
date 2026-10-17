@@ -90,6 +90,10 @@ fun TranslateScreen(
         }
     }
 
+    // Явный исходный язык: направление определено — доступны обмен языков
+    // и звезда избранного результата (для AUTO язык результата неизвестен).
+    val explicitSource = state.sourceLang != TranslateLanguage.AUTO
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -108,12 +112,12 @@ fun TranslateScreen(
                     viewModel.onSourceLangChange(state.targetLang)
                     viewModel.onTargetLangChange(state.sourceLang)
                 },
-                enabled = state.sourceLang != TranslateLanguage.AUTO
+                enabled = explicitSource
             ) {
                 Icon(
                     Icons.Filled.SwapHoriz,
                     contentDescription = stringResource(R.string.translate_swap_cd),
-                    tint = if (state.sourceLang != TranslateLanguage.AUTO) {
+                    tint = if (explicitSource) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -185,7 +189,7 @@ fun TranslateScreen(
                 enabled = !state.isTranslating &&
                     (state.inputText.isNotEmpty() || state.resultText.isNotEmpty())
             ) {
-                Text(stringResource(R.string.translate_clear))
+                Text(stringResource(R.string.clear))
             }
             // Во время длинного перевода — кнопка отмены инференса.
             if (state.canCancelTranslation) {
@@ -194,7 +198,7 @@ fun TranslateScreen(
                 ) {
                     Icon(Icons.Filled.Stop, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(stringResource(R.string.translate_cancel))
+                    Text(stringResource(R.string.cancel))
                 }
             }
         }
@@ -234,8 +238,7 @@ fun TranslateScreen(
                         IconButton(
                             onClick = {
                                 clipboard.setText(AnnotatedString(state.resultText))
-                            },
-                            enabled = state.resultText.isNotEmpty()
+                            }
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.ContentCopy,
@@ -257,7 +260,7 @@ fun TranslateScreen(
                         // направление результата не определено — звезда выключена.
                         IconButton(
                             onClick = viewModel::toggleResultFavorite,
-                            enabled = state.sourceLang != TranslateLanguage.AUTO
+                            enabled = explicitSource
                         ) {
                             Icon(
                                 imageVector = if (state.resultFavorite) Icons.Filled.Star

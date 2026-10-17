@@ -54,8 +54,8 @@ class HistoryViewModel @Inject constructor(
     }
 
     /**
-     * Подставить запись на экран «Перевод». Возвращает true, чтобы экран мог
-     * выполнить переход на вкладку перевода.
+     * Подставить запись на экран «Перевод» через [PendingTranslationHolder];
+     * переход на вкладку выполняет экран.
      */
     fun useEntry(entry: TranslationHistoryEntry) {
         pendingHolder.request(entry)

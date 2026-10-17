@@ -29,9 +29,6 @@ class ModelRepository @Inject constructor(
         dao.observeByCategory(category.name)
             .map { list -> list.mapNotNull { it.toDomainOrNull() } }
 
-    fun observeById(id: String): Flow<InstalledModel?> =
-        dao.observeById(id).map { it?.toDomainOrNull() }
-
     /**
      * Модель по id. Возвращает null, если записи нет или она содержит
      * неизвестные enum-значения (устаревшая строка БД).

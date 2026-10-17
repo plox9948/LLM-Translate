@@ -91,19 +91,15 @@ class SherpaSttEngine @Inject constructor(
     private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
 
     /**
-     * Id пучка, на котором работает [transcribe]; пишется только под [recognizerMutex],
-     * читается и вне него ([isLoaded]) — отсюда @Volatile для корректной видимости.
+     * Id пучка, на котором работает [transcribe]; пишется и читается только
+     * под [recognizerMutex].
      */
-    @Volatile
     private var activeId: String? = null
 
     private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
 
     /** Состояние загруженных моделей; пишется только под [recognizerMutex]. */
     override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
-
-    val isLoaded: Boolean
-        get() = activeId != null
 
     /**
      * Загрузить sherpa-модель, поместив пучок в LRU-кэш. При настройке keep

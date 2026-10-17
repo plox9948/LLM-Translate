@@ -29,8 +29,6 @@ class ModelRepositoryTest {
         override fun observeByCategory(category: String): Flow<List<ModelEntity>> =
             flow { emit(store.values.filter { it.category == category }) }
 
-        override fun observeById(id: String): Flow<ModelEntity?> = flow { emit(store[id]) }
-
         override suspend fun getById(id: String): ModelEntity? = store[id]
 
         override suspend fun getFirstReady(category: String): ModelEntity? =
@@ -93,10 +91,6 @@ class ModelRepositoryTest {
                 updatedAt = updatedAt
             )
             return 1
-        }
-
-        override suspend fun delete(entity: ModelEntity) {
-            store.remove(entity.id)
         }
 
         override suspend fun deleteById(id: String) {

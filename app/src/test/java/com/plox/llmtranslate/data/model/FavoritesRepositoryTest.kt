@@ -11,7 +11,7 @@ import org.junit.Test
 
 /**
  * Тесты [FavoritesRepository] поверх фейкового [FavoritesDao]:
- * маппинг в домен, дедупликация повторов, переключение избранного.
+ * маппинг в домен, переключение и удаление избранного.
  */
 class FavoritesRepositoryTest {
 
@@ -56,11 +56,11 @@ class FavoritesRepositoryTest {
     }
 
     @Test
-    fun `add stores mapped domain entry newest first`() = runTest {
+    fun `toggle stores mapped domain entry newest first`() = runTest {
         val dao = FakeDao()
         val repo = FavoritesRepository(dao)
-        repo.add("en", "ru", "hello", "привет")
-        repo.add("ru", "en", "мир", "world")
+        repo.toggle("en", "ru", "hello", "привет")
+        repo.toggle("ru", "en", "мир", "world")
 
         val favorites = repo.observeAll().first()
         assertEquals(2, favorites.size)
@@ -68,28 +68,6 @@ class FavoritesRepositoryTest {
         assertEquals("world", favorites.first().resultText)
         assertEquals("en", favorites.first().targetLang)
         assertEquals("hello", favorites.last().inputText)
-    }
-
-    @Test
-    fun `add deduplicates identical favorite`() = runTest {
-        val dao = FakeDao()
-        val repo = FavoritesRepository(dao)
-        repo.add("en", "ru", "hello", "привет")
-        repo.add("en", "ru", "hello", "привет")
-
-        val favorites = repo.observeAll().first()
-        assertEquals(1, favorites.size)
-        assertEquals(1, dao.store.size)
-    }
-
-    @Test
-    fun `add skips blank text`() = runTest {
-        val dao = FakeDao()
-        val repo = FavoritesRepository(dao)
-        repo.add("en", "ru", "   ", "привет")
-        repo.add("en", "ru", "hello", "   ")
-
-        assertTrue(dao.store.isEmpty())
     }
 
     @Test
@@ -110,8 +88,8 @@ class FavoritesRepositoryTest {
     fun `remove and delete clear entries`() = runTest {
         val dao = FakeDao()
         val repo = FavoritesRepository(dao)
-        repo.add("en", "ru", "a", "а")
-        repo.add("en", "ru", "b", "б")
+        repo.toggle("en", "ru", "a", "а")
+        repo.toggle("en", "ru", "b", "б")
 
         repo.remove("en", "ru", "a")
         assertEquals(listOf("b"), repo.observeAll().first().map { it.inputText })

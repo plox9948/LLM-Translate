@@ -13,6 +13,7 @@
     <string name="error_title">त्रुटि</string>
     <string name="download">डाउनलोड</string>
     <string name="cancel">रद्द गर्नुहोस्</string>
+    <string name="clear">मेटाउनुहोस्</string>
     <string name="option_system">सिस्टम अनुसार</string>
     <string name="option_ru">Русский</string>
     <string name="option_en">English</string>
@@ -36,9 +37,6 @@
     <string name="translate_copy_cd">अनुवाद कपी गर्नुहोस्</string>
     <string name="translate_recording_hint">● रिकर्डिङ चलिरहेको छ… रोक्न माइक्रोफोनमा ट्याप गर्नुहोस्</string>
     <string name="translate_select_language">भाषा चयन गर्नुहोस्</string>
-    <string name="translate_clear">मेटाउनुहोस्</string>
-    <string name="translate_cancel">रद्द गर्नुहोस्</string>
-    <string name="translate_history_clear">मेटाउनुहोस्</string>
     <string name="translate_history_delete_cd">इतिहासबाट मेटाउनुहोस्</string>
 
     <!-- Онбординг первого запуска -->

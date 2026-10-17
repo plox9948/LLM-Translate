@@ -342,9 +342,10 @@ class ModelsViewModel @Inject constructor(
      * Подготовить запрос экспорта модели (UI запустит SAF-лаунчер).
      */
     fun onExportClick(model: InstalledModel) {
-        if (!model.isReady || model.filePath.isNullOrBlank()) return
-        val source = File(model.filePath!!)
-        val ext = model.filePath!!.substringAfterLast('.', "").lowercase()
+        if (!model.isReady) return
+        val path = model.filePath?.takeIf { it.isNotBlank() } ?: return
+        val source = File(path)
+        val ext = path.substringAfterLast('.', "").lowercase()
         // Каталог модели упаковывается в zip — расширение должно быть .zip,
         // чтобы повторный импорт распознал ZIP-экспорт.
         val finalExt = when {

@@ -26,17 +26,6 @@ interface FavoritesDao {
     suspend fun deleteMatching(sourceLang: String, targetLang: String, inputText: String): Int
 
     /**
-     * Удалить совпадающую запись и вставить новую одной транзакцией:
-     * check-then-act без транзакции даёт UNIQUE constraint violation
-     * на idx_favorites_unique при параллельных добавлениях.
-     */
-    @Transaction
-    suspend fun replaceMatching(entity: FavoriteEntity) {
-        deleteMatching(entity.sourceLang, entity.targetLang, entity.inputText)
-        insert(entity)
-    }
-
-    /**
      * Атомарное переключение избранности: удалить совпадение; если удалили —
      * вернуть false, иначе вставить [entity] и вернуть true.
      */

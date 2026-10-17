@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Star
@@ -37,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
+import com.plox.llmtranslate.ui.LanguageDirection
 
 /**
  * Вкладка «История»: список последних переводов. Тап по записи подставляет её
@@ -76,9 +76,9 @@ fun HistoryScreen(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = viewModel::clearAll) {
-                    Text(stringResource(R.string.translate_history_clear))
-                }
+            TextButton(onClick = viewModel::clearAll) {
+                Text(stringResource(R.string.clear))
+            }
             }
         }
         items(history, key = { it.id }) { entry ->
@@ -122,21 +122,7 @@ private fun HistoryItem(
             modifier = Modifier.padding(start = 12.dp, top = 8.dp, end = 4.dp, bottom = 8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = entry.sourceLang.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = entry.targetLang.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                LanguageDirection(entry.sourceLang, entry.targetLang)
                 Spacer(modifier = Modifier.weight(1f))
                 // Избранное записи (issue #38).
                 IconButton(

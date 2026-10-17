@@ -29,33 +29,27 @@ class OnnxInstaller : ModelInstaller, BaseDownloader() {
 
         if (urls.size > 1) {
             // Мультифайловая модель: каждый файл проверяется по своему SHA-256.
-            val outcome = downloadFiles(urls, targetDir, modelId, hashes, onProgress)
-            return when (outcome) {
-                is DownloadOutcome.Success -> InstallResult.Success(outcome.file.absolutePath)
-                is DownloadOutcome.NetworkError ->
-                    InstallResult.Failure(outcome.message)
-                is DownloadOutcome.Mismatch ->
-                    // Мismatch после докачки — часть могла быть битой, повтор с нуля
-                    // поможет; после свежей загрузки файл повреждён на сервере.
-                    InstallResult.Failure(
-                        outcome.message,
-                        permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
-                    )
-            }
+            return toInstallResult(
+                downloadFiles(urls, targetDir, modelId, hashes, onProgress)
+            )
         }
 
         val fileName = urls[0].substringAfterLast('/').ifBlank { "$modelId.onnx" }
-        val outcome = downloadFile(urls[0], targetDir, fileName, hashes[0], onProgress = onProgress)
-        return when (outcome) {
-            is DownloadOutcome.Success -> InstallResult.Success(outcome.file.absolutePath)
-            is DownloadOutcome.NetworkError -> InstallResult.Failure(outcome.message)
-            is DownloadOutcome.Mismatch ->
-                // Мismatch после докачки — часть могла быть битой, повтор с нуля
-                // поможет; после свежей загрузки файл повреждён на сервере.
-                InstallResult.Failure(
-                    outcome.message,
-                    permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
-                )
-        }
+        return toInstallResult(
+            downloadFile(urls[0], targetDir, fileName, hashes[0], onProgress = onProgress)
+        )
+    }
+
+    /** Общий перевод результата скачивания в результат установки. */
+    private fun toInstallResult(outcome: DownloadOutcome): InstallResult = when (outcome) {
+        is DownloadOutcome.Success -> InstallResult.Success(outcome.file.absolutePath)
+        is DownloadOutcome.NetworkError -> InstallResult.Failure(outcome.message)
+        is DownloadOutcome.Mismatch ->
+            // Мismatch после докачки — часть могла быть битой, повтор с нуля
+            // поможет; после свежей загрузки файл повреждён на сервере.
+            InstallResult.Failure(
+                outcome.message,
+                permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
+            )
     }
 }

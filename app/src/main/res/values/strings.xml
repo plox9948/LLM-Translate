@@ -13,6 +13,7 @@
     <string name="error_title">Ошибка</string>
     <string name="download">Скачать</string>
     <string name="cancel">Отмена</string>
+    <string name="clear">Очистить</string>
     <string name="option_system">По системе</string>
     <string name="option_ru">Русский</string>
     <string name="option_en">English</string>
@@ -36,9 +37,6 @@
     <string name="translate_copy_cd">Скопировать перевод</string>
     <string name="translate_recording_hint">● Идёт запись… Нажмите на микрофон, чтобы остановить</string>
     <string name="translate_select_language">Выберите язык</string>
-    <string name="translate_clear">Очистить</string>
-    <string name="translate_cancel">Отмена</string>
-    <string name="translate_history_clear">Очистить</string>
     <string name="translate_history_delete_cd">Удалить из истории</string>
 
     <!-- Онбординг первого запуска -->

@@ -6,7 +6,6 @@ import java.text.Normalizer
  * Минимальный порт IndicProcessor для направлений npi_Deva ⇄ eng_Latn.
  *
  * Препроцессинг: NFC-нормализация + вставка языкового префикса "src tgt ".
- * Постпроцессинг: извлечение текста перевода.
  * Для en→npi выход уже в Деванагари (трансслитерация не нужна).
  *
  * Используется только для направлений с ne ⇄ en (IndicTrans2 не поддерживает ru).
@@ -31,11 +30,6 @@ object IndicProcessorLite {
         if (normalized.isEmpty()) return ""
         return "$srcLang $tgtLang $normalized"
     }
-
-    /**
-     * Постпроцессинг результата перевода (извлечение текста).
-     */
-    fun postprocess(text: String): String = text.trim()
 
     /**
      * NFC-нормализация и минимальная очистка текста.

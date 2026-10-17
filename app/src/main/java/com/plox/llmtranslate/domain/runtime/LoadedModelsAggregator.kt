@@ -20,10 +20,8 @@ object LoadedModelsAggregator {
      * @return сплющенный список всех загруженных моделей в порядке движков;
      *   эмитируется при любом изменении любого из состояний.
      */
-    fun merge(engines: List<StateFlow<List<LoadedModelInfo>>>): Flow<List<LoadedModelInfo>> {
-        val states: List<Flow<List<LoadedModelInfo>>> = engines
-        return combine(states) { values: Array<out List<LoadedModelInfo>> ->
+    fun merge(engines: List<StateFlow<List<LoadedModelInfo>>>): Flow<List<LoadedModelInfo>> =
+        combine(engines) { values: Array<out List<LoadedModelInfo>> ->
             values.flatMap { it }
         }
-    }
 }

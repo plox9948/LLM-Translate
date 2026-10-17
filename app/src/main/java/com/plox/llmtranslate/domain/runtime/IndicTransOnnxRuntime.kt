@@ -104,19 +104,15 @@ class IndicTransOnnxRuntime @Inject constructor(
     private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
 
     /**
-     * Id пучка, на котором работает [translate]; пишется только под [sessionMutex],
-     * читается и вне него ([isLoaded]) — отсюда @Volatile для корректной видимости.
+     * Id пучка, на котором работает [translate]; пишется и читается только
+     * под [sessionMutex].
      */
-    @Volatile
     private var activeId: String? = null
 
     private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
 
     /** Состояние загруженных моделей; пишется только под [sessionMutex]. */
     override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
-
-    val isLoaded: Boolean
-        get() = activeId != null
 
     /**
      * Загрузить IndicTrans-модель (3 сессии + токенизаторы), поместив пучок

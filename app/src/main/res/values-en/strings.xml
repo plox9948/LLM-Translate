@@ -13,6 +13,7 @@
     <string name="error_title">Error</string>
     <string name="download">Download</string>
     <string name="cancel">Cancel</string>
+    <string name="clear">Clear</string>
     <string name="option_system">System default</string>
     <string name="option_ru">Русский</string>
     <string name="option_en">English</string>
@@ -36,9 +37,6 @@
     <string name="translate_copy_cd">Copy translation</string>
     <string name="translate_recording_hint">● Recording… Tap the microphone to stop</string>
     <string name="translate_select_language">Select language</string>
-    <string name="translate_clear">Clear</string>
-    <string name="translate_cancel">Cancel</string>
-    <string name="translate_history_clear">Clear</string>
     <string name="translate_history_delete_cd">Delete from history</string>
 
     <!-- Онбординг первого запуска -->

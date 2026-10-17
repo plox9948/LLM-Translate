@@ -10,7 +10,7 @@ import javax.inject.Singleton
  * Репозиторий избранного переводов поверх Room.
  *
  * Дедуплицирует записи по ключу (направление + исходный текст):
- * повторное добавление заменяет предыдущую запись и не создаёт дубликат.
+ * [toggle] переключает избранность атомарно, дубликаты по ключу удаляются.
  */
 @Singleton
 class FavoritesRepository @Inject constructor(
@@ -20,26 +20,6 @@ class FavoritesRepository @Inject constructor(
     /** Все избранные записи, новые сверху. */
     fun observeAll(): Flow<List<FavoriteEntry>> =
         dao.observeAll().map { list -> list.map { it.toDomain() } }
-
-    /**
-     * Добавить перевод в избранное. Предыдущая идентичная запись (то же
-     * направление и текст) удаляется, чтобы повторы не плодились.
-     */
-    suspend fun add(sourceLang: String, targetLang: String, inputText: String, resultText: String) {
-        if (inputText.isBlank() || resultText.isBlank()) return
-        // replaceMatching — delete+insert в одной транзакции Room: без неё
-        // параллельные добавления одного перевода дают UNIQUE constraint
-        // violation на idx_favorites_unique.
-        dao.replaceMatching(
-            FavoriteEntity(
-                sourceLang = sourceLang,
-                targetLang = targetLang,
-                inputText = inputText,
-                resultText = resultText,
-                createdAt = System.currentTimeMillis()
-            )
-        )
-    }
 
     /** Удалить запись избранного по ключу (направление + исходный текст). */
     suspend fun remove(sourceLang: String, targetLang: String, inputText: String) =

@@ -273,10 +273,7 @@ internal class TtsUtteranceRegistry {
      * о завершении (QUEUE_FLUSH снял их из очереди).
      */
     fun start(utteranceId: String, onDone: (() -> Unit)?): List<() -> Unit> {
-        val previous = mutableListOf<() -> Unit>()
-        for (id in callbacks.keys().toList()) {
-            callbacks.remove(id)?.let { previous.add(it) }
-        }
+        val previous = drain()
         if (onDone != null) callbacks[utteranceId] = onDone
         return previous
     }

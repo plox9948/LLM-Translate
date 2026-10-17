@@ -64,19 +64,15 @@ class SlimtRuntime @Inject constructor(
     private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
 
     /**
-     * Id пучка, на котором работает [translate]; пишется только под [engineMutex],
-     * читается и вне него ([isLoaded]) — отсюда @Volatile для корректной видимости.
+     * Id пучка, на котором работает [translate]; пишется и читается только
+     * под [engineMutex].
      */
-    @Volatile
     private var activeId: String? = null
 
     private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
 
     /** Состояние загруженных моделей; пишется только под [engineMutex]. */
     override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
-
-    val isLoaded: Boolean
-        get() = activeId != null
 
     /**
      * Загрузить пачку Firefox-модели (marian .bin + shortlist + словари).
@@ -206,14 +202,12 @@ class SlimtRuntime @Inject constructor(
                     outcome
                 } catch (e: CancellationException) {
                     withContext(NonCancellable) {
-                        if (handle != 0L) {
-                            SlimtNative.nativeCancel(handle)
-                            // С-drain до терминального статуса: воркер slimt
-                            // прерывает пакет по флагу отмены; иначе следующий
-                            // nativeStart упрётся в «already running».
-                            while (SlimtNative.nativePoll(handle) == STATUS_PENDING) {
-                                delay(POLL_INTERVAL_MS)
-                            }
+                        SlimtNative.nativeCancel(handle)
+                        // С-drain до терминального статуса: воркер slimt
+                        // прерывает пакет по флагу отмены; иначе следующий
+                        // nativeStart упрётся в «already running».
+                        while (SlimtNative.nativePoll(handle) == STATUS_PENDING) {
+                            delay(POLL_INTERVAL_MS)
                         }
                     }
                     Timber.d("slimt: перевод отменён пользователем")

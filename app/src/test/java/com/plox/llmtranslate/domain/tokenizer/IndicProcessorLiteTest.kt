@@ -32,11 +32,6 @@ class IndicProcessorLiteTest {
     }
 
     @Test
-    fun `postprocess trims result`() {
-        assertEquals("नमस्ते", IndicProcessorLite.postprocess("  नमस्ते  "))
-    }
-
-    @Test
     fun `empty text returns empty string`() {
         assertEquals("", IndicProcessorLite.preprocess("", "npi_Deva", "eng_Latn"))
     }
