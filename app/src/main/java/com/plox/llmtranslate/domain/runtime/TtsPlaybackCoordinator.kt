@@ -68,7 +68,7 @@ data class TtsPlaybackStatus(
 /**
  * Поставщик текущего времени, миллисекунды (test-seam grace-окна
  * наблюдения за автоскачиванием в [TtsPlaybackCoordinator], ревью раунд 4):
- * боевая реализация — wall-clock, тест подменяет часы, не засыпая реально.
+ * боевая реализация — монотонные часы, тест подменяет часы, не засыпая реально.
  */
 fun interface DownloadWatchClock {
 
@@ -350,7 +350,7 @@ class TtsPlaybackCoordinator @Inject constructor(
         pendingRetry = PendingRetry(text, language)
         watchedDownloadId = cardId
         // Наблюдение ставится до асинхронного upsert-а записи (startDownload
-        // ниже): окно grace ([WATCH_GRACE_MS] от текущей эмиссии часов)
+        // ниже): окно grace ([WATCH_GRACE_MS] от текущего момента)
         // терпит отсутствие строки, за окном — сброс watch-статуса.
         watchGraceUntil = clock.nowMs() + WATCH_GRACE_MS
         _status.update {

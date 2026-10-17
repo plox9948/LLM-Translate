@@ -101,13 +101,14 @@ abstract class DomainModule {
 
         /**
          * Часы grace-окна наблюдения за автоскачиванием Piper-модели
-         * (ревью раунд 4): wall-clock; тест подменяет поставщик фиктивными
+         * (ревью раунд 4): монотонные часы (elapsedRealtime — не сдвигаются
+         * NTP/переходами времени); тест подменяет поставщик фиктивными
          * часами без реального ожидания.
          */
         @Provides
         @Singleton
         fun provideDownloadWatchClock(): DownloadWatchClock =
-            DownloadWatchClock { System.currentTimeMillis() }
+            DownloadWatchClock { android.os.SystemClock.elapsedRealtime() }
 
         /**
          * Единый конфигурированный Json для сериализации.

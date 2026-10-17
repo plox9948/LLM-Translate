@@ -237,7 +237,19 @@ class AudioRecorder @Inject constructor(
             generation = currentGeneration
             val buffer = ByteArrayOutputStream()
             pcmBuffer = buffer
-            record.startRecording()
+            // startRecording() может бросить IllegalStateException (ревью раунд 5):
+            // освобождаем рекордер и откатываем сцену, иначе залипший экземпляр
+            // микрофона никто не снимет (cancel() увидит isRecording==false).
+            try {
+                record.startRecording()
+            } catch (e: IllegalStateException) {
+                Timber.e(e, "AudioRecord.startRecording() не удался")
+                record.release()
+                audioRecord = null
+                pcmBuffer = ByteArrayOutputStream()
+                generation = null
+                return@synchronized false
+            }
             _recordingFlow.value = true
 
             readJob = scope.launch {
@@ -314,8 +326,10 @@ class AudioRecorder @Inject constructor(
             // Дожидаемся выхода цикла чтения, чтобы не освободить AudioRecord
             // посреди блокирующего read() (тот же порядок, что в stopRecording).
             scene.job?.join()
-            if (audioRecord === scene.record) {
-                audioRecord = null
+            synchronized(sceneLock) {
+                if (audioRecord === scene.record) {
+                    audioRecord = null
+                }
             }
             try {
                 scene.record?.stop()
@@ -337,8 +351,10 @@ class AudioRecorder @Inject constructor(
         // Тот же сценарий вызова, что в cancel(): новая запись, стартованная
         // в окне join(), этим вызовом не освобождается и не сохраняется.
         scene.job?.join()
-        if (audioRecord === scene.record) {
-            audioRecord = null
+        synchronized(sceneLock) {
+            if (audioRecord === scene.record) {
+                audioRecord = null
+            }
         }
 
         // Блокирующие вызовы (AudioRecord.stop/release, запись WAV) — на IO.
