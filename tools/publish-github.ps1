@@ -60,7 +60,9 @@ if ($Tag) {
     $payload = @{ tag_name = $Tag; name = "LLM-Translator $Tag"; draft = $false; prerelease = $false } | ConvertTo-Json
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases" `
         -Method Post -Headers $headers -Body $payload -ContentType 'application/json; charset=utf-8'
-    $assetName = "LLM-Translator-$Tag-release.apk"
+    # Имя ассета без версии: сохраняет ссылку
+    # .../releases/latest/download/LLM-Translator-release.apk актуальной для любого релиза.
+    $assetName = "LLM-Translator-release.apk"
     $uploaded = Invoke-RestMethod -Uri "https://uploads.github.com/repos/$owner/$repo/releases/$($release.id)/assets?name=$assetName" `
         -Method Post -Headers $headers -ContentType 'application/vnd.android.package-archive' -InFile $apkPath
     Write-Host "Release ${Tag}: $($uploaded.browser_download_url)"
