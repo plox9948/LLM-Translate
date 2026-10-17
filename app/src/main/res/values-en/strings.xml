@@ -113,4 +113,7 @@
     <string name="favorites_add_cd">Add to favorites</string>
     <string name="favorites_speak_input_cd">Read source aloud</string>
     <string name="favorites_speak_result_cd">Read translation aloud</string>
+    <string name="favorites_search_hint">Search favorites</string>
+    <string name="favorites_search_empty">Nothing found</string>
+    <string name="favorites_search_clear_cd">Clear search</string>
 </resources>

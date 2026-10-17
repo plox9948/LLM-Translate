@@ -115,4 +115,7 @@
     <string name="favorites_add_cd">Добавить в избранное</string>
     <string name="favorites_speak_input_cd">Озвучить оригинал</string>
     <string name="favorites_speak_result_cd">Озвучить перевод</string>
+    <string name="favorites_search_hint">Поиск по избранным</string>
+    <string name="favorites_search_empty">Ничего не найдено</string>
+    <string name="favorites_search_clear_cd">Очистить поиск</string>
 </resources>

@@ -12,8 +12,10 @@ import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.util.Locale
 import javax.inject.Inject
 
 /** Поле записи избранного, озвучиваемое TTS: оригинал или перевод. */
@@ -37,6 +39,11 @@ class FavoritesViewModel @Inject constructor(
     private val pendingHolder: PendingTranslationHolder
 ) : ViewModel() {
 
+    // Текущий поисковый запрос вкладки.
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery
+
+    // Список с учётом поиска: пустой/blank запрос — все записи.
     private val _favorites = MutableStateFlow<List<FavoriteEntry>>(emptyList())
     val favorites: StateFlow<List<FavoriteEntry>> = _favorites
 
@@ -45,8 +52,14 @@ class FavoritesViewModel @Inject constructor(
     val speaking: StateFlow<SpeakingSelection?> = _speaking
 
     init {
+        // Фильтрация на устройстве: избранных записей мало, сортировка
+        // репозитория сохраняется (filter порядок не меняет).
         viewModelScope.launch {
-            favoritesRepository.observeAll().collect { _favorites.value = it }
+            combine(
+                favoritesRepository.observeAll(),
+                _searchQuery
+            ) { entries, query -> filterByQuery(entries, query) }
+                .collect { _favorites.value = it }
         }
         viewModelScope.launch {
             // Инициализация TTS текущим движком (как на экране «Перевод»).
@@ -55,6 +68,29 @@ class FavoritesViewModel @Inject constructor(
                 if (error != null) {
                     Timber.w("TTS недоступен: ${error.userMessage()}")
                 }
+            }
+        }
+    }
+
+    /** Обновить поисковый запрос (поиск над списком избранного). */
+    fun onQueryChange(query: String) {
+        _searchQuery.value = query
+    }
+
+    companion object {
+        /**
+         * Оставить записи, у которых оригинал ИЛИ перевод содержит [query]
+         * без учёта регистра. Пустой/blank запрос — весь список [entries].
+         */
+        internal fun filterByQuery(
+            entries: List<FavoriteEntry>,
+            query: String
+        ): List<FavoriteEntry> {
+            val needle = query.trim().lowercase(Locale.ROOT)
+            if (needle.isEmpty()) return entries
+            return entries.filter {
+                it.inputText.lowercase(Locale.ROOT).contains(needle) ||
+                    it.resultText.lowercase(Locale.ROOT).contains(needle)
             }
         }
     }

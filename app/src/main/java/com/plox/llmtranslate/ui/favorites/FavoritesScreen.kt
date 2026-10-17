@@ -15,13 +15,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -47,9 +50,11 @@ fun FavoritesScreen(
     viewModel: FavoritesViewModel = hiltViewModel()
 ) {
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val speaking by viewModel.speaking.collectAsStateWithLifecycle()
 
-    if (favorites.isEmpty()) {
+    // Избранного нет вовсе и поиск не вводился — обычное пустое состояние.
+    if (favorites.isEmpty() && searchQuery.isBlank()) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
@@ -63,43 +68,105 @@ fun FavoritesScreen(
         return
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        item(key = "header") {
-            Text(
-                text = stringResource(R.string.nav_favorites),
-                style = MaterialTheme.typography.titleMedium
-            )
+    Column(modifier = Modifier.fillMaxSize()) {
+        SearchField(
+            query = searchQuery,
+            onQueryChange = viewModel::onQueryChange
+        )
+        if (favorites.isEmpty()) {
+            // Поиск без совпадений — то же идиоматичное пустое состояние,
+            // что и в «Истории», но с текстом «Ничего не найдено».
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = stringResource(R.string.favorites_search_empty),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            return@Column
         }
-        items(favorites, key = { it.id }) { entry ->
-            val inputSelection = SpeakingSelection(entry.id, FavoriteSpeakField.INPUT)
-            val resultSelection = SpeakingSelection(entry.id, FavoriteSpeakField.RESULT)
-            FavoriteItem(
-                entry = entry,
-                speakingInput = speaking == inputSelection,
-                speakingResult = speaking == resultSelection,
-                onUse = {
-                    viewModel.useEntry(entry)
-                    onUseEntry()
-                },
-                onSpeak = { field ->
-                    // Повторный тап по говорящему полю — стоп, иначе — начать
-                    // озвучивание выбранного поля.
-                    val selection =
-                        if (field == FavoriteSpeakField.INPUT) inputSelection else resultSelection
-                    if (speaking == selection) {
-                        viewModel.stopSpeaking()
-                    } else {
-                        viewModel.speak(entry, field)
-                    }
-                },
-                onRemove = { viewModel.removeFavorite(entry) }
-            )
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item(key = "header") {
+                Text(
+                    text = stringResource(R.string.nav_favorites),
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+            items(favorites, key = { it.id }) { entry ->
+                val inputSelection = SpeakingSelection(entry.id, FavoriteSpeakField.INPUT)
+                val resultSelection = SpeakingSelection(entry.id, FavoriteSpeakField.RESULT)
+                FavoriteItem(
+                    entry = entry,
+                    speakingInput = speaking == inputSelection,
+                    speakingResult = speaking == resultSelection,
+                    onUse = {
+                        viewModel.useEntry(entry)
+                        onUseEntry()
+                    },
+                    onSpeak = { field ->
+                        // Повторный тап по говорящему полю — стоп, иначе — начать
+                        // озвучивание выбранного поля.
+                        val selection =
+                            if (field == FavoriteSpeakField.INPUT) inputSelection else resultSelection
+                        if (speaking == selection) {
+                            viewModel.stopSpeaking()
+                        } else {
+                            viewModel.speak(entry, field)
+                        }
+                    },
+                    onRemove = { viewModel.removeFavorite(entry) }
+                )
+            }
         }
     }
+}
+
+/**
+ * Поле поиска по избранному: leading-иконка поиска, trailing-кнопка очистки
+ * при непустом запросе. Состояние поднято в [FavoritesViewModel].
+ */
+@Composable
+private fun SearchField(
+    query: String,
+    onQueryChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 16.dp),
+        singleLine = true,
+        placeholder = { Text(stringResource(R.string.favorites_search_hint)) },
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Filled.Search,
+                contentDescription = null
+            )
+        },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(onClick = { onQueryChange("") }) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = stringResource(R.string.favorites_search_clear_cd)
+                    )
+                }
+            }
+        }
+    )
 }
 
 /**

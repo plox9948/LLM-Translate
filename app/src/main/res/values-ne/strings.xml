@@ -113,4 +113,7 @@
     <string name="favorites_add_cd">मन परेकामा थप्नुहोस्</string>
     <string name="favorites_speak_input_cd">स्रोत सुनाउनुहोस्</string>
     <string name="favorites_speak_result_cd">अनुवाद सुनाउनुहोस्</string>
+    <string name="favorites_search_hint">मन परेकामा खोज्नुहोस्</string>
+    <string name="favorites_search_empty">केही भेटिएन</string>
+    <string name="favorites_search_clear_cd">खोजी खाली गर्नुहोस्</string>
 </resources>

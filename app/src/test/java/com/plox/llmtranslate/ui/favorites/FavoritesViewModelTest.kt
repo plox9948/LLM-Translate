@@ -23,8 +23,10 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Тесты флага озвучивания [FavoritesViewModel]: выбор «запись + поле»,
- * сброс по завершении фразы, переключение поля и остановка.
+ * Тесты [FavoritesViewModel]: флаг озвучивания (выбор «запись + поле»,
+ * сброс по завершении фразы, переключение поля, остановка) и поиск по
+ * избранному (регистронезависимость, совпадение по оригиналу/переводу,
+ * пустой/blank запрос, отсутствие совпадений, сброс запроса).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class FavoritesViewModelTest {
@@ -108,5 +110,82 @@ class FavoritesViewModelTest {
 
         assertNull(viewModel.speaking.value)
         coVerify(exactly = 0) { ttsRuntime.speak(any(), any(), any()) }
+    }
+
+    // --- Поиск по избранному ---
+
+    /** Новый VM со списком [entries] — для тестов фильтрации поиска. */
+    private fun newViewModelWith(entries: List<FavoriteEntry>): FavoritesViewModel {
+        every { favoritesRepository.observeAll() } returns flowOf(entries)
+        return FavoritesViewModel(favoritesRepository, ttsRuntime, preferences, pendingHolder)
+    }
+
+    private val searchEntries = listOf(
+        FavoriteEntry(1L, "ru", "en", "привет мир", "Hello WORLD", 1000L),
+        FavoriteEntry(2L, "en", "ru", "Good morning", "доброе утро", 2000L),
+        FavoriteEntry(3L, "ru", "en", "спасибо", "thank you", 3000L)
+    )
+
+    @Test
+    fun `search matches input case-insensitively ru`() {
+        val vm = newViewModelWith(searchEntries)
+
+        vm.onQueryChange("ПРИВЕТ")
+
+        assertEquals(listOf(searchEntries[0]), vm.favorites.value)
+    }
+
+    @Test
+    fun `search matches input case-insensitively en`() {
+        val vm = newViewModelWith(searchEntries)
+
+        vm.onQueryChange("good MORNING")
+
+        assertEquals(listOf(searchEntries[1]), vm.favorites.value)
+    }
+
+    @Test
+    fun `search matches translated text not only input`() {
+        val vm = newViewModelWith(searchEntries)
+
+        vm.onQueryChange("world")
+
+        assertEquals(listOf(searchEntries[0]), vm.favorites.value)
+    }
+
+    @Test
+    fun `empty query keeps all entries`() {
+        val vm = newViewModelWith(searchEntries)
+
+        assertEquals(searchEntries, vm.favorites.value)
+    }
+
+    @Test
+    fun `blank query keeps all entries`() {
+        val vm = newViewModelWith(searchEntries)
+
+        vm.onQueryChange("   ")
+
+        assertEquals(searchEntries, vm.favorites.value)
+    }
+
+    @Test
+    fun `query without matches yields empty list`() {
+        val vm = newViewModelWith(searchEntries)
+
+        vm.onQueryChange("абракадабра")
+
+        assertEquals(emptyList<FavoriteEntry>(), vm.favorites.value)
+    }
+
+    @Test
+    fun `resetting query restores full list`() {
+        val vm = newViewModelWith(searchEntries)
+
+        vm.onQueryChange("асибо")
+        assertEquals(listOf(searchEntries[2]), vm.favorites.value)
+
+        vm.onQueryChange("")
+        assertEquals(searchEntries, vm.favorites.value)
     }
 }
