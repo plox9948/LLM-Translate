@@ -49,3 +49,15 @@ interface ModelInstaller {
         onProgress: suspend (Int) -> Unit
     ): InstallResult
 }
+
+/**
+ * Общий перевод несовпадения SHA-256 в ошибку установки: mismatch после
+ * докачки — часть могла быть битой, повтор с нуля поможет; после свежей
+ * загрузки файл повреждён на сервере (permanent, см.
+ * [DownloadResumePolicy.mismatchIsPermanent]).
+ */
+internal fun DownloadOutcome.Mismatch.toInstallFailure(): InstallResult.Failure =
+    InstallResult.Failure(
+        message,
+        permanent = DownloadResumePolicy.mismatchIsPermanent(wasResumed)
+    )

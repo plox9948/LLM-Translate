@@ -44,12 +44,6 @@ class OnnxInstaller : ModelInstaller, BaseDownloader() {
     private fun toInstallResult(outcome: DownloadOutcome): InstallResult = when (outcome) {
         is DownloadOutcome.Success -> InstallResult.Success(outcome.file.absolutePath)
         is DownloadOutcome.NetworkError -> InstallResult.Failure(outcome.message)
-        is DownloadOutcome.Mismatch ->
-            // Мismatch после докачки — часть могла быть битой, повтор с нуля
-            // поможет; после свежей загрузки файл повреждён на сервере.
-            InstallResult.Failure(
-                outcome.message,
-                permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
-            )
+        is DownloadOutcome.Mismatch -> outcome.toInstallFailure()
     }
 }

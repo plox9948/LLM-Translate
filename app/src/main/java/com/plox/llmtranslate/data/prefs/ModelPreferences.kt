@@ -145,14 +145,14 @@ class ModelPreferences @Inject constructor(
     // --- Настройки приложения ---
 
     val ttsEngine: Flow<String> =
-        context.dataStore.data.map { it[stringPreferencesKey("tts_engine")] ?: TtsEngines.SYSTEM }
+        context.dataStore.data.map { it[TTS_ENGINE_KEY] ?: TtsEngines.SYSTEM }
 
     suspend fun setTtsEngine(engine: String) {
-        context.dataStore.edit { it[stringPreferencesKey("tts_engine")] = engine }
+        context.dataStore.edit { it[TTS_ENGINE_KEY] = engine }
     }
 
     val uiLanguage: Flow<String> =
-        context.dataStore.data.map { it[stringPreferencesKey("ui_language")] ?: "system" }
+        context.dataStore.data.map { it[UI_LANGUAGE_KEY] ?: "system" }
 
     /**
      * Кэш uiLanguage в памяти процесса: прогревается [prefetchUiLanguage]
@@ -186,14 +186,14 @@ class ModelPreferences @Inject constructor(
 
     suspend fun setUiLanguage(lang: String) {
         uiLanguageCacheRef.set(lang)
-        context.dataStore.edit { it[stringPreferencesKey("ui_language")] = lang }
+        context.dataStore.edit { it[UI_LANGUAGE_KEY] = lang }
     }
 
     val theme: Flow<String> =
-        context.dataStore.data.map { it[stringPreferencesKey("theme")] ?: "system" }
+        context.dataStore.data.map { it[THEME_KEY] ?: "system" }
 
     suspend fun setTheme(theme: String) {
-        context.dataStore.edit { it[stringPreferencesKey("theme")] = theme }
+        context.dataStore.edit { it[THEME_KEY] = theme }
     }
 
     /**
@@ -202,11 +202,11 @@ class ModelPreferences @Inject constructor(
      */
     val unloadTimeoutMinutes: Flow<Int> =
         context.dataStore.data.map {
-            it[intPreferencesKey("unload_timeout_minutes")] ?: DEFAULT_UNLOAD_TIMEOUT_MINUTES
+            it[UNLOAD_TIMEOUT_MINUTES_KEY] ?: DEFAULT_UNLOAD_TIMEOUT_MINUTES
         }
 
     suspend fun setUnloadTimeoutMinutes(minutes: Int) {
-        context.dataStore.edit { it[intPreferencesKey("unload_timeout_minutes")] = minutes }
+        context.dataStore.edit { it[UNLOAD_TIMEOUT_MINUTES_KEY] = minutes }
     }
 
     /**
@@ -227,10 +227,10 @@ class ModelPreferences @Inject constructor(
     }
 
     val lastRemoteCatalogVersion: Flow<Int> =
-        context.dataStore.data.map { it[intPreferencesKey("remote_catalog_version")] ?: 0 }
+        context.dataStore.data.map { it[REMOTE_CATALOG_VERSION_KEY] ?: 0 }
 
     suspend fun setLastRemoteCatalogVersion(version: Int) {
-        context.dataStore.edit { it[intPreferencesKey("remote_catalog_version")] = version }
+        context.dataStore.edit { it[REMOTE_CATALOG_VERSION_KEY] = version }
     }
 
     companion object {
@@ -264,5 +264,20 @@ class ModelPreferences @Inject constructor(
 
         /** Preference флага пройденного онбординга (issue #33). */
         private val ONBOARDING_DONE_KEY = booleanPreferencesKey("onboarding_done")
+
+        /** Preference выбранного TTS-движка. */
+        private val TTS_ENGINE_KEY = stringPreferencesKey("tts_engine")
+
+        /** Preference языка интерфейса. */
+        private val UI_LANGUAGE_KEY = stringPreferencesKey("ui_language")
+
+        /** Preference темы интерфейса. */
+        private val THEME_KEY = stringPreferencesKey("theme")
+
+        /** Preference тайм-аута отложенной выгрузки рантаймов, минуты. */
+        private val UNLOAD_TIMEOUT_MINUTES_KEY = intPreferencesKey("unload_timeout_minutes")
+
+        /** Preference версии применённого удалённого каталога. */
+        private val REMOTE_CATALOG_VERSION_KEY = intPreferencesKey("remote_catalog_version")
     }
 }

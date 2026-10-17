@@ -442,17 +442,18 @@ class TranslateViewModel @Inject constructor(
                     )
                 }
 
-                // Выбор STT-модели (issues #28, #29): для явно выбранного
-                // исходного языка — назначенная языку модель (с фолбэком
-                // IndicConformer для ne и поддержанием языка), для AUTO —
-                // мультаязычная (whisper в приоритете) либо любая установленная.
-                val langCode = if (state.sourceLang != TranslateLanguage.AUTO) {
+                // Выбор STT-модели и подсказка языка для STT (issues #28, #29):
+                // для явно выбранного исходного языка — его код (назначенная
+                // языку модель с фолбэком IndicConformer для ne; whisper
+                // определит язык сам), для AUTO — null (мультаязычная модель
+                // в приоритете либо любая установленная).
+                val languageHint = if (state.sourceLang != TranslateLanguage.AUTO) {
                     state.sourceLang.code
                 } else {
                     null
                 }
                 val model = SttModelSelector.select(
-                    language = langCode,
+                    language = languageHint,
                     assignments = sttAssignments,
                     installed = sttModels
                 )
@@ -480,14 +481,7 @@ class TranslateViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Подсказка языка для STT: явный выбор или null (whisper определит сам).
-                val langHint = if (state.sourceLang != TranslateLanguage.AUTO) {
-                    state.sourceLang.code
-                } else {
-                    null
-                }
-
-                engine.transcribe(wavPath, language = langHint).fold(
+                engine.transcribe(wavPath, language = languageHint).fold(
                     onSuccess = { text ->
                         update {
                             it.copy(

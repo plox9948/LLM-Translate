@@ -15,8 +15,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -36,6 +34,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
+import com.plox.llmtranslate.ui.FavoriteStarIcon
 import com.plox.llmtranslate.ui.LanguageDirection
 
 /**
@@ -76,9 +75,9 @@ fun HistoryScreen(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Spacer(modifier = Modifier.weight(1f))
-            TextButton(onClick = viewModel::clearAll) {
-                Text(stringResource(R.string.clear))
-            }
+                TextButton(onClick = viewModel::clearAll) {
+                    Text(stringResource(R.string.clear))
+                }
             }
         }
         items(history, key = { it.id }) { entry ->
@@ -129,19 +128,7 @@ private fun HistoryItem(
                     onClick = onToggleFavorite,
                     modifier = Modifier.width(40.dp)
                 ) {
-                    Icon(
-                        imageVector = if (isFavorite) Icons.Filled.Star
-                        else Icons.Outlined.Star,
-                        contentDescription = stringResource(
-                            if (isFavorite) R.string.favorites_remove_cd
-                            else R.string.favorites_add_cd
-                        ),
-                        tint = if (isFavorite) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
+                    FavoriteStarIcon(isFavorite)
                 }
                 IconButton(onClick = onDelete, modifier = Modifier.width(40.dp)) {
                     Icon(

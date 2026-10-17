@@ -54,10 +54,7 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
                     return InstallResult.Failure(outcome.message)
 
                 is DownloadOutcome.Mismatch ->
-                    return InstallResult.Failure(
-                        outcome.message,
-                        permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
-                    )
+                    return outcome.toInstallFailure()
             }
             val downloaded = File(modelDir, archiveName)
             try {

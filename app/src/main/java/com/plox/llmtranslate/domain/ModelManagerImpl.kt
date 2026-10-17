@@ -534,13 +534,16 @@ class ModelManagerImpl @Inject constructor(
             targetDir.deleteRecursively()
             return null
         }
+        // Размер считаем один раз: каталог между этими полями не меняется
+        // (sizeBytes и bytesDone всегда равны сумме файлов каталога).
+        val size = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
         return InstalledModel(
             id = meta.id,
             category = category,
             displayName = meta.displayName,
             description = meta.description,
             runtime = runtime,
-            sizeBytes = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
+            sizeBytes = size,
             ramRequiredMb = meta.ramRequiredMb,
             languages = meta.languages,
             quality = meta.quality,
@@ -555,7 +558,7 @@ class ModelManagerImpl @Inject constructor(
             status = ModelStatus.READY,
             progress = 100,
             filePath = targetDir.absolutePath,
-            bytesDone = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
+            bytesDone = size,
             isBuiltin = meta.isBuiltin
         )
     }

@@ -18,10 +18,8 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
-import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
@@ -55,6 +53,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.ModelCard
+import com.plox.llmtranslate.ui.FavoriteStarIcon
 import com.plox.llmtranslate.ui.models.formatBytes
 
 /**
@@ -262,19 +261,7 @@ fun TranslateScreen(
                             onClick = viewModel::toggleResultFavorite,
                             enabled = explicitSource
                         ) {
-                            Icon(
-                                imageVector = if (state.resultFavorite) Icons.Filled.Star
-                                else Icons.Outlined.Star,
-                                contentDescription = stringResource(
-                                    if (state.resultFavorite) R.string.favorites_remove_cd
-                                    else R.string.favorites_add_cd
-                                ),
-                                tint = if (state.resultFavorite) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                }
-                            )
+                            FavoriteStarIcon(state.resultFavorite)
                         }
                     }
                     SelectionContainer {

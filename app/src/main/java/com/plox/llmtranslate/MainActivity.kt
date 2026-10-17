@@ -178,25 +178,28 @@ class MainActivity : ComponentActivity() {
     private fun applyUiLanguage(lang: String) {
         if (lang == appliedUiLanguage) return
         appliedUiLanguage = lang
-        val config = when (lang) {
-            "ru" -> Configuration(resources.configuration).apply { setLocale(Locale("ru")) }
-            "en" -> Configuration(resources.configuration).apply { setLocale(Locale("en")) }
-            "ne" -> Configuration(resources.configuration).apply { setLocale(Locale("ne")) }
+        val language = when (lang) {
+            "ru", "en", "ne" -> lang
             // «По системе» — берём язык системы из снимка конфигурации и
             // отображаем его в поддерживаемый язык UI. Детерминированность
             // важна: без этого процесс сохраняет прилипшую локаль от
             // предыдущего updateConfiguration и наследует её при recreate().
             else -> {
                 val systemLanguage = baseConfig?.let { snapshot ->
-                    @Suppress("DEPRECATION")
+                    // getLocales() non-null на minSdk 28 — пустой список возможен,
+                    // null — нет; при пустом списке — фолбэк на одиночную локаль.
                     val locales = snapshot.locales
-                    if (locales != null && locales.size() > 0) locales.get(0).language
-                    else snapshot.locale?.language
+                    if (locales.size() > 0) {
+                        locales.get(0).language
+                    } else {
+                        @Suppress("DEPRECATION")
+                        snapshot.locale?.language
+                    }
                 }
-                val mapped = defaultUiLanguageForSystemLocale(systemLanguage)
-                Configuration(resources.configuration).apply { setLocale(Locale(mapped)) }
+                defaultUiLanguageForSystemLocale(systemLanguage)
             }
         }
+        val config = Configuration(resources.configuration).apply { setLocale(Locale(language)) }
         // updateConfiguration устарел, но остаётся надёжным способом применить
         // локаль к активности без AppCompat. Современный createConfigurationContext
         // не меняет ресурсы самой активности.

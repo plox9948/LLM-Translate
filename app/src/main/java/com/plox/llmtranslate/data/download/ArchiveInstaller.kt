@@ -80,12 +80,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                     is DownloadOutcome.NetworkError ->
                         return InstallResult.Failure("Не удалось скачать архив: $fileName")
                     is DownloadOutcome.Mismatch ->
-                        // Мismatch после докачки — часть могла быть битой, повтор с нуля
-                        // поможет; после свежей загрузки архив повреждён на сервере.
-                        return InstallResult.Failure(
-                            outcome.message,
-                            permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
-                        )
+                        return outcome.toInstallFailure()
                 }
             } else {
                 when (val outcome = downloadFile(url, modelDir, fileName, hashes[index]) { fileProgress ->
@@ -95,12 +90,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                     is DownloadOutcome.NetworkError ->
                         return InstallResult.Failure("Не удалось скачать: $fileName")
                     is DownloadOutcome.Mismatch ->
-                        // Мismatch после докачки — часть могла быть битой, повтор с нуля
-                        // поможет; после свежей загрузки файл повреждён на сервере.
-                        return InstallResult.Failure(
-                            outcome.message,
-                            permanent = DownloadResumePolicy.mismatchIsPermanent(outcome.wasResumed)
-                        )
+                        return outcome.toInstallFailure()
                 }
             }
         }
