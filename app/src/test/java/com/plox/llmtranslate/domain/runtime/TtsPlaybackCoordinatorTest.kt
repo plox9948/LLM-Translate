@@ -338,15 +338,66 @@ class TtsPlaybackCoordinatorTest {
 
         // Скачивание снято (запись удалена), но Room Flow больше не эмиттирует —
         // DOWNLOADING не должен залипать: проверка срабатывает по таймеру.
-        nowMs = 4_000L
+        val timerAt =
+            TtsPlaybackCoordinator.WATCH_GRACE_MS +
+            TtsPlaybackCoordinator.WATCH_CHECK_BUFFER_MS + 100
+        nowMs = timerAt + 400
+        advanceTimeBy(timerAt)
+        runCurrent()
+
+        assertEquals(TtsDownloadStatus.NONE, timerCoordinator.status.value.downloadStatus)
+        assertNull(timerCoordinator.status.value.downloadModelId)
+    }
+
+    @Test
+    fun `stale grace timer from previous watch scene does not reset new watch`() = runTest {
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+        val timerCoordinator = TtsPlaybackCoordinator(
+            ttsRuntime,
+            piperRuntime,
+            modelManager,
+            backgroundScope,
+            DownloadWatchClock { nowMs },
+            contextWithNetwork(true)
+        )
+
+        // Первая watch-сцена (gen=1).
+        timerCoordinator.speak("фраза один", "ru")
+        runCurrent()
+        assertEquals(
+            TtsDownloadStatus.DOWNLOADING,
+            timerCoordinator.status.value.downloadStatus
+        )
+
+        // Не выходя из старого grace-окна — повторный фолбэк по той же карте:
+        // watch переставляется (gen=2, новый дедлайн), старый таймер обязан
+        // погаситься по поколению и не снести свежий DOWNLOADING.
+        nowMs = TtsPlaybackCoordinator.WATCH_GRACE_MS / 2
+        timerCoordinator.speak("фраза два", "ru")
+        runCurrent()
+        assertEquals(
+            TtsDownloadStatus.DOWNLOADING,
+            timerCoordinator.status.value.downloadStatus
+        )
+
+        // Виртуальное время доходит до старого дедлайна, nowMs — внутри НОВОГО
+        // grace-окна: без ген-гарда старый таймер сбросил бы статус в NONE.
+        nowMs = TtsPlaybackCoordinator.WATCH_GRACE_MS / 2 + 500
         advanceTimeBy(
             TtsPlaybackCoordinator.WATCH_GRACE_MS +
                 TtsPlaybackCoordinator.WATCH_CHECK_BUFFER_MS + 100
         )
         runCurrent()
 
-        assertEquals(TtsDownloadStatus.NONE, timerCoordinator.status.value.downloadStatus)
-        assertNull(timerCoordinator.status.value.downloadModelId)
+        assertEquals(
+            TtsDownloadStatus.DOWNLOADING,
+            timerCoordinator.status.value.downloadStatus
+        )
+        assertEquals(
+            "tts-ru-piper-ruslan",
+            timerCoordinator.status.value.downloadModelId
+        )
     }
 
     @Test
