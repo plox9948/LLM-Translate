@@ -1,7 +1,8 @@
 ﻿# Публикация публичной копии репозитория на GitHub.
 #
 # Публичная история пересобирается из рабочего репозитория без аварийного архива
-# моделей models/files/ (GitHub отклоняет файлы >100 МБ в обычном git).
+# моделей models/files/ (GitHub отклоняет файлы >100 МБ в обычном git) и без
+# внутреннего файла инструкций агента AGENTS.md.
 # Токен и адрес репозитория берутся из .env (GitHubRepo, GitHubRepoToken).
 #
 # Использование:
@@ -36,11 +37,11 @@ if ($repoUrl -notmatch '^https://github\.com/([^/]+)/([^/.]+)') { throw "Нео�
 $owner = $Matches[1]; $repo = $Matches[2]
 $authUrl = $repoUrl -replace 'https://', "https://x-access-token:$token@"
 
-# --- зеркало без models/files/ ---
+# --- зеркало без models/files/ и без внутреннего AGENTS.md ---
 if (Test-Path $mirrorDir) { Remove-Item -Recurse -Force $mirrorDir }
 git clone --no-hardlinks --mirror $repoRoot $mirrorDir
 if ($LASTEXITCODE -ne 0) { throw 'git clone зеркала не удался' }
-git -C $mirrorDir filter-repo --path models/files --invert-paths --force
+git -C $mirrorDir filter-repo --path models/files --path AGENTS.md --invert-paths --force
 if ($LASTEXITCODE -ne 0) { throw 'git filter-repo не удался (нужен: pip install git-filter-repo)' }
 
 # --- пуш main и тегов ---
