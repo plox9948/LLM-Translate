@@ -16,7 +16,9 @@ import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.TtsEngines
+import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import com.plox.llmtranslate.domain.runtime.ProcessMemoryReader
@@ -343,14 +345,22 @@ class ModelsViewModel @Inject constructor(
     }
 
     /**
-     * Тап по чипу языка на PIPER TTS-карточке (issue #50): назначить модель
-     * озвучивания языку, повторный тап по активному чипу — снять назначение.
+     * Тап по чипу языка на TTS-карточке (issues #50, #53).
+     * PIPER-карточка: назначить модель озвучивания языку, повторный тап по
+     * активному чипу — снять назначение (язык возвращается на Системный TTS).
      * Если язык уже назначен другой модели — переназначение (одна модель на язык).
+     * Карточка Системного Android TTS: тап назначает языку явный сентинель
+     * [TtsModelSelector.SYSTEM_SENTINEL] (идемпотентно — повторный тап чип
+     * не «выключает»).
      * Назначение готовой модели проверяет [ModelManager.setTtsForLanguage].
      */
     fun onTtsLanguageToggle(card: ModelCard, language: String) {
-        val current = _ttsByLanguage.value[language]
-        val next = if (current == card.id) null else card.id
+        val next = if (card.runtime == RuntimeType.SYSTEM_TTS) {
+            TtsModelSelector.SYSTEM_SENTINEL
+        } else {
+            val current = _ttsByLanguage.value[language]
+            if (current == card.id) null else card.id
+        }
         viewModelScope.launch {
             modelManager.setTtsForLanguage(language, next)
         }

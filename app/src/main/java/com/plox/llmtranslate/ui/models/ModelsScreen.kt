@@ -63,6 +63,7 @@ import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import kotlinx.coroutines.delay
@@ -267,16 +268,42 @@ fun ModelsScreen(
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
                 )
+                // Подсказка про чипы языков в секции TTS (issue #54).
+                if (category == ModelCategory.TTS) {
+                    Text(
+                        text = stringResource(R.string.models_tts_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
             }
 
             items(cards, key = { "card_${it.id}" }) { card ->
                 val installedModel = installed.firstOrNull { it.id == card.id }
-                // Для TTS активная карточка — движок из настройки ttsEngine,
-                // а не activeModelId (выбор живёт в настройках).
-                val isActive = if (card.category == ModelCategory.TTS) {
+                // Подсветка TTS-карточки — по поязыковому выбору (issue #53):
+                // Piper подсвечена, если назначена хотя бы одному языку своего
+                // чипа; Системный Android TTS — если хотя бы один язык без
+                // назначения или с сентинелем "system". Радиокнопка глобального
+                // движка (настройка ttsEngine: пакет SYSTEM/RHVOICE/eSpeak)
+                // живёт отдельным состоянием ttsEngineSelected и не меняется.
+                val isPiperTts = card.category == ModelCategory.TTS &&
+                    card.runtime == RuntimeType.PIPER_ONNX
+                val isSystemTts = card.category == ModelCategory.TTS &&
+                    card.runtime == RuntimeType.SYSTEM_TTS
+                val ttsEngineSelected = card.runtime.ttsEngineId() != null &&
                     card.runtime.ttsEngineId() == ttsEngine
-                } else {
-                    activeId == card.id
+                val ttsAssignedAny = ttsChipLanguages(card).any {
+                    ttsByLanguage[it] == card.id
+                }
+                val systemTtsActive = isSystemTts &&
+                    ttsChipLanguages(card).any { lang ->
+                        val assigned = ttsByLanguage[lang]
+                        assigned == null || assigned == TtsModelSelector.SYSTEM_SENTINEL
+                    }
+                val isActive = when (card.category) {
+                    ModelCategory.TTS -> isPiperTts && ttsAssignedAny || systemTtsActive
+                    else -> activeId == card.id
                 }
                 val check = deviceInfo?.let { viewModel.checkInstall(card, it) }
                 // Чипы «язык распознавания» — только на установленных STT-карточках
@@ -290,20 +317,26 @@ fun ModelsScreen(
                 }
                 val sttAssignedLanguages =
                     sttChips.filter { sttByLanguage[it] == card.id }.toSet()
-                // Чипы «язык озвучивания» — только на скачиваемых PIPER-карточках
-                // секции TTS (issue #50): движки-ярлыки чипов не имеют, STT-чипы
-                // в TTS-секцию не попадают (условие выше — только STT-карточки).
-                val isPiperTts = card.category == ModelCategory.TTS &&
-                    card.runtime == RuntimeType.PIPER_ONNX
-                val ttsChips = if (isPiperTts) {
-                    TTS_CHIP_LANGUAGES.filter { it in card.languages }
-                } else {
-                    emptyList()
-                }
+                // Чипы «язык озвучивания» — на скачиваемых PIPER-карточках
+                // и на карточке Системного Android TTS (issues #50, #53):
+                // RHVOICE/eSpeak-ярлыки чипов не имеют, STT-чипы в TTS-секцию
+                // не попадают (условие выше — только STT-карточки).
+                val ttsChips = ttsChipLanguages(card)
                 val ttsModelReady = isPiperTts && installedModel?.isReady == true
-                val ttsAssignedLanguages = ttsChips.filter {
-                    ttsModelReady && ttsByLanguage[it] == card.id
-                }.toSet()
+                // Чипы системной карточки кликабельны всегда — скачивать нечего.
+                val ttsChipsEnabled = ttsModelReady || isSystemTts
+                val ttsAssignedLanguages = if (isSystemTts) {
+                    // «Выбран» для Системного TTS: язык без назначения
+                    // (значение по умолчанию) или явный сентинель "system".
+                    ttsChips.filter { lang ->
+                        val assigned = ttsByLanguage[lang]
+                        assigned == null || assigned == TtsModelSelector.SYSTEM_SENTINEL
+                    }.toSet()
+                } else {
+                    ttsChips.filter {
+                        ttsModelReady && ttsByLanguage[it] == card.id
+                    }.toSet()
+                }
                 // Чип «Нужно для RU→EN»: карточка не хватает для последнего
                 // направления перевода (issue #33).
                 val requiredChipLabel = uiState.requiredChips[card.id]?.let { direction ->
@@ -325,7 +358,8 @@ fun ModelsScreen(
                     sttAssignedLanguages = sttAssignedLanguages,
                     ttsChips = ttsChips,
                     ttsAssignedLanguages = ttsAssignedLanguages,
-                    ttsModelReady = ttsModelReady,
+                    ttsChipsEnabled = ttsChipsEnabled,
+                    ttsEngineSelected = ttsEngineSelected,
                     requiredChipLabel = requiredChipLabel,
                     actionsLocked = actionsLocked,
                     onDownload = { viewModel.onDownloadClick(card) },
@@ -508,7 +542,8 @@ private fun ModelCardItem(
     sttAssignedLanguages: Set<String>,
     ttsChips: List<String>,
     ttsAssignedLanguages: Set<String>,
-    ttsModelReady: Boolean,
+    ttsChipsEnabled: Boolean,
+    ttsEngineSelected: Boolean,
     requiredChipLabel: String?,
     actionsLocked: Boolean,
     onDownload: () -> Unit,
@@ -553,7 +588,7 @@ private fun ModelCardItem(
                             .size(24.dp)
                             .clip(CircleShape)
                             .selectable(
-                                selected = isActive,
+                                selected = ttsEngineSelected,
                                 enabled = canSelect,
                                 role = Role.RadioButton,
                                 onClick = onActive
@@ -561,7 +596,7 @@ private fun ModelCardItem(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = if (isActive) Icons.Filled.RadioButtonChecked
+                            imageVector = if (ttsEngineSelected) Icons.Filled.RadioButtonChecked
                             else Icons.Filled.RadioButtonUnchecked,
                             contentDescription = stringResource(R.string.models_active_cd),
                             modifier = Modifier.size(20.dp)
@@ -580,7 +615,10 @@ private fun ModelCardItem(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (isTtsEngine && isActive) {
+                    // «Выбрано» — карточка TTS активна по поязыковому выбору:
+                    // Piper назначена какому-то языку, Системный TTS работает
+                    // по умолчанию/явно хотя бы для одного языка (issue #53).
+                    if (card.category == ModelCategory.TTS && isActive) {
                         Text(
                             text = stringResource(R.string.models_selected),
                             style = MaterialTheme.typography.labelSmall,
@@ -746,8 +784,10 @@ private fun ModelCardItem(
             }
 
             // Чипы «язык озвучивания»: назначение Piper TTS-модели на каждый
-            // язык (issue #50). Кликабельны только у готовой модели; иначе
-            // показывается подсказка скачать. Остальное — как STT-чипы.
+            // язык (issue #50), у карточки Системного Android TTS — явное
+            // назначение системного движка (issue #53): кликабельны всегда,
+            // повторный тап не снимает назначение. У Piper кликабельны только
+            // у готовой модели; иначе показывается подсказка скачать.
             if (ttsChips.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -763,13 +803,13 @@ private fun ModelCardItem(
                         }
                         FilterChip(
                             selected = lang in ttsAssignedLanguages,
-                            enabled = ttsModelReady,
+                            enabled = ttsChipsEnabled,
                             onClick = { onTtsLanguageToggle(lang) },
                             label = { Text(lang.uppercase(Locale.US)) }
                         )
                     }
                 }
-                if (!ttsModelReady) {
+                if (!ttsChipsEnabled) {
                     Text(
                         text = stringResource(R.string.models_tts_chip_download_first),
                         style = MaterialTheme.typography.labelSmall,
@@ -841,6 +881,20 @@ private val STT_CHIP_LANGUAGES = listOf("ru", "en", "ne")
 
 /** Поддерживаемые языки для чипов назначения Piper TTS-модели (issue #50). */
 private val TTS_CHIP_LANGUAGES = listOf("ru", "en", "ne")
+
+/**
+ * Языки чипов «язык озвучивания» карточки TTS: покрываемые карточкой RU/EN/NE.
+ * Чипы есть у скачиваемых Piper-карточек (issue #50) и у карточки Системного
+ * Android TTS (issue #53); у RHVOICE/eSpeak-ярлыков чипов нет.
+ */
+private fun ttsChipLanguages(card: ModelCard): List<String> =
+    if (card.category == ModelCategory.TTS &&
+        (card.runtime == RuntimeType.PIPER_ONNX || card.runtime == RuntimeType.SYSTEM_TTS)
+    ) {
+        TTS_CHIP_LANGUAGES.filter { it in card.languages }
+    } else {
+        emptyList()
+    }
 private const val BYTES_IN_MB = 1_048_576L
 private const val BYTES_IN_GB = 1_073_741_824L
 

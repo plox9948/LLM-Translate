@@ -75,6 +75,7 @@
     <string name="models_import">Import</string>
     <string name="models_stt_lang_label">Speech recognition language:</string>
     <string name="models_tts_lang_label">Speech synthesis language:</string>
+    <string name="models_tts_hint">To make a model active for speech synthesis in a language, tap the language icon on its card.</string>
     <string name="models_tts_chip_download_first">Download the model first</string>
     <string name="models_required_for">Required for %1$s</string>
     <string name="models_export">Export</string>
