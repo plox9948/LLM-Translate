@@ -20,7 +20,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FileDownload
@@ -116,7 +115,7 @@ fun ModelsScreen(
         }
     }
 
-    // SAF: импорт своего GGUF.
+    // SAF: точечный импорт модели по карточке каталога (GGUF/ZIP).
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -196,20 +195,6 @@ fun ModelsScreen(
                 ErrorBanner(text = warning)
                 Spacer(modifier = Modifier.height(8.dp))
             }
-            OutlinedButton(
-                onClick = {
-                    importLauncher.launch(
-                        arrayOf("application/octet-stream", "*/*")
-                    )
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(stringResource(R.string.models_import_custom))
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-
             Row(modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
                     onClick = { viewModel.onBackupExportClick() },

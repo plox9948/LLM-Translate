@@ -51,7 +51,6 @@
     <string name="history_empty">अनुवाद इतिहास खाली छ</string>
 
     <!-- Экран «Модели» -->
-    <string name="models_import_custom">+ आफ्नै मोडेल आयात गर्नुहोस्</string>
     <string name="models_backup">ब्याकअप</string>
     <string name="models_status_dismiss">सुझाव लुकाउनुहोस्</string>
     <string name="models_restore">पुनःस्थापना</string>

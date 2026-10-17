@@ -51,7 +51,6 @@
     <string name="history_empty">Translation history is empty</string>
 
     <!-- Экран «Модели» -->
-    <string name="models_import_custom">+ Import your own model</string>
     <string name="models_backup">Backup</string>
     <string name="models_status_dismiss">Dismiss message</string>
     <string name="models_restore">Restore</string>
