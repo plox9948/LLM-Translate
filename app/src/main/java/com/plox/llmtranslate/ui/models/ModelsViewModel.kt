@@ -234,7 +234,20 @@ class ModelsViewModel @Inject constructor(
 
     /** Проверить, можно ли установить, и при необходимости попросить подтверждение лицензии. */
     fun onDownloadClick(card: ModelCard) {
-        val device = _deviceInfo.value ?: return
+        val device = _deviceInfo.value
+        if (device == null) {
+            // deviceInfo читается с IO и может ещё не быть готов при первом тапе —
+            // не глушим клик молча: дозагружаем и продолжаем проверку.
+            viewModelScope.launch(Dispatchers.IO) {
+                val loaded = modelManager.deviceInfo().also { _deviceInfo.value = it }
+                applyInstallCheck(card, loaded)
+            }
+            return
+        }
+        applyInstallCheck(card, device)
+    }
+
+    private fun applyInstallCheck(card: ModelCard, device: DeviceInfo) {
         when (val check = modelManager.checkInstall(card, device)) {
             is InstallCheck.Blocked -> {
                 // Блокировка: причина показывается баннером на экране.
