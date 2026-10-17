@@ -131,7 +131,7 @@ class AudioRecorder @Inject constructor(
 
     /**
      * Флаг активной записи: пишет рекордер (start/cancel/stop), читают цикл
-     * чтения (другой поток) и UI. Бэкинг — [recordingFlow] (re-view раунд 2):
+     * чтения (другой поток) и UI. Бэкинг — [recordingFlow] (ревью раунд 2):
      * StateFlow даёт и междупоточную видимость (happens-before), и реактивную
      * подписку ViewModel, чтобы индикатор не залипал при внешнем cancel().
      */

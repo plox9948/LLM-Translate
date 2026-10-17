@@ -370,9 +370,11 @@ class TtsPlaybackCoordinatorTest {
             timerCoordinator.status.value.downloadStatus
         )
 
-        // Не выходя из старого grace-окна — повторный фолбэк по той же карте:
-        // watch переставляется (gen=2, новый дедлайн), старый таймер обязан
-        // погаситься по поколению и не снести свежий DOWNLOADING.
+        // Повторный фолбэк по той же карте переставляет watch: gen=2,
+        // watchGraceUntil обновляется (общее поле). Старый таймер при срабатывании
+        // не проходит гейт «now > watchGraceUntil» по НОВОМУ дедлайну, а
+        // watchGeneration — второй defensive-слой (в текущей проводке часы
+        // гасят его раньше; гард страхует проводку с раздельными дедлайнами).
         nowMs = TtsPlaybackCoordinator.WATCH_GRACE_MS / 2
         timerCoordinator.speak("фраза два", "ru")
         runCurrent()
@@ -381,8 +383,8 @@ class TtsPlaybackCoordinatorTest {
             timerCoordinator.status.value.downloadStatus
         )
 
-        // Виртуальное время доходит до старого дедлайна, nowMs — внутри НОВОГО
-        // grace-окна: без ген-гарда старый таймер сбросил бы статус в NONE.
+        // Виртуальное время доходит до старого дедлайна, nowMs — внутри
+        // актуального grace-окна: статус DOWNLOADING новой сцены сохраняется.
         nowMs = TtsPlaybackCoordinator.WATCH_GRACE_MS / 2 + 500
         advanceTimeBy(
             TtsPlaybackCoordinator.WATCH_GRACE_MS +
