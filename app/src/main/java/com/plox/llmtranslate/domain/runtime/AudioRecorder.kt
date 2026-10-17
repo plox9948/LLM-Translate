@@ -144,10 +144,23 @@ class AudioRecorder @Inject constructor(
     val isRecording: Boolean
         get() = _recordingFlow.value
 
-    // Поле освобождается/подменяется только потоком, переводившим
-    // _recordingFlow; видимость — через volatile-механизм StateFlow.
+    // Сцена записи (ревью раунд 4): на неё входят из разных потоков —
+    // startRecording()/stopRecording() из UI (Main), cancel() из разгрузки
+    // рантаймов (IO app-scope). Мьютекс sceneLock фиксирует вход: перевод
+    // флага записи, снятие поколения и захват целевых объектов под замком;
+    // долгоживущие cleanup-участки (join цикла чтения, stop/release,
+    // запись WAV) выполняются вне замка. Поля при этом @Volatile — читаются
+    // и точечно правятся вне замка в cleanup под проверками идентичности.
+    private val sceneLock = Any()
+
+    // AudioRecord/буфер/джоб чтения/поколение переприсваиваются входом сцены
+    // под sceneLock и обнуляются в cleanup-участках (проверка «только если
+    // это же»), видимость между потоками — @Volatile.
+    @Volatile
     private var audioRecord: AudioRecord? = null
+    @Volatile
     private var pcmBuffer = ByteArrayOutputStream()
+    @Volatile
     private var readJob: Job? = null
 
     /**
@@ -155,13 +168,19 @@ class AudioRecorder @Inject constructor(
      * его локально и завершается при смене поколения — условие while больше
      * не зависит от глобального isRecording, который stop()+startRecording()
      * возвращают в true, оставляя старый цикл читать уже освобождённый
-     * AudioRecord. Переприсваивается, как и [audioRecord], только потоком,
-     * переводившим _recordingFlow.
+     * AudioRecord. Переприсваивается входом сцены старта под [sceneLock]
+     * (ревью раунд 4), снимается сценой остановки — тоже под замком.
      */
+    @Volatile
     private var generation: AtomicBoolean? = null
 
     /**
      * Начать запись с микрофона.
+     * Тяжёлая инициализация AudioRecord — вне блокировки; перевод состояния
+     * в «записываем» (проверка активной записи, установка полей и поколения,
+     * старт цикла чтения) — единой сценой под [sceneLock] (ревью раунд 4),
+     * чтобы конкурентный вход cancel()/stopRecording() не перемешался со
+     * стартом.
      * @return true при успехе, false при ошибке (нет разрешения/устройства).
      */
     fun startRecording(): Boolean {
@@ -203,79 +222,108 @@ class AudioRecorder @Inject constructor(
             return false
         }
 
-        audioRecord = record
-        // Поколение этой записи: цикл чтения ниже замыкает локальную ссылку
-        // и выходит, когда stop()/cancel() снимают именно это поколение,
-        // даже если к тому моменту уже стартовала новая запись.
-        val currentGeneration = AtomicBoolean(true)
-        generation = currentGeneration
-        val buffer = ByteArrayOutputStream()
-        pcmBuffer = buffer
-        record.startRecording()
-        _recordingFlow.value = true
+        return synchronized(sceneLock) {
+            if (isRecording) {
+                // Пока инициализировали устройство, запись уже запустил
+                // повторный вход — выбрасываем свеже созданный экземпляр.
+                record.release()
+                return@synchronized true
+            }
+            audioRecord = record
+            // Поколение этой записи: цикл чтения ниже замыкает локальную ссылку
+            // и выходит, когда stop()/cancel() снимают именно это поколение,
+            // даже если к тому моменту уже стартовала новая запись.
+            val currentGeneration = AtomicBoolean(true)
+            generation = currentGeneration
+            val buffer = ByteArrayOutputStream()
+            pcmBuffer = buffer
+            record.startRecording()
+            _recordingFlow.value = true
 
-        readJob = scope.launch {
-            val readBuffer = ByteArray(minBuffer)
-            // Условие — флаг поколения (ревью раунд 3), а не глобальный
-            // isRecording: при stop()+startRecording() пре-generation цикл
-            // обязан завершиться, а не читать освобождённый AudioRecord
-            // новой записи (IllegalStateException / гонка освобождения).
-            while (currentGeneration.get()) {
-                val read = record.read(readBuffer, 0, readBuffer.size)
-                if (read > 0) {
-                    synchronized(buffer) {
-                        buffer.write(readBuffer, 0, read)
+            readJob = scope.launch {
+                val readBuffer = ByteArray(minBuffer)
+                // Условие — флаг поколения (ревью раунд 3), а не глобальный
+                // isRecording: при stop()+startRecording() пре-generation цикл
+                // обязан завершиться, а не читать освобождённый AudioRecord
+                // новой записи (IllegalStateException / гонка освобождения).
+                while (currentGeneration.get()) {
+                    val read = record.read(readBuffer, 0, readBuffer.size)
+                    if (read > 0) {
+                        synchronized(buffer) {
+                            buffer.write(readBuffer, 0, read)
+                        }
+                    } else if (read < 0) {
+                        // Ошибка чтения: continue превратился бы в busy-spin
+                        // (read возвращает <0 немедленно). Завершаем цикл чтения;
+                        // остановка и сохранение — как обычно через stopRecording().
+                        Timber.e("AudioRecord.read() вернул ошибку $read — цикл чтения остановлен")
+                        break
                     }
-                } else if (read < 0) {
-                    // Ошибка чтения: continue превратился бы в busy-spin
-                    // (read возвращает <0 немедленно). Завершаем цикл чтения;
-                    // остановка и сохранение — как обычно через stopRecording().
-                    Timber.e("AudioRecord.read() вернул ошибку $read — цикл чтения остановлен")
-                    break
                 }
             }
+            true
         }
-        return true
+    }
+
+    /** Цели освобождения, зафиксированные сценой остановки под [sceneLock]. */
+    private class StoppedScene(
+        val job: Job?,
+        val record: AudioRecord?,
+        val buffer: ByteArrayOutputStream
+    )
+
+    /**
+     * Фиксированная сцена остановки (ревью раунд 4): null — активной записи
+     * нет; иначе под [sceneLock] — перевод [isRecording] в false, снятие
+     * поколения этой записи и захват целевых объектов. Долгий cleanup
+     * (join цикла чтения, stop/release, WAV) вызывающий выполняет вне замка.
+     */
+    private fun captureStopScene(): StoppedScene? {
+        if (!isRecording) return null
+        return synchronized(sceneLock) {
+            if (!isRecording) return@synchronized null
+            _recordingFlow.value = false
+            val job = readJob
+            readJob = null
+            // Целевой AudioRecord захватывается в момент вызова (ревью раунд 2):
+            // если в окне join() стартует новая запись, освобождается только
+            // снятый рекордер, а поле обнуляется лишь пока в нём всё ещё он же.
+            val captured = audioRecord
+            val capturedBuffer = pcmBuffer
+            // Снятие поколения этой записи (ревью раунд 3): цикл чтения выходит
+            // сам, независимо от возможного startRecording() в окне join().
+            val capturedGeneration = generation
+            capturedGeneration?.set(false)
+            if (generation === capturedGeneration) {
+                generation = null
+            }
+            StoppedScene(job, captured, capturedBuffer)
+        }
     }
 
     /**
      * Принудительно остановить запись без сохранения WAV (выгрузка рантаймов
      * при ON_STOP, ревью): рекордер — app-scope синглтон и без остановки
      * микрофон оставался захваченным после сворачивания приложения.
-     * Несозранённые PCM-данные отбрасываются; активное [stopRecording]
+     * Несохранённые PCM-данные отбрасываются; активное [stopRecording]
      * (isRecording уже false) не трогается.
      */
     fun cancel() {
-        if (!isRecording) return
-        _recordingFlow.value = false
-        val job = readJob
-        readJob = null
-        // Целевой AudioRecord захватывается в момент вызова (ревью раунд 2):
-        // если в окне join() стартует новая запись, освобождается только
-        // снятый рекордер, а поле обнуляется лишь пока в нём всё ещё он же.
-        val captured = audioRecord
-        val capturedBuffer = pcmBuffer
-        // Снятие поколения этой записи (ревью раунд 3): цикл чтения выходит
-        // сам, независимо от возможного startRecording() в окне join().
-        val capturedGeneration = generation
-        capturedGeneration?.set(false)
-        if (generation === capturedGeneration) {
-            generation = null
-        }
+        val scene = captureStopScene() ?: return
         scope.launch {
             // Дожидаемся выхода цикла чтения, чтобы не освободить AudioRecord
             // посреди блокирующего read() (тот же порядок, что в stopRecording).
-            job?.join()
-            if (audioRecord === captured) {
+            scene.job?.join()
+            if (audioRecord === scene.record) {
                 audioRecord = null
             }
             try {
-                captured?.stop()
+                scene.record?.stop()
             } catch (e: IllegalStateException) {
                 // Буфер мог быть пуст — не критично.
             }
-            captured?.release()
-            synchronized(capturedBuffer) { capturedBuffer.reset() }
+            scene.record?.release()
+            synchronized(scene.buffer) { scene.buffer.reset() }
             Timber.d("Запись с микрофона снята при выгрузке рантаймов")
         }
     }
@@ -285,37 +333,24 @@ class AudioRecorder @Inject constructor(
      * @return путь к WAV-файлу или null при ошибке.
      */
     suspend fun stopRecording(): String? {
-        if (!isRecording) return null
-        _recordingFlow.value = false
-        val job = readJob
-        readJob = null
-        // Тот же захват целевых объектов в момент вызова, что в cancel()
-        // (ревью раунд 2): новая запись, стартованная в окне join(), этим
-        // вызовом не освобождается и не сохраняется.
-        val captured = audioRecord
-        val capturedBuffer = pcmBuffer
-        // Поколение снимается до join() (ревью раунд 3): цикл чтения
-        // завершается по своему флагу, а не по глобальному isRecording.
-        val capturedGeneration = generation
-        capturedGeneration?.set(false)
-        if (generation === capturedGeneration) {
-            generation = null
-        }
-        job?.join()
-        if (audioRecord === captured) {
+        val scene = captureStopScene() ?: return null
+        // Тот же сценарий вызова, что в cancel(): новая запись, стартованная
+        // в окне join(), этим вызовом не освобождается и не сохраняется.
+        scene.job?.join()
+        if (audioRecord === scene.record) {
             audioRecord = null
         }
 
         // Блокирующие вызовы (AudioRecord.stop/release, запись WAV) — на IO.
         return withContext(Dispatchers.IO) {
             try {
-                captured?.stop()
+                scene.record?.stop()
             } catch (e: IllegalStateException) {
                 // Буфер мог быть пуст — не критично.
             }
-            captured?.release()
+            scene.record?.release()
 
-            val pcm = synchronized(capturedBuffer) { capturedBuffer.toByteArray() }
+            val pcm = synchronized(scene.buffer) { scene.buffer.toByteArray() }
             if (pcm.isEmpty()) {
                 Timber.w("Пустая запись: PCM-данных нет")
                 return@withContext null

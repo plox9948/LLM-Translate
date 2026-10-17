@@ -44,6 +44,12 @@ class TtsPlaybackCoordinatorTest {
     private val installedFlow = MutableStateFlow<List<InstalledModel>>(emptyList())
     private val catalogFlow = MutableStateFlow<List<ModelCard>>(emptyList())
 
+    /**
+     * Фиктивные часы grace-окна наблюдения (ревью раунд 4): время стоит
+     * на нуле и двигается только явным присваиванием в тестах.
+     */
+    private var nowMs = 0L
+
     private val coordinator: TtsPlaybackCoordinator
 
     init {
@@ -57,6 +63,7 @@ class TtsPlaybackCoordinatorTest {
             piperRuntime,
             modelManager,
             CoroutineScope(UnconfinedTestDispatcher()),
+            DownloadWatchClock { nowMs },
             contextWithNetwork(true)
         )
     }
@@ -292,6 +299,7 @@ class TtsPlaybackCoordinatorTest {
             piperRuntime,
             modelManager,
             CoroutineScope(UnconfinedTestDispatcher()),
+            DownloadWatchClock { nowMs },
             contextWithNetwork(false)
         )
 
@@ -366,8 +374,8 @@ class TtsPlaybackCoordinatorTest {
         assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
 
         // Прогресс доходит, затем запись карточки удалена/отменена —
-        // эмиссии установленного списка БЕЗ записи наблюдаемой модели.
-        // Сверх допуска пропусков (ревью раунд 3) — устойчивое отсутствие.
+        // за окном grace (ревью раунд 4) достаточно ОДНОЙ эмиссии
+        // установленного списка БЕЗ записи наблюдаемой модели.
         installedFlow.value = listOf(
             readyPiper("tts-ru-piper-ruslan").copy(
                 status = ModelStatus.DOWNLOADING,
@@ -377,9 +385,9 @@ class TtsPlaybackCoordinatorTest {
         )
         assertEquals(17, coordinator.status.value.downloadProgress)
         // Список обязан меняться между эмиссиями (StateFlow дедуплицирует
-        // равные значения): три последовательные эмиссии без строки.
-        installedFlow.value = emptyList()
-        installedFlow.value = listOf(readyPiper("tts-en-piper-other"))
+        // равные значения): окно grace истекло — одинокая эмиссия без строки
+        // снимает наблюдение.
+        nowMs = TtsPlaybackCoordinator.WATCH_GRACE_MS + 1
         installedFlow.value = emptyList()
 
         // Залипший DOWNLOADING-баннер снят, статус NONE, id сброшен.
@@ -396,7 +404,8 @@ class TtsPlaybackCoordinatorTest {
         assertEquals(TtsDownloadStatus.NONE, coordinator.status.value.downloadStatus)
     }
 
-    // ── ревью раунд 3: гонка watch-установки (асинхронный upsert записи) ──
+    // ── ревью раунд 3/4: гонка watch-установки (асинхронный upsert записи),
+    //    допуск — grace-окно по времени, а не счётчик пропусков ──
 
     @Test
     fun `watch tolerates first emissions without row before async download upsert`() {
@@ -408,15 +417,15 @@ class TtsPlaybackCoordinatorTest {
         assertEquals("tts-ru-piper-ruslan", coordinator.status.value.downloadModelId)
 
         // startDownload создаёт запись в Room асинхронно: ранние эмиссии
-        // списка без строки наблюдаемой карточки статус не сбрасывают
-        // (список заведомо отличается от предыдущего — StateFlow не
-        // дедуплицирует эмиссию).
+        // списка без строки наблюдаемой карточки в окне grace статус не
+        // сбрасывают (список заведомо отличается от предыдущего — StateFlow
+        // не дедуплицирует эмиссию).
         installedFlow.value = listOf(readyPiper("tts-en-piper-other"))
         assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
         assertEquals("tts-ru-piper-ruslan", coordinator.status.value.downloadModelId)
 
-        // Асинхронный upsert появился — счётчик пропусков обнуляется,
-        // прогресс проходит в статус.
+        // Асинхронный upsert появился — прогресс проходит в статус.
+        nowMs = 1_500
         installedFlow.value = listOf(
             readyPiper("tts-ru-piper-ruslan").copy(
                 status = ModelStatus.DOWNLOADING,
@@ -426,28 +435,51 @@ class TtsPlaybackCoordinatorTest {
         )
         assertEquals(8, coordinator.status.value.downloadProgress)
 
-        // После нахождения строки допуск восстановлен: одинокая эмиссия
-        // без записи снова не сбрасывает watch-статус.
+        // В окне grace одинокая эмиссия без записи снова не сбрасывает
+        // watch-статус.
+        nowMs = 2_000
         installedFlow.value = emptyList()
         assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
         assertEquals("tts-ru-piper-ruslan", coordinator.status.value.downloadModelId)
     }
 
     @Test
-    fun `persistent absence beyond tolerance resets watch status`() {
+    fun `emission without row inside grace window is tolerated`() {
         stubLanguageNotSupported("ru")
         catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
 
         coordinator.speak("текст", "ru")
 
-        // Устойчивое отсутствие (список меняется между эмиссиями, строки
-        // нет) — watch-статус сбрасывается после превышения допуска.
+        // Конец окна grace (граница включительно) — отсутствие ещё терпится.
+        nowMs = TtsPlaybackCoordinator.WATCH_GRACE_MS
         installedFlow.value = listOf(readyPiper("tts-en-piper-other"))
-        installedFlow.value = emptyList()
-        installedFlow.value = listOf(readyPiper("tts-de-piper-third"))
+
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+        assertEquals("tts-ru-piper-ruslan", coordinator.status.value.downloadModelId)
+    }
+
+    @Test
+    fun `single emission without row after grace window resets watch status`() {
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        coordinator.speak("текст", "ru")
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+
+        // Окно grace истекло, а записи так и нет (upsert не произошёл или
+        // скачивание снято) — ОДНА эмиссия без строки сбрасывает watch-статус.
+        nowMs = TtsPlaybackCoordinator.WATCH_GRACE_MS + 1
+        installedFlow.value = listOf(readyPiper("tts-en-piper-other"))
 
         assertEquals(TtsDownloadStatus.NONE, coordinator.status.value.downloadStatus)
         assertNull(coordinator.status.value.downloadModelId)
+
+        // Поздний авто-ретрай после сброса не срабатывает.
+        installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
+        coVerify(exactly = 0) { piperRuntime.speak(any(), any(), any(), any()) }
+        coVerify(exactly = 0) {
+            modelManager.setTtsForLanguage("ru", "tts-ru-piper-ruslan")
+        }
     }
 
     // ── ревью #55: монотонные id ошибок и ERROR-стадии для анти-повтора в UI ──

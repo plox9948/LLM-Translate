@@ -6,6 +6,7 @@ import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
+import com.plox.llmtranslate.domain.runtime.DownloadWatchClock
 import com.plox.llmtranslate.domain.runtime.PiperTtsRuntime
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
@@ -59,6 +60,7 @@ class FavoritesViewModelTest {
         piperRuntime,
         modelManager,
         CoroutineScope(UnconfinedTestDispatcher()),
+        DownloadWatchClock { System.currentTimeMillis() },
         mockk<Context>()
     )
 

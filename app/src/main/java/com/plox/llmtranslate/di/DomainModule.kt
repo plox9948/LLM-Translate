@@ -7,6 +7,7 @@ import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.ModelManagerImpl
 import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.UnloadTimeoutProvider
+import com.plox.llmtranslate.domain.runtime.DownloadWatchClock
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -97,6 +98,16 @@ abstract class DomainModule {
                 true
             }
         }
+
+        /**
+         * Часы grace-окна наблюдения за автоскачиванием Piper-модели
+         * (ревью раунд 4): wall-clock; тест подменяет поставщик фиктивными
+         * часами без реального ожидания.
+         */
+        @Provides
+        @Singleton
+        fun provideDownloadWatchClock(): DownloadWatchClock =
+            DownloadWatchClock { System.currentTimeMillis() }
 
         /**
          * Единый конфигурированный Json для сериализации.

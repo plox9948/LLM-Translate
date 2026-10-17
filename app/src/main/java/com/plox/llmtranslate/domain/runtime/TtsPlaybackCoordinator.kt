@@ -66,6 +66,17 @@ data class TtsPlaybackStatus(
 )
 
 /**
+ * Поставщик текущего времени, миллисекунды (test-seam grace-окна
+ * наблюдения за автоскачиванием в [TtsPlaybackCoordinator], ревью раунд 4):
+ * боевая реализация — wall-clock, тест подменяет часы, не засыпая реально.
+ */
+fun interface DownloadWatchClock {
+
+    /** Текущее время, миллисекунды. */
+    fun nowMs(): Long
+}
+
+/**
  * Координатор TTS-плейбека (issue #50): общий для экранов «Перевод» и
  * «Избранное», чтобы логика выбора движка и фолбэка на Piper не дублировалась
  * в двух ViewModel.
@@ -94,6 +105,8 @@ class TtsPlaybackCoordinator @Inject constructor(
     private val piperRuntime: PiperTtsRuntime,
     private val modelManager: ModelManager,
     private val scope: CoroutineScope,
+    // Часы grace-окна наблюдения за автоскачиванием (reвью раунд 4).
+    private val clock: DownloadWatchClock,
     // Контекст — проверка доступности сети перед автоскачиванием Piper-модели.
     @ApplicationContext private val context: Context
 ) {
@@ -118,14 +131,15 @@ class TtsPlaybackCoordinator @Inject constructor(
     // одинаковый токен из двух потоков ломает фильтрацию старых колбэков;
     // все мутации статуса — через CAS-мутацию MutableStateFlow.update.
 
-    private companion object {
+    internal companion object {
         /**
-         * Допуск эмиссий без записи наблюдаемой карточки до сброса
-         * watch-статуса: сразу после startFallback запись ещё не создана
+         * Grace-окно отсутствия записи наблюдаемой карточки (ревью раунд 4):
+         * сразу после startFallback запись ещё не создана
          * ([ModelManager.startDownload] асинхронен и выполняет upsert не
-         * мгновенно).
+         * мгновенно), поэтому эмиссии без строки в течение окна терпятся;
+         * за окном отсутствие — запись удалена/снят запрос скачивания.
          */
-        const val WATCH_MISSING_TOLERANCE = 2
+        const val WATCH_GRACE_MS = 3_000L
     }
 
     /** Job текущего озвучивания (piper-синтез или подготовка фолбэка). */
@@ -147,15 +161,14 @@ class TtsPlaybackCoordinator @Inject constructor(
     private var watchedDownloadId: String? = null
 
     /**
-     * Счётчик подряд идущих эмиссий installedModels БЕЗ записи наблюдаемой
-     * карточки (ревью раунд 3): [ModelManager.startDownload] создаёт запись
-     * в Room асинхронно, поэтому первые эмиссии списка вправе прийти раньше
-     * upsert-а — это не удаление записи. Сброс watch-статуса только при
-     * устойчивом отсутствии строки (сверх [WATCH_MISSING_TOLERANCE] подряд);
-     * обнуляется при нахождении записи и при установке наблюдения.
+     * Дедлайн grace-окна наблюдения (ревью раунд 4): фиксируется при установке
+     * [watchedDownloadId] как `часы + [WATCH_GRACE_MS]`. [ModelManager.startDownload]
+     * создаёт запись в Room асинхронно, поэтому первые эмиссии списка вправе
+     * прийти раньше upsert-а — в окне отсутствие терпится; за окном absence —
+     * запись удалена/снят запрос скачивания (ревью раунд 2).
      */
     @Volatile
-    private var watchedDownloadMisses = 0
+    private var watchGraceUntil = 0L
 
     /** Исходная фраза, которую нужно озвучить один раз после READY модели. */
     private data class PendingRetry(val text: String, val language: String)
@@ -166,12 +179,12 @@ class TtsPlaybackCoordinator @Inject constructor(
     /**
      * Монотонные счётчики id для анти-повтора показа (ревью #55): каждый новый
      * экземпляр ошибки/стадии ERROR получает новый id, экран запоминает
-     * показанный и не показывает тот же повторно.
+     * показанный и не показывает тот же повторно. AtomicLong (ревью раунд 4) —
+     * как [utteranceToken]: id выдаются из разных потоков (collect-коллэки,
+     * корутины озвучивания), обычный инкремент volatile-поля их потерял бы.
      */
-    @Volatile
-    private var errorSeq = 0L
-    @Volatile
-    private var downloadErrorSeq = 0L
+    private val errorSeq = AtomicLong(0)
+    private val downloadErrorSeq = AtomicLong(0)
 
     init {
         scope.launch {
@@ -319,7 +332,7 @@ class TtsPlaybackCoordinator @Inject constructor(
         // Без сети WorkManager просто waited на constraint CONNECTED и никогда
         // не придёт в ERROR — сообщаем о необходимости сети сразу (issue #50).
         if (installed?.status != ModelStatus.DOWNLOADING && !isNetworkAvailable()) {
-            val errorId = ++downloadErrorSeq
+            val errorId = downloadErrorSeq.incrementAndGet()
             _status.update {
                 it.copy(
                     isSpeaking = false,
@@ -337,9 +350,9 @@ class TtsPlaybackCoordinator @Inject constructor(
         pendingRetry = PendingRetry(text, language)
         watchedDownloadId = cardId
         // Наблюдение ставится до асинхронного upsert-а записи (startDownload
-        // ниже) — первые эмиссии без строки терпит счётчик пропусков,
-        // поэтому сбрасывать предыдущий допуск при смене цели не нужно.
-        watchedDownloadMisses = 0
+        // ниже): окно grace ([WATCH_GRACE_MS] от текущей эмиссии часов)
+        // терпит отсутствие строки, за окном — сброс watch-статуса.
+        watchGraceUntil = clock.nowMs() + WATCH_GRACE_MS
         _status.update {
             it.copy(
                 isSpeaking = false,
@@ -400,18 +413,17 @@ class TtsPlaybackCoordinator @Inject constructor(
         val cardId = watchedDownloadId ?: return
         val model = models.firstOrNull { it.id == cardId }
         if (model == null) {
-            // Гонка установки наблюдения (ревью раунд 3): [ModelManager.startDownload]
+            // Гонка установки наблюдения (ревью раунд 4): [ModelManager.startDownload]
             // выполняет upsert записи асинхронно, поэтому первые эмиссии списка
-            // вправе прийти без строки наблюдаемой карточки. Пропуск в пределах
-            // допуска ([WATCH_MISSING_TOLERANCE]) — продолжаем ждать;
-            // устойчивое отсутствие — запись удалена/снят запрос скачивания
+            // вправе прийти без строки наблюдаемой карточки. В пределах
+            // grace-окна ([watchGraceUntil]) — продолжаем ждать; за окном
+            // отсутствие — запись удалена/снят запрос скачивания
             // (ревью раунд 2): без сброса залипал DOWNLOADING баннер и
             // оставался поздний авто-ретрай озвучки при последующей
             // установке модели с тем же id.
-            if (watchedDownloadMisses < WATCH_MISSING_TOLERANCE) {
-                watchedDownloadMisses++
+            if (clock.nowMs() <= watchGraceUntil) {
                 Timber.d(
-                    "Piper-модель $cardId: запись ещё не появилась (пропуск $watchedDownloadMisses)"
+                    "Piper-модель $cardId: запись ещё не появилась (в окне grace)"
                 )
                 return
             }
@@ -427,8 +439,6 @@ class TtsPlaybackCoordinator @Inject constructor(
             Timber.w("Автоскачивание Piper-модели $cardId прервано: запись удалена")
             return
         }
-        // Строка на месте — допуск пропусков старта наблюдения обнуляется.
-        watchedDownloadMisses = 0
         when (model.status) {
             ModelStatus.DOWNLOADING ->
                 _status.update { it.copy(downloadProgress = model.progress) }
@@ -436,7 +446,7 @@ class TtsPlaybackCoordinator @Inject constructor(
             ModelStatus.ERROR -> {
                 watchedDownloadId = null
                 pendingRetry = null
-                val errorId = ++downloadErrorSeq
+                val errorId = downloadErrorSeq.incrementAndGet()
                 _status.update {
                     it.copy(
                         downloadStatus = TtsDownloadStatus.ERROR,
@@ -482,7 +492,7 @@ class TtsPlaybackCoordinator @Inject constructor(
         if (token != utteranceToken.get()) return
         // Id снимается до CAS-мутации: лямбда update может выполниться
         // повторно при гонке, инкремент внутри неё удвоил бы id.
-        val errorId = ++errorSeq
+        val errorId = errorSeq.incrementAndGet()
         _status.update {
             it.copy(
                 error = error,
