@@ -208,8 +208,7 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeDestroy(
 
 JNIEXPORT void JNICALL
 Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeStart(
-    JNIEnv *env, jclass /*clazz*/, jlong handle, jstring jtext,
-    jboolean with_alignment) {
+    JNIEnv *env, jclass /*clazz*/, jlong handle, jstring jtext) {
     auto *session = reinterpret_cast<Session *>(handle);  // NOLINT
     std::string text = jstr_to_utf8(env, jtext);
     std::lock_guard<std::mutex> lock(session->mu);
@@ -222,8 +221,8 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeStart(
     session->result.clear();
     session->error.clear();
     session->cancel.store(false);
+    // Options.alignment по умолчанию false — выравнивания переводу не нужны.
     Options options;
-    options.alignment = static_cast<bool>(with_alignment);
     try {
         session->frontend->set_cancel_flag(&session->cancel);
         Handle request = session->frontend->translate(

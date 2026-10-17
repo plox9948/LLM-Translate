@@ -242,28 +242,12 @@ class ModelManagerImpl @Inject constructor(
                 // Старая запись под этим id (до upsert) — нужна для удаления
                 // осиротевшего файла предыдущего импорта (issue #40).
                 val previousRecord = repository.getById(modelId)
-                val model = InstalledModel(
-                    id = modelId,
-                    category = guessCategory(fileName),
-                    displayName = fileName,
-                    description = "Импортированная модель",
+                val model = guessedImportedModel(
+                    modelId = modelId,
+                    sourceName = fileName,
                     runtime = runtime,
-                    sizeBytes = targetFile.length(),
-                    ramRequiredMb = 0,
-                    languages = emptyList(),
-                    quality = 3,
-                    speed = 3,
-                    url = "",
-                    urls = emptyList(),
-                    sha256 = null,
-                    license = "Неизвестна",
-                    minAndroidSdk = 26,
-                    recommendedRamMb = 0,
-                    status = ModelStatus.READY,
-                    progress = 100,
-                    filePath = targetFile.absolutePath,
-                    bytesDone = targetFile.length(),
-                    isBuiltin = false
+                    size = targetFile.length(),
+                    filePath = targetFile.absolutePath
                 )
                 repository.upsert(model)
                 // Повторный импорт той же модели: copyFromUri каждый раз пишет
@@ -564,6 +548,42 @@ class ModelManagerImpl @Inject constructor(
     }
 
     /**
+     * Запись импортированной модели с параметрами-заглушками, угаданными по
+     * имени: пустые языки/URL, нейтральные качество и скорость, неизвестная
+     * лицензия. Общий для одиночного файла (importFromUri) и ZIP без
+     * метаданных (modelFromZipName).
+     */
+    private fun guessedImportedModel(
+        modelId: String,
+        sourceName: String,
+        runtime: RuntimeType,
+        size: Long,
+        filePath: String
+    ) = InstalledModel(
+        id = modelId,
+        category = guessCategory(sourceName),
+        displayName = sourceName,
+        description = "Импортированная модель",
+        runtime = runtime,
+        sizeBytes = size,
+        ramRequiredMb = 0,
+        languages = emptyList(),
+        quality = 3,
+        speed = 3,
+        url = "",
+        urls = emptyList(),
+        sha256 = null,
+        license = "Неизвестна",
+        minAndroidSdk = 26,
+        recommendedRamMb = 0,
+        status = ModelStatus.READY,
+        progress = 100,
+        filePath = filePath,
+        bytesDone = size,
+        isBuiltin = false
+    )
+
+    /**
      * Распакованный ZIP без метаданных → модель с параметрами,
      * угаданными по имени файла.
      */
@@ -587,28 +607,12 @@ class ModelManagerImpl @Inject constructor(
             return null
         }
         val size = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
-        return InstalledModel(
-            id = modelId,
-            category = guessCategory(sourceName),
-            displayName = sourceName,
-            description = "Импортированная модель",
+        return guessedImportedModel(
+            modelId = modelId,
+            sourceName = sourceName,
             runtime = runtime,
-            sizeBytes = size,
-            ramRequiredMb = 0,
-            languages = emptyList(),
-            quality = 3,
-            speed = 3,
-            url = "",
-            urls = emptyList(),
-            sha256 = null,
-            license = "Неизвестна",
-            minAndroidSdk = 26,
-            recommendedRamMb = 0,
-            status = ModelStatus.READY,
-            progress = 100,
-            filePath = targetDir.absolutePath,
-            bytesDone = size,
-            isBuiltin = false
+            size = size,
+            filePath = targetDir.absolutePath
         )
     }
 

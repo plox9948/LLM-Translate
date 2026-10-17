@@ -174,7 +174,7 @@ class SlimtRuntime @Inject constructor(
                     return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
                 try {
-                    SlimtNative.nativeStart(handle, text, false)
+                    SlimtNative.nativeStart(handle, text)
                     var outcome: Result<String>? = null
                     while (outcome == null) {
                         currentCoroutineContext().ensureActive()

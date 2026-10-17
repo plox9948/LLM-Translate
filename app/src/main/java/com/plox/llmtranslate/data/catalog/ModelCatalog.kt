@@ -130,7 +130,7 @@ interface ModelCatalogProvider {
 /**
  * Каталог из assets: обновляется вместе с APK.
  */
-class AssetsModelCatalogProvider @JvmOverloads constructor(
+class AssetsModelCatalogProvider(
     private val context: Context,
     private val parser: ModelCatalogParser = ModelCatalogParser(),
     private val assetName: String = DEFAULT_ASSET

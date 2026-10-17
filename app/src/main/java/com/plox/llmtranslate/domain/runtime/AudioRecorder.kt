@@ -240,16 +240,4 @@ class AudioRecorder @Inject constructor(
             }
         }
     }
-
-    /**
-     * Остановить запись без сохранения (отмена).
-     */
-    suspend fun cancelRecording() {
-        isRecording = false
-        readJob?.join()
-        readJob = null
-        audioRecord?.release()
-        audioRecord = null
-        pcmBuffer = ByteArrayOutputStream()
-    }
 }

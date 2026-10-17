@@ -134,6 +134,32 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         }
     }
 
+    /**
+     * Записать одну запись архива в [destDir]: проверка отмены, защита от
+     * zip-slip, каталоги — mkdirs, файлы — копирование с учётом в
+     * [createdFiles] (для очистки при отмене). Общий для tar и zip.
+     */
+    private suspend fun writeArchiveEntry(
+        input: InputStream,
+        destDir: File,
+        entryName: String,
+        isDirectory: Boolean,
+        createdFiles: MutableList<File>,
+    ) {
+        currentCoroutineContext().ensureActive()
+        val outFile = File(destDir, entryName)
+        if (!isSecurePath(destDir, outFile)) {
+            throw SecurityException("Небезопасный путь в архиве: $entryName")
+        }
+        if (isDirectory) {
+            outFile.mkdirs()
+        } else {
+            outFile.parentFile?.mkdirs()
+            createdFiles.add(outFile)
+            outFile.outputStream().use { copyEntry(input, it) }
+        }
+    }
+
     private suspend fun extractTar(archiveFile: File, destDir: File, bzip2: Boolean): Boolean {
         val createdFiles = mutableListOf<File>()
         return try {
@@ -146,18 +172,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                 tarInput.use { tar ->
                     var entry = tar.nextEntry
                     while (entry != null) {
-                        currentCoroutineContext().ensureActive()
-                        val outFile = File(destDir, entry.name)
-                        if (!isSecurePath(destDir, outFile)) {
-                            throw SecurityException("Небезопасный путь в архиве: ${entry.name}")
-                        }
-                        if (entry.isDirectory) {
-                            outFile.mkdirs()
-                        } else {
-                            outFile.parentFile?.mkdirs()
-                            createdFiles.add(outFile)
-                            outFile.outputStream().use { copyEntry(tar, it) }
-                        }
+                        writeArchiveEntry(tar, destDir, entry.name, entry.isDirectory, createdFiles)
                         entry = tar.nextEntry
                     }
                 }
@@ -179,18 +194,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             ZipInputStream(archiveFile.inputStream().buffered()).use { zip ->
                 var entry = zip.nextEntry
                 while (entry != null) {
-                    currentCoroutineContext().ensureActive()
-                    val outFile = File(destDir, entry.name)
-                    if (!isSecurePath(destDir, outFile)) {
-                        throw SecurityException("Небезопасный путь в архиве: ${entry.name}")
-                    }
-                    if (entry.isDirectory) {
-                        outFile.mkdirs()
-                    } else {
-                        outFile.parentFile?.mkdirs()
-                        createdFiles.add(outFile)
-                        outFile.outputStream().use { copyEntry(zip, it) }
-                    }
+                    writeArchiveEntry(zip, destDir, entry.name, entry.isDirectory, createdFiles)
                     zip.closeEntry()
                     entry = zip.nextEntry
                 }

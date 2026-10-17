@@ -29,7 +29,7 @@ object SlimtNative {
     external fun nativeDestroy(handle: Long)
 
     /** Запустить перевод; повторный вызов до завершения — IllegalStateException. */
-    external fun nativeStart(handle: Long, text: String, withAlignment: Boolean)
+    external fun nativeStart(handle: Long, text: String)
 
     /**
      * Проверить статус: 0 — идёт, 1 — результат готов, 2 — ошибка,
