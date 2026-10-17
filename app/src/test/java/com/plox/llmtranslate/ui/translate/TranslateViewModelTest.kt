@@ -9,6 +9,7 @@ import com.plox.llmtranslate.domain.model.PendingTranslationHolder
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
+import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -36,6 +37,9 @@ class TranslateViewModelTest {
     private val modelManager = mockk<ModelManager>(relaxed = true)
     private val runtimeRouter = mockk<RuntimeRouter>(relaxed = true)
     private val ttsRuntime = mockk<TtsRuntime>(relaxed = true)
+    // Координатор TTS-плейбека: тесты звёздочки не затрагивают озвучивание,
+    // relaxed-мока достаточно (поток status в init не эмитит).
+    private val ttsCoordinator = mockk<TtsPlaybackCoordinator>(relaxed = true)
     private val audioRecorder = mockk<AudioRecorder>(relaxed = true)
     private val preferences = mockk<ModelPreferences>(relaxed = true)
     private val historyRepository = mockk<TranslationHistoryRepository>(relaxed = true)
@@ -55,6 +59,7 @@ class TranslateViewModelTest {
             modelManager,
             runtimeRouter,
             ttsRuntime,
+            ttsCoordinator,
             audioRecorder,
             preferences,
             historyRepository,

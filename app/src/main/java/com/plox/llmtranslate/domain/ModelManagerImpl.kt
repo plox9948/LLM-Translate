@@ -96,6 +96,28 @@ class ModelManagerImpl @Inject constructor(
             preferences.setSttForLanguage(language, modelId)
         }
 
+    override val ttsByLanguage: Flow<Map<String, String>> = preferences.ttsByLanguage
+
+    override suspend fun setTtsForLanguage(language: String, modelId: String?) =
+        withContext(Dispatchers.IO) {
+            if (modelId != null) {
+                // карточка существует (запись синхронизирована с каталогом),
+                // категория TTS, рантайм скачиваемой Piper-модели, готова.
+                val model = repository.getById(modelId)
+                if (model == null ||
+                    model.category != ModelCategory.TTS ||
+                    model.runtime != RuntimeType.PIPER_ONNX ||
+                    !model.isReady
+                ) {
+                    Timber.w(
+                        "Назначение TTS языку $language пропущено: модель $modelId недоступна"
+                    )
+                    return@withContext
+                }
+            }
+            preferences.setTtsForLanguage(language, modelId)
+        }
+
     override val loadedModels: Flow<List<LoadedModelInfo>> = runtimeRouter.loadedModels
 
     override val diskUsage: Flow<DiskUsage> = repository.observeAll().map { _ ->

@@ -14,7 +14,7 @@ import java.util.zip.GZIPInputStream
 import java.util.zip.ZipInputStream
 
 /**
- * Инсталлятор sherpa-onnx STT-моделей.
+ * Инсталлятор sherpa-onnx STT-моделей и Piper TTS-моделей (issue #50).
  *
  * Для каждого URL:
  * - файл-архив (.tar.bz2/.tar.gz/.zip) — скачивается в корень [targetDir] и
@@ -25,12 +25,15 @@ import java.util.zip.ZipInputStream
  * Каждый файл сверяется со своим SHA-256 из [sha256s] (архив — хеш архива
  * до распаковки).
  *
+ * Архивы Piper содержат единственный подкаталог с tokens.txt — он
+ * подтягивается наверх тем же [flattenModelDir], что и архивы sherpa STT.
+ *
  * Возвращает путь к каталогу модели.
  */
 class ArchiveInstaller : ModelInstaller, BaseDownloader() {
 
     override fun supports(runtime: RuntimeType): Boolean =
-        runtime == RuntimeType.SHERPA
+        runtime == RuntimeType.SHERPA || runtime == RuntimeType.PIPER_ONNX
 
     override suspend fun install(
         urls: List<String>,

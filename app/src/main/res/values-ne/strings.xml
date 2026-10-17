@@ -33,6 +33,8 @@
     <string name="translate_no_model">\"मोडेलहरू\" स्क्रीनमा अनुवाद मोडेल डाउनलोड गर्नुहोस्</string>
     <string name="translate_missing_title">अनुवादका लागि मोडेलहरू आवश्यक छन्</string>
     <string name="translate_download_progress">डाउनलोड हुँदैछ… %1$d%%</string>
+    <string name="translate_tts_downloading">भ्वाइस मोडेल डाउनलोड हुँदैछ… %1$d%%</string>
+    <string name="translate_tts_download_failed">भ्वाइस मोडेल डाउनलोड गर्न सकिएन। इन्टरनेट जाँच गर्नुहोस् र «मोडेल» स्क्रिनबाट डाउनलोड गर्नुहोस्</string>
     <string name="translate_speak_cd">सुनाउनुहोस्</string>
     <string name="translate_copy_cd">अनुवाद कपी गर्नुहोस्</string>
     <string name="translate_recording_hint">● रिकर्डिङ चलिरहेको छ… रोक्न माइक्रोफोनमा ट्याप गर्नुहोस्</string>
@@ -72,6 +74,8 @@
     <string name="models_choose">चयन गर्नुहोस्</string>
     <string name="models_import">आयात</string>
     <string name="models_stt_lang_label">वाणी पहिचान भाषा:</string>
+    <string name="models_tts_lang_label">वाणी संश्लेषण भाषा:</string>
+    <string name="models_tts_chip_download_first">पहिले मोडेल डाउनलोड गर्नुहोस्</string>
     <string name="models_required_for">%1$s का लागि आवश्यक</string>
     <string name="models_export">निर्यात</string>
     <string name="models_delete">मेटाउनुहोस्</string>

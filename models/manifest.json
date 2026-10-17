@@ -1,5 +1,5 @@
 {
-  "version": 10,
+  "version": 11,
   "comment": "Единственный источник правды о моделях. Из него генерируются scripts/download_models.* и assets/models_catalog.json. SHA-256 заполняются после первичного скачивания (скрипт печатает их). Версия синхронна с version в assets/models_catalog.json: любое изменение моделей/файлов поднимает версию в обоих файлах одинаково.",
   "models": [
     {
@@ -350,6 +350,72 @@
       "minAndroidSdk": 26,
       "recommendedRamMb": 0,
       "files": []
+    },
+    {
+      "id": "tts-ru-piper-ruslan",
+      "category": "TTS",
+      "runtime": "PIPER_ONNX",
+      "displayName": "Piper TTS RU (ruslan)",
+      "description": "Piper 1.0 medium, русский, 67 МБ, 8 дикторов",
+      "sizeBytes": 67210684,
+      "ramRequiredMb": 260,
+      "languages": ["ru"],
+      "quality": 4,
+      "speed": 5,
+      "license": "GPL-3.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 2048,
+      "files": [
+        {
+          "name": "vits-piper-ru_RU-ruslan-medium.tar.bz2",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ru_RU-ruslan-medium.tar.bz2",
+          "sha256": "0690b1cad01f86e8db9ba988af24898bdc1af774e23cb2e46b9c730269b6fd83"
+        }
+      ]
+    },
+    {
+      "id": "tts-en-piper-ryan",
+      "category": "TTS",
+      "runtime": "PIPER_ONNX",
+      "displayName": "Piper TTS EN (ryan)",
+      "description": "Piper 1.0 medium, английский, 67 МБ",
+      "sizeBytes": 67213100,
+      "ramRequiredMb": 260,
+      "languages": ["en"],
+      "quality": 4,
+      "speed": 5,
+      "license": "GPL-3.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 2048,
+      "files": [
+        {
+          "name": "vits-piper-en_US-ryan-medium.tar.bz2",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-ryan-medium.tar.bz2",
+          "sha256": "c546af78b6395b4e7c4ce1ed899438b64426a362f5d4ec5fecd090ded9ad7505"
+        }
+      ]
+    },
+    {
+      "id": "tts-ne-piper-google",
+      "category": "TTS",
+      "runtime": "PIPER_ONNX",
+      "displayName": "Piper TTS NE (google)",
+      "description": "Piper 1.0 medium, непальский, 80 МБ, 18 дикторов",
+      "sizeBytes": 80242801,
+      "ramRequiredMb": 300,
+      "languages": ["ne"],
+      "quality": 4,
+      "speed": 5,
+      "license": "GPL-3.0",
+      "minAndroidSdk": 26,
+      "recommendedRamMb": 2048,
+      "files": [
+        {
+          "name": "vits-piper-ne_NP-google-medium.tar.bz2",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ne_NP-google-medium.tar.bz2",
+          "sha256": "73c1e093451867779ec2b55cc3666de2db058019a2e7760e8c8f294a42caca2a"
+        }
+      ]
     }
   ]
 }

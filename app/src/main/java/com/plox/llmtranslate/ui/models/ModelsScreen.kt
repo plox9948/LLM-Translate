@@ -62,6 +62,7 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
+import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import kotlinx.coroutines.delay
@@ -81,6 +82,7 @@ fun ModelsScreen(
     val processPssMb by viewModel.processPssMb.collectAsStateWithLifecycle()
     val ttsEngine by viewModel.ttsEngine.collectAsStateWithLifecycle()
     val sttByLanguage by viewModel.sttByLanguage.collectAsStateWithLifecycle()
+    val ttsByLanguage by viewModel.ttsByLanguage.collectAsStateWithLifecycle()
 
     // Опрос PSS процесса живёт здесь, а не в ViewModel: цикл остановлен,
     // пока экран убран из composition (навигация с backstack) ИЛИ приложение
@@ -288,6 +290,20 @@ fun ModelsScreen(
                 }
                 val sttAssignedLanguages =
                     sttChips.filter { sttByLanguage[it] == card.id }.toSet()
+                // Чипы «язык озвучивания» — только на скачиваемых PIPER-карточках
+                // секции TTS (issue #50): движки-ярлыки чипов не имеют, STT-чипы
+                // в TTS-секцию не попадают (условие выше — только STT-карточки).
+                val isPiperTts = card.category == ModelCategory.TTS &&
+                    card.runtime == RuntimeType.PIPER_ONNX
+                val ttsChips = if (isPiperTts) {
+                    TTS_CHIP_LANGUAGES.filter { it in card.languages }
+                } else {
+                    emptyList()
+                }
+                val ttsModelReady = isPiperTts && installedModel?.isReady == true
+                val ttsAssignedLanguages = ttsChips.filter {
+                    ttsModelReady && ttsByLanguage[it] == card.id
+                }.toSet()
                 // Чип «Нужно для RU→EN»: карточка не хватает для последнего
                 // направления перевода (issue #33).
                 val requiredChipLabel = uiState.requiredChips[card.id]?.let { direction ->
@@ -307,6 +323,9 @@ fun ModelsScreen(
                     check = check,
                     sttChips = sttChips,
                     sttAssignedLanguages = sttAssignedLanguages,
+                    ttsChips = ttsChips,
+                    ttsAssignedLanguages = ttsAssignedLanguages,
+                    ttsModelReady = ttsModelReady,
                     requiredChipLabel = requiredChipLabel,
                     actionsLocked = actionsLocked,
                     onDownload = { viewModel.onDownloadClick(card) },
@@ -325,7 +344,8 @@ fun ModelsScreen(
                     },
                     onCancel = { installedModel?.let { viewModel.onCancelDownload(it) } },
                     onExport = { installedModel?.let { viewModel.onExportClick(it) } },
-                    onSttLanguageToggle = { lang -> viewModel.onSttLanguageToggle(card, lang) }
+                    onSttLanguageToggle = { lang -> viewModel.onSttLanguageToggle(card, lang) },
+                    onTtsLanguageToggle = { lang -> viewModel.onTtsLanguageToggle(card, lang) }
                 )
             }
         }
@@ -486,6 +506,9 @@ private fun ModelCardItem(
     check: InstallCheck?,
     sttChips: List<String>,
     sttAssignedLanguages: Set<String>,
+    ttsChips: List<String>,
+    ttsAssignedLanguages: Set<String>,
+    ttsModelReady: Boolean,
     requiredChipLabel: String?,
     actionsLocked: Boolean,
     onDownload: () -> Unit,
@@ -494,7 +517,8 @@ private fun ModelCardItem(
     onActive: () -> Unit,
     onCancel: () -> Unit,
     onExport: () -> Unit,
-    onSttLanguageToggle: (String) -> Unit
+    onSttLanguageToggle: (String) -> Unit,
+    onTtsLanguageToggle: (String) -> Unit
 ) {
     // TTS-карточки — встроенные движки: индикатор кликабелен без установки
     // и выбирает движок (запись в настройку ttsEngine).
@@ -513,14 +537,17 @@ private fun ModelCardItem(
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Радиокнопка выбранного TTS-движка: selectable с ролью
-                // RadioButton — доступный переключатель (TalkBack объявляет
-                // состояние). Строка карточки не кликабельна (прошлый фикс
-                // радиокнопок), выбор — только этой кнопкой или в настройках.
-                // Радиокнопок перевода и STT нет: модель перевода выбирается
-                // автоматически по направлению, STT — по языкам (issues #28, #29).
+                // Радиокнопка выбранного TTS-движка (только движки-ярлыки):
+                // selectable с ролью RadioButton — доступный переключатель
+                // (TalkBack объявляет состояние). Скачиваемые PIPER-карточки
+                // радиокнопки не имеют (issue #50): они назначаются языкам
+                // чипами ниже и выбираются координатором TTS. Строка карточки
+                // не кликабельна (прошлый фикс радиокнопок), выбор — только
+                // этой кнопкой или в настройках. Радиокнопок перевода и STT нет:
+                // модель перевода выбирается автоматически по направлению,
+                // STT — по языкам (issues #28, #29).
                 val canSelect = isTtsEngine || installedModel?.isReady == true
-                if (card.category == ModelCategory.TTS) {
+                if (isTtsEngine) {
                     Box(
                         modifier = Modifier
                             .size(24.dp)
@@ -682,16 +709,16 @@ private fun ModelCardItem(
                         }
                     }
                     else -> {
-                        // Кнопка «Выбрать» осталась только у TTS (движок):
-                        // модель перевода выбирается по направлению, STT — по
-                        // языкам через чипы (issues #28, #29).
-                        if (card.category == ModelCategory.TTS) {
+                        // Кнопка «Выбрать» осталась только у TTS-движков (ярлыков):
+                        // модель перевода выбирается по направлению, STT и PIPER
+                        // TTS — по языкам через чипы (issues #28, #29, #50).
+                        if (isTtsEngine) {
                             Button(onClick = onActive, modifier = Modifier.weight(1f)) {
                                 Text(stringResource(R.string.models_choose))
                             }
                         }
                         if (card.sizeBytes > 0L) {
-                            if (card.category == ModelCategory.TTS) {
+                            if (isTtsEngine) {
                                 Spacer(modifier = Modifier.width(8.dp))
                             }
                             OutlinedButton(
@@ -715,6 +742,39 @@ private fun ModelCardItem(
                             }
                         }
                     }
+                }
+            }
+
+            // Чипы «язык озвучивания»: назначение Piper TTS-модели на каждый
+            // язык (issue #50). Кликабельны только у готовой модели; иначе
+            // показывается подсказка скачать. Остальное — как STT-чипы.
+            if (ttsChips.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = stringResource(R.string.models_tts_lang_label),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    ttsChips.forEachIndexed { index, lang ->
+                        if (index > 0) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        FilterChip(
+                            selected = lang in ttsAssignedLanguages,
+                            enabled = ttsModelReady,
+                            onClick = { onTtsLanguageToggle(lang) },
+                            label = { Text(lang.uppercase(Locale.US)) }
+                        )
+                    }
+                }
+                if (!ttsModelReady) {
+                    Text(
+                        text = stringResource(R.string.models_tts_chip_download_first),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
@@ -778,6 +838,9 @@ private const val BYTES_IN_KB = 1_024L
 
 /** Поддерживаемые языки для чипов назначения STT-модели (issue #28). */
 private val STT_CHIP_LANGUAGES = listOf("ru", "en", "ne")
+
+/** Поддерживаемые языки для чипов назначения Piper TTS-модели (issue #50). */
+private val TTS_CHIP_LANGUAGES = listOf("ru", "en", "ne")
 private const val BYTES_IN_MB = 1_048_576L
 private const val BYTES_IN_GB = 1_073_741_824L
 

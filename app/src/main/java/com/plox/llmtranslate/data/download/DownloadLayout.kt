@@ -27,6 +27,7 @@ object DownloadLayout {
      * Каталог, в который инсталлятор скачивает файл по URL (и в котором
      * лежит его `<имя>.part`):
      * - SHERPA: архивы — корень каталога рантайма, одиночные файлы — каталог модели;
+     * - PIPER_ONNX: та же раскладка, что SHERPA (одиночный tar.bz2 — корень, распаковка в каталог модели);
      * - MARIAN_SLIMT: все файлы (пучок .bin/.spm/.lex) — всегда каталог модели;
      * - ONNX-рантаймы: мультифайловые модели — каталог модели, одиночный файл — корень.
      */
@@ -38,7 +39,7 @@ object DownloadLayout {
         fileName: String
     ): File {
         val inModelDir = when (runtime) {
-            RuntimeType.SHERPA -> !isArchive(fileName)
+            RuntimeType.SHERPA, RuntimeType.PIPER_ONNX -> !isArchive(fileName)
             RuntimeType.MARIAN_SLIMT -> true
             else -> urls.size > 1
         }

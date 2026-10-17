@@ -117,6 +117,13 @@ class ModelsViewModel @Inject constructor(
     private val _sttByLanguage = MutableStateFlow<Map<String, String>>(emptyMap())
     val sttByLanguage: StateFlow<Map<String, String>> = _sttByLanguage
 
+    /**
+     * Назначения «язык → id Piper TTS-модели» (issue #50): реактивно из
+     * DataStore, используется чипами языков на PIPER-карточках секции TTS.
+     */
+    private val _ttsByLanguage = MutableStateFlow<Map<String, String>>(emptyMap())
+    val ttsByLanguage: StateFlow<Map<String, String>> = _ttsByLanguage
+
     // Глобальной активной STT-модели больше нет (issue #29): выбор по языкам,
     // в activeIds только TRANSLATION (подсветка карточки) и TTS (движок).
     private val activeIdsFlow: Flow<Map<ModelCategory, String?>> =
@@ -201,6 +208,12 @@ class ModelsViewModel @Inject constructor(
             // Назначения STT по языкам — для подсветки чипов на карточках.
             modelManager.sttByLanguage.collect { map ->
                 _sttByLanguage.value = map
+            }
+        }
+        viewModelScope.launch {
+            // Назначения Piper TTS по языкам — чипы на PIPER-карточках (issue #50).
+            modelManager.ttsByLanguage.collect { map ->
+                _ttsByLanguage.value = map
             }
         }
     }
@@ -326,6 +339,20 @@ class ModelsViewModel @Inject constructor(
         val next = if (current == card.id) null else card.id
         viewModelScope.launch {
             modelManager.setSttForLanguage(language, next)
+        }
+    }
+
+    /**
+     * Тап по чипу языка на PIPER TTS-карточке (issue #50): назначить модель
+     * озвучивания языку, повторный тап по активному чипу — снять назначение.
+     * Если язык уже назначен другой модели — переназначение (одна модель на язык).
+     * Назначение готовой модели проверяет [ModelManager.setTtsForLanguage].
+     */
+    fun onTtsLanguageToggle(card: ModelCard, language: String) {
+        val current = _ttsByLanguage.value[language]
+        val next = if (current == card.id) null else card.id
+        viewModelScope.launch {
+            modelManager.setTtsForLanguage(language, next)
         }
     }
 

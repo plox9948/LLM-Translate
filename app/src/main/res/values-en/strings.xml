@@ -33,6 +33,8 @@
     <string name="translate_no_model">Download a translation model on the \"Models\" screen</string>
     <string name="translate_missing_title">Translation models required</string>
     <string name="translate_download_progress">Downloading… %1$d%%</string>
+    <string name="translate_tts_downloading">Downloading voice model… %1$d%%</string>
+    <string name="translate_tts_download_failed">Could not download the voice model. Check your connection and download it on the Models screen</string>
     <string name="translate_speak_cd">Read aloud</string>
     <string name="translate_copy_cd">Copy translation</string>
     <string name="translate_recording_hint">● Recording… Tap the microphone to stop</string>
@@ -72,6 +74,8 @@
     <string name="models_choose">Select</string>
     <string name="models_import">Import</string>
     <string name="models_stt_lang_label">Speech recognition language:</string>
+    <string name="models_tts_lang_label">Speech synthesis language:</string>
+    <string name="models_tts_chip_download_first">Download the model first</string>
     <string name="models_required_for">Required for %1$s</string>
     <string name="models_export">Export</string>
     <string name="models_delete">Delete</string>

@@ -1,15 +1,20 @@
 package com.plox.llmtranslate.ui.favorites
 
+import android.content.Context
 import com.plox.llmtranslate.data.model.FavoritesRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
+import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
+import com.plox.llmtranslate.domain.runtime.PiperTtsRuntime
+import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flowOf
@@ -45,6 +50,18 @@ class FavoritesViewModelTest {
     private val preferences = mockk<ModelPreferences>(relaxed = true)
     private val pendingHolder = mockk<PendingTranslationHolder>(relaxed = true)
 
+    // Реальный координатор TTS-плейбека на фейках рантаймов и ModelManager
+    // (назначений TTS нет → всегда системный движок, поведение как раньше).
+    private val modelManager = mockk<ModelManager>(relaxed = true)
+    private val piperRuntime = mockk<PiperTtsRuntime>(relaxed = true)
+    private val ttsCoordinator = TtsPlaybackCoordinator(
+        ttsRuntime,
+        piperRuntime,
+        modelManager,
+        CoroutineScope(UnconfinedTestDispatcher()),
+        mockk<Context>()
+    )
+
     // Колбэки onDone по языку фразы — вызываются тестом как «озвучивание завершено».
     private val doneCallbacks = mutableMapOf<String, () -> Unit>()
 
@@ -59,7 +76,9 @@ class FavoritesViewModelTest {
             doneCallbacks[secondArg()] = thirdArg()
             null
         }
-        viewModel = FavoritesViewModel(favoritesRepository, ttsRuntime, preferences, pendingHolder)
+        viewModel = FavoritesViewModel(
+            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder
+        )
     }
 
     @After
@@ -117,7 +136,9 @@ class FavoritesViewModelTest {
     /** Новый VM со списком [entries] — для тестов фильтрации поиска. */
     private fun newViewModelWith(entries: List<FavoriteEntry>): FavoritesViewModel {
         every { favoritesRepository.observeAll() } returns flowOf(entries)
-        return FavoritesViewModel(favoritesRepository, ttsRuntime, preferences, pendingHolder)
+        return FavoritesViewModel(
+            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder
+        )
     }
 
     private val searchEntries = listOf(

@@ -22,6 +22,8 @@ import com.plox.llmtranslate.domain.model.TranslationModelSelector
 import com.plox.llmtranslate.domain.model.userMessage
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
+import com.plox.llmtranslate.domain.runtime.TtsDownloadStatus
+import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -78,6 +80,10 @@ data class TranslateUiState(
     val canCancelTranslation: Boolean = false,
     val isRecording: Boolean = false,
     val isSpeaking: Boolean = false,
+    /** Прогресс автоскачивания Piper-модели озвучки, % (issue #50; null — нет). */
+    val ttsDownloadProgress: Int? = null,
+    /** Автоскачивание модели озвучки завершилось ошибкой (issue #50). */
+    val ttsDownloadFailed: Boolean = false,
     val error: String? = null,
     val hasTranslationModel: Boolean = false,
     /** Карточки каталога для недостающего направления перевода (issue #33). */
@@ -97,6 +103,7 @@ class TranslateViewModel @Inject constructor(
     private val modelManager: ModelManager,
     private val runtimeRouter: RuntimeRouter,
     private val ttsRuntime: TtsRuntime,
+    private val ttsCoordinator: TtsPlaybackCoordinator,
     private val audioRecorder: AudioRecorder,
     private val preferences: ModelPreferences,
     private val historyRepository: TranslationHistoryRepository,
@@ -204,6 +211,22 @@ class TranslateViewModel @Inject constructor(
                 val error = ttsRuntime.init(engine)
                 if (error != null) {
                     Timber.w("TTS недоступен: ${error.userMessage()}")
+                }
+            }
+        }
+        viewModelScope.launch {
+            // Статус общего TTS-плейбека (issue #50): флаг озвучивания,
+            // автоскачивание Piper-модели и ошибки, не покрытые фолбэком.
+            ttsCoordinator.status.collect { s ->
+                val ttsError = s.error?.userMessage()
+                update {
+                    it.copy(
+                        isSpeaking = s.isSpeaking,
+                        ttsDownloadProgress =
+                            if (s.downloadStatus == TtsDownloadStatus.DOWNLOADING) s.downloadProgress else null,
+                        ttsDownloadFailed = s.downloadStatus == TtsDownloadStatus.ERROR,
+                        error = ttsError ?: it.error
+                    )
                 }
             }
         }
@@ -517,27 +540,22 @@ class TranslateViewModel @Inject constructor(
         }
     }
 
-    /** Озвучить результат активной TTS. */
+    /**
+     * Озвучить результат через общий координатор TTS-плейбека (issue #50):
+     * выбор движка (назначенная Piper-модель / системный TTS) и фолбэк с
+     * автоскачиванием — в [TtsPlaybackCoordinator]; состояние isSpeaking и
+     * прогресс приходят из статуса координатора.
+     */
     fun speakResult() {
         val state = _uiState.value
         if (state.resultText.isBlank()) return
-        viewModelScope.launch {
-            // Флаг «говорим» выставляется ДО speak(): onDone короткой фразы
-            // может сработать раньше возврата speak() и иначе оставил бы
-            // флаг залипшим. При ошибке — откат.
-            update { it.copy(isSpeaking = true, error = null) }
-            val error = ttsRuntime.speak(state.resultText, state.targetLang.code) {
-                update { it.copy(isSpeaking = false) }
-            }
-            if (error != null) {
-                update { it.copy(isSpeaking = false, error = error.userMessage()) }
-            }
-        }
+        update { it.copy(error = null) }
+        ttsCoordinator.speak(state.resultText, state.targetLang.code)
     }
 
+    /** Остановить озвучивание (координатор гасит оба рантайма). */
     fun stopSpeaking() {
-        ttsRuntime.stop()
-        update { it.copy(isSpeaking = false) }
+        ttsCoordinator.stop()
     }
 
     /**
@@ -594,6 +612,9 @@ class TranslateViewModel @Inject constructor(
 
     fun clearError() {
         update { it.copy(error = null) }
+        // Синхронно снимаем ошибку и в координаторе, чтобы следующий
+        // эмит статуса не воспроизвёл диалог (issue #50).
+        ttsCoordinator.clearError()
     }
 
     /**

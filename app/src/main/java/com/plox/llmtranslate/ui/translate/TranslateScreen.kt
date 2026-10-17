@@ -30,6 +30,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -269,6 +270,27 @@ fun TranslateScreen(
                             text = state.resultText,
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium
+                        )
+                    }
+                    // Автоскачивание Piper-модели озвучки при фолбэке (issue #50):
+                    // прогресс по образцу карточки недостающих моделей перевода.
+                    state.ttsDownloadProgress?.let { progress ->
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = { progress / 100f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            text = stringResource(R.string.translate_tts_downloading, progress),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    if (state.ttsDownloadFailed) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = stringResource(R.string.translate_tts_download_failed),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
                         )
                     }
                 }

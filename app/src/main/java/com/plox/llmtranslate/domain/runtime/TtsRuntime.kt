@@ -177,7 +177,7 @@ class TtsRuntime @Inject constructor(
         if (langResult == TextToSpeech.LANG_MISSING_DATA ||
             langResult == TextToSpeech.LANG_NOT_SUPPORTED
         ) {
-            return RuntimeError.InferenceFailed("tts", "Язык не поддерживается: $lang")
+            return RuntimeError.LanguageNotSupported("system", lang)
         }
 
         val utteranceId = UUID.randomUUID().toString()

@@ -22,7 +22,11 @@ enum class RuntimeType {
     MARIAN_SLIMT,
     SYSTEM_TTS,
     RHVOICE,
-    ESPEAK
+    ESPEAK,
+
+    // Piper/VITS TTS через sherpa-onnx OfflineTts: скачиваемая модель
+    // (tar.bz2 с .onnx + espeak-ng-data), не движок-ярлык — ttsEngineId() null.
+    PIPER_ONNX
 }
 
 /**
@@ -168,6 +172,9 @@ sealed class InstallCheck {
 sealed class RuntimeError : Exception() {
     data class LoadFailed(val runtime: String, val reason: String) : RuntimeError()
     data class InferenceFailed(val runtime: String, val reason: String) : RuntimeError()
+
+    /** Язык не поддерживается движком озвучивания (TTS). */
+    data class LanguageNotSupported(val engine: String, val language: String) : RuntimeError()
     object ModelNotSelected : RuntimeError()
     object ModelNotReady : RuntimeError()
 }
@@ -179,6 +186,7 @@ sealed class RuntimeError : Exception() {
 fun RuntimeError.userMessage(): String = when (this) {
     is RuntimeError.LoadFailed -> "Не удалось загрузить модель: $reason"
     is RuntimeError.InferenceFailed -> "Ошибка: $reason"
+    is RuntimeError.LanguageNotSupported -> "Язык не поддерживается движком озвучивания: $language"
     RuntimeError.ModelNotSelected -> "Модель не выбрана"
     RuntimeError.ModelNotReady -> "Модель не готова"
 }

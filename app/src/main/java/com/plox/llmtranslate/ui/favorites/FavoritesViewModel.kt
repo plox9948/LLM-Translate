@@ -8,6 +8,7 @@ import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import com.plox.llmtranslate.domain.model.userMessage
+import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +36,7 @@ data class SpeakingSelection(val entryId: Long, val field: FavoriteSpeakField)
 class FavoritesViewModel @Inject constructor(
     private val favoritesRepository: FavoritesRepository,
     private val ttsRuntime: TtsRuntime,
+    private val ttsCoordinator: TtsPlaybackCoordinator,
     private val preferences: ModelPreferences,
     private val pendingHolder: PendingTranslationHolder
 ) : ViewModel() {
@@ -70,7 +72,29 @@ class FavoritesViewModel @Inject constructor(
                 }
             }
         }
+        viewModelScope.launch {
+            // Статус общего координатора TTS-плейбека (issue #50): сброс
+            // выбора «что говорим» по завершении активной фразы (токен-
+            // страховка прежних фраз — внутри координатора); ошибки
+            // озвучивания здесь только логируются: автоскачивание модели
+            // на экране «Избранное» идёт тихо.
+            ttsCoordinator.status.collect { s ->
+                // Логируем каждое новое значение ошибки один раз (StatusFlow
+                // перевыпускается и при других обновлениях статуса).
+                val err = s.error
+                if (err != null && err != lastLoggedTtsError) {
+                    Timber.w("TTS: ${err.userMessage()}")
+                    lastLoggedTtsError = err
+                } else if (err == null) {
+                    lastLoggedTtsError = null
+                }
+                if (!s.isSpeaking) _speaking.value = null
+            }
+        }
     }
+
+    /** Последняя залогированная ошибка координатора (однократность лога). */
+    private var lastLoggedTtsError: com.plox.llmtranslate.domain.model.RuntimeError? = null
 
     /** Обновить поисковый запрос (поиск над списком избранного). */
     fun onQueryChange(query: String) {
@@ -96,7 +120,9 @@ class FavoritesViewModel @Inject constructor(
     }
 
     /**
-     * Озвучить поле [field] записи [entry] (оригинал или перевод) текущей TTS.
+     * Озвучить поле [field] записи [entry] (оригинал или перевод) через общий
+     * координатор TTS-плейбека (issue #50): INPUT → язык оригинала,
+     * RESULT → язык перевода; выбор движка и фолбэк — в координаторе.
      * Во время озвучивания [speaking] содержит пару (id записи, поле).
      */
     fun speak(entry: FavoriteEntry, field: FavoriteSpeakField) {
@@ -105,26 +131,15 @@ class FavoritesViewModel @Inject constructor(
             FavoriteSpeakField.RESULT -> entry.resultText to entry.targetLang
         }
         if (text.isBlank()) return
-        val selection = SpeakingSelection(entry.id, field)
         // speaking выставляется ДО speak(): onDone короткой фразы может
         // сработать раньше возврата speak() и иначе оставил бы флаг залипшим.
-        _speaking.value = selection
-        viewModelScope.launch {
-            val error = ttsRuntime.speak(text, lang) {
-                // Завершение ранее запущенной фразы не должно сбрасывать
-                // флаг, если уже озвучивается другое поле/запись.
-                if (_speaking.value == selection) _speaking.value = null
-            }
-            if (error != null) {
-                Timber.w("TTS: ${error.userMessage()}")
-                if (_speaking.value == selection) _speaking.value = null
-            }
-        }
+        _speaking.value = SpeakingSelection(entry.id, field)
+        ttsCoordinator.speak(text, lang)
     }
 
-    /** Остановить озвучивание. */
+    /** Остановить озвучивание (координатор гасит оба рантайма). */
     fun stopSpeaking() {
-        ttsRuntime.stop()
+        ttsCoordinator.stop()
         _speaking.value = null
     }
 

@@ -105,6 +105,53 @@ class ModelPreferences @Inject constructor(
         }
     }
 
+    // --- TTS-модель на каждый язык (issue #50) ---
+
+    /**
+     * Карта «код языка → id Piper TTS-модели» (языки: "ru"/"en"/"ne").
+     * Сериализация значения — JSON-строка в preference `tts_by_language`.
+     */
+    val ttsByLanguage: Flow<Map<String, String>> =
+        context.dataStore.data.map { prefs -> decodeTtsByLanguage(prefs[TTS_BY_LANGUAGE_KEY]) }
+
+    /**
+     * Назначить Piper TTS-модель языку; null — снять назначение.
+     */
+    suspend fun setTtsForLanguage(language: String, modelId: String?) {
+        context.dataStore.edit { prefs ->
+            val map = decodeTtsByLanguage(prefs[TTS_BY_LANGUAGE_KEY]).toMutableMap()
+            if (modelId == null) map.remove(language) else map[language] = modelId
+            if (map.isEmpty()) {
+                prefs.remove(TTS_BY_LANGUAGE_KEY)
+            } else {
+                prefs[TTS_BY_LANGUAGE_KEY] = json.encodeToString(TTS_MAP_SERIALIZER, map)
+            }
+        }
+    }
+
+    private fun decodeTtsByLanguage(raw: String?): Map<String, String> =
+        if (raw.isNullOrBlank()) emptyMap() else try {
+            json.decodeFromString(TTS_MAP_SERIALIZER, raw)
+        } catch (e: Exception) {
+            Timber.w(e, "Повреждённое значение tts_by_language, сброшено")
+            clearCorruptedTtsByLanguage()
+            emptyMap()
+        }
+
+    /**
+     * Удалить повреждённый ключ из DataStore (тот же паттерн, что
+     * [clearCorruptedSttByLanguage]).
+     */
+    private fun clearCorruptedTtsByLanguage() {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                context.dataStore.edit { prefs -> prefs.remove(TTS_BY_LANGUAGE_KEY) }
+            } catch (e: Exception) {
+                Timber.w(e, "Не удалось удалить повреждённый ключ tts_by_language")
+            }
+        }
+    }
+
     // --- Последнее направление перевода (issue #33) ---
 
     /**
@@ -255,6 +302,12 @@ class ModelPreferences @Inject constructor(
 
         /** Сериализатор карты языков для [STT_BY_LANGUAGE_KEY]. */
         private val STT_MAP_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
+
+        /** Preference с JSON-картой «язык → id Piper TTS-модели» (issue #50). */
+        private val TTS_BY_LANGUAGE_KEY = stringPreferencesKey("tts_by_language")
+
+        /** Сериализатор карты языков для [TTS_BY_LANGUAGE_KEY]. */
+        private val TTS_MAP_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
 
         /** Preference кода исходного языка последнего направления (issue #33). */
         private val LAST_SOURCE_LANG_KEY = stringPreferencesKey("last_source_lang")

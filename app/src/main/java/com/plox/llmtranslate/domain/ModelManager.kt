@@ -34,6 +34,16 @@ interface ModelManager {
      */
     suspend fun setSttForLanguage(language: String, modelId: String?)
 
+    /** Карта «код языка → id Piper TTS-модели»: TTS-модель на каждый язык (issue #50). */
+    val ttsByLanguage: Flow<Map<String, String>>
+
+    /**
+     * Назначить Piper TTS-модель языку (null — снять назначение).
+     * Модель должна существовать в каталоге, быть категории TTS с рантаймом
+     * PIPER_ONNX, установлена и готова; иначе назначение игнорируется.
+     */
+    suspend fun setTtsForLanguage(language: String, modelId: String?)
+
     /** Свободно место на диске под модели. */
     val diskUsage: Flow<DiskUsage>
 

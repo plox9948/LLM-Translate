@@ -258,10 +258,14 @@ class ModelCatalogParserTest {
         val file = candidates.firstOrNull { it.isFile }
         assertTrue("models_catalog.json не найден относительно $candidates", file != null)
 
-        val cards = parser.parse(file!!.readText(Charsets.UTF_8))
-        // Число карточек = текущему составу каталога assets (после #34 —
-        // 11 моделей: удалён Zipformer, GigaAM v2 заменён на v3 E2E CTC).
-        assertEquals(11, cards.size)
+        val raw = file!!.readText(Charsets.UTF_8)
+        // Версия каталога assets (после #50 — 11: добавлены 3 Piper TTS-модели).
+        assertEquals(11, parser.parseVersion(raw))
+
+        val cards = parser.parse(raw)
+        // Число карточек = текущему составу каталога assets (после #50 —
+        // 14 моделей: 11 из #34 + 3 скачиваемых Piper TTS).
+        assertEquals(14, cards.size)
         for (card in cards.filter { it.downloadUrls().isNotEmpty() }) {
             val urls = card.downloadUrls()
             assertEquals("${card.id}: sha256s != urls", urls.size, card.sha256s.size)
@@ -272,9 +276,29 @@ class ModelCatalogParserTest {
                 )
             }
         }
-        // TTS-модели файлов не имеют.
-        for (card in cards.filter { it.category == ModelCategory.TTS }) {
+        // TTS-движки-ярлыки файлов не имеют; скачиваемые Piper-карточки (issue #50) —
+        // один tar.bz2 с SHA-256 и своим языком.
+        for (card in cards.filter {
+            it.category == ModelCategory.TTS && it.runtime != RuntimeType.PIPER_ONNX
+        }
+        ) {
             assertTrue(card.downloadUrls().isEmpty())
+        }
+        val expectedPiper = mapOf(
+            "tts-ru-piper-ruslan" to "ru",
+            "tts-en-piper-ryan" to "en",
+            "tts-ne-piper-google" to "ne"
+        )
+        for ((id, language) in expectedPiper) {
+            val card = cards.firstOrNull { it.id == id }
+            assertTrue("Карточка $id не распарсилась", card != null)
+            assertEquals(ModelCategory.TTS, card!!.category)
+            assertEquals(RuntimeType.PIPER_ONNX, card.runtime)
+            assertEquals(listOf(language), card.languages)
+            assertEquals(1, card.downloadUrls().size)
+            assertTrue(
+                card.downloadUrls().single().endsWith(".tar.bz2")
+            )
         }
     }
 
