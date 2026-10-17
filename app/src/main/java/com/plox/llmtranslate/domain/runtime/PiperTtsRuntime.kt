@@ -14,6 +14,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -54,6 +55,12 @@ class PiperTtsRuntime @Inject constructor(
 
         /** Разовый размер чанка PCM при записи в AudioTrack, отсчётов. */
         private const val PCM_CHUNK_SAMPLES = 4096
+
+        /** Интервал опроса playbackHeadPosition при дренаже буфера, мс. */
+        private const val DRAIN_POLL_MS = 20L
+
+        /** Предельное время дренажа буфера перед остановкой трека, мс. */
+        private const val DRAIN_TIMEOUT_MS = 5000L
     }
 
     /** Пучок загруженной Piper-модели: нативный OfflineTts + путь каталога. */
@@ -216,6 +223,18 @@ class PiperTtsRuntime @Inject constructor(
     /**
      * Записать PCM-чанки в AudioTrack (MODE_STREAM, 16-бит, моно) с
      * проверкой отмены корутины и флага [stopRequested] на каждом чанке.
+     *
+     * После нормального завершения записи выполняется дренаж буфера (issue #51):
+     * трек остаётся в PLAYING, ожидание до [DRAIN_TIMEOUT_MS] с опросом каждые
+     * [DRAIN_POLL_MS] мс. Критерии полного вывода: головка воспроизведения
+     * догоняет записанные кадры ([AudioTrack.getPlaybackHeadPosition] >=
+     * записано) ИЛИ трек сам переходит из PLAYING в STOPPED (в MODE_STREAM при
+     * исчерпании записанных данных) — иначе последние ~чанка (~180 мс)
+     * «проглатываются» stop()/release() в finally. [stopRequested] или
+     * истечение таймаута — мгновенный выход из цикла. При IllegalStateException
+     * у getter'а дренаж пропускается (защита от зависания). [stopRequested]
+     * (или отмена корутины, или written<=0 в цикле записи) пропускает дренаж:
+     * [stop] уже останавливает трек немедленно.
      * @return null; ошибки записи — только в лог (обрыв не считается ошибкой синтеза).
      */
     private suspend fun playPcm(samples: FloatArray, sampleRate: Int) {
@@ -246,6 +265,8 @@ class PiperTtsRuntime @Inject constructor(
                         .build()
                 )
                 .setBufferSizeInBytes(bufferSize)
+                // MODE_STREAM (он же transfer mode по умолчанию) — обязателен для
+                // playbackHeadPosition при дренаже (иначе getter бросает ISE).
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
         } catch (e: Exception) {
@@ -256,6 +277,8 @@ class PiperTtsRuntime @Inject constructor(
         try {
             track.play()
             var offset = 0
+            var framesWritten = 0L
+            var writeAborted = false
             while (offset < samples.size) {
                 if (stopRequested) break
                 currentCoroutineContext().ensureActive()
@@ -266,9 +289,50 @@ class PiperTtsRuntime @Inject constructor(
                 val written = track.write(pcm, 0, count)
                 if (written <= 0) {
                     Timber.w("AudioTrack.write вернул $written — озвучивание прервано")
+                    writeAborted = true
                     break
                 }
                 offset += written
+                framesWritten += written.toLong()
+            }
+            // Дренаж буфера перед остановкой (issue #51): без него последние
+            // записанные кадры обрезаются stop()/release() в finally.
+            // pause() для дренажа НЕ используется: на части устройств (проверено
+            // на OnePlus A3003, OxygenOS 9) в PAUSED аппаратное потребление
+            // останавливается — playbackHeadPosition замирает и хвост не
+            // выводится. Трек остаётся в PLAYING; полный вывод определяется по
+            // head >= framesWritten или переходу трека из PLAYING в STOPPED
+            // (в MODE_STREAM происходит автоматически при исчерпании данных).
+            if (!stopRequested && !writeAborted && framesWritten > 0) {
+                try {
+                    val deadline = System.currentTimeMillis() + DRAIN_TIMEOUT_MS
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        if (stopRequested) break
+                        val head = track.playbackHeadPosition.toLong()
+                        if (head >= framesWritten) {
+                            Timber.d("Piper TTS: выведено %d фреймов из %d", head, framesWritten)
+                            break
+                        }
+                        // В MODE_STREAM при исчерпании записанных данных трек сам
+                        // переходит из PLAYING в STOPPED — это тоже признак
+                        // полного вывода.
+                        if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                            Timber.d("Piper TTS: выведено %d фреймов из %d", head, framesWritten)
+                            break
+                        }
+                        if (System.currentTimeMillis() >= deadline) {
+                            Timber.w(
+                                "Piper TTS: дренаж буфера по таймауту — выведено %d фреймов из %d",
+                                head, framesWritten
+                            )
+                            break
+                        }
+                        delay(DRAIN_POLL_MS)
+                    }
+                } catch (e: IllegalStateException) {
+                    Timber.w(e, "Piper TTS: playbackHeadPosition недоступен — дренаж пропущен")
+                }
             }
         } finally {
             activeTrack = null
