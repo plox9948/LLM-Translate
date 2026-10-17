@@ -57,6 +57,22 @@ fun RuntimeType.ttsEngineId(): String? = when (this) {
 }
 
 /**
+ * Движки TTS, предлагаемые в блоке «Движок синтеза речи» настроек (issue #55),
+ * в порядке отображения. Связь карточки каталога с движком — по рантайму
+ * ([ttsEngineId]), а не по id карточки: возврат движка в интерфейс — одна
+ * правка флага hidden в каталоге. Системный движок показывается всегда;
+ * движок со скрытой карточкой (hidden=true) не предлагается, кроме случая,
+ * когда он уже выбран в настройке [selected] — ранее сделанный выбор не теряется.
+ */
+fun visibleTtsEngineIds(catalog: List<ModelCard>, selected: String): List<String> {
+    val hiddenEngines = catalog.mapNotNull { card ->
+        card.runtime.ttsEngineId()?.takeIf { card.hidden }
+    }.toSet()
+    return listOf(TtsEngines.SYSTEM, TtsEngines.RHVOICE, TtsEngines.ESPEAK)
+        .filter { it == TtsEngines.SYSTEM || it !in hiddenEngines || it == selected }
+}
+
+/**
  * Статус установки модели.
  */
 enum class ModelStatus {

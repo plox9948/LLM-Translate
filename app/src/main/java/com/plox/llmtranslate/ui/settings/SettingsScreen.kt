@@ -30,7 +30,10 @@ import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.BackgroundUnloadScheduler
+import com.plox.llmtranslate.domain.ModelManager
+import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.TtsEngines
+import com.plox.llmtranslate.domain.model.visibleTtsEngineIds
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,6 +45,7 @@ import javax.inject.Inject
  */
 data class SettingsUiState(
     val ttsEngine: String = TtsEngines.SYSTEM,
+    val catalog: List<ModelCard> = emptyList(),
     val uiLanguage: String = "system",
     val theme: String = "system",
     val unloadTimeoutMinutes: Int = ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES,
@@ -53,13 +57,19 @@ data class SettingsUiState(
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val preferences: ModelPreferences
+    private val preferences: ModelPreferences,
+    modelManager: ModelManager
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState
 
     init {
+        viewModelScope.launch {
+            modelManager.catalog.collect { cards ->
+                _uiState.value = _uiState.value.copy(catalog = cards)
+            }
+        }
         viewModelScope.launch {
             preferences.ttsEngine.collect { engine ->
                 _uiState.value = _uiState.value.copy(ttsEngine = engine)
@@ -147,16 +157,19 @@ fun SettingsScreen(
             fontWeight = FontWeight.Bold
         )
 
-        // TTS-движок.
+        // TTS-движок: скрытые карточки каталога (hidden, issue #55) движки
+        // не предлагают; уже выбранный движок остаётся в списке всегда.
+        val ttsLabelRes = mapOf(
+            TtsEngines.SYSTEM to R.string.settings_tts_system,
+            TtsEngines.RHVOICE to R.string.settings_tts_rhvoice,
+            TtsEngines.ESPEAK to R.string.settings_tts_espeak
+        )
         OptionCard(
             titleRes = R.string.settings_tts_engine,
             selected = state.ttsEngine,
             onSelect = viewModel::onTtsEngineChange,
-            options = listOf(
-                TtsEngines.SYSTEM to stringResource(R.string.settings_tts_system),
-                TtsEngines.RHVOICE to stringResource(R.string.settings_tts_rhvoice),
-                TtsEngines.ESPEAK to stringResource(R.string.settings_tts_espeak)
-            )
+            options = visibleTtsEngineIds(state.catalog, state.ttsEngine)
+                .map { engine -> engine to stringResource(ttsLabelRes.getValue(engine)) }
         )
 
         // Язык интерфейса.
