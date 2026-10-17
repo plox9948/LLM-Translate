@@ -210,7 +210,8 @@ class TtsPlaybackCoordinator @Inject constructor(
         val model = piperModels.firstOrNull { it.id == modelId }
             ?: return RuntimeError.ModelNotReady
         val path = model.filePath?.takeIf { it.isNotBlank() } ?: return RuntimeError.ModelNotReady
-        val loadError = piperRuntime.load(File(path))
+        // Метаданные записи — для карточки «Загружено в память» (issue #52).
+        val loadError = piperRuntime.load(File(path), model)
         if (loadError != null) return loadError
         return piperRuntime.speak(text, onDone = { onSpeakDone(token) })
     }

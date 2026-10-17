@@ -16,20 +16,23 @@ class RuntimeRouter @Inject constructor(
     private val marianOnnxRuntime: MarianOnnxRuntime,
     private val indicTransOnnxRuntime: IndicTransOnnxRuntime,
     private val slimtRuntime: SlimtRuntime,
-    private val sherpaSttEngine: SherpaSttEngine
+    private val sherpaSttEngine: SherpaSttEngine,
+    private val piperTtsRuntime: PiperTtsRuntime
 ) {
 
     /**
      * Реактивный список моделей, загруженных в ОЗУ прямо сейчас:
-     * движки перевода (Marian, IndicTrans) + STT (Sherpa). Пуст, если
-     * всё разгружено; обновляется при каждой загрузке/разгрузке движка.
+     * движки перевода (Marian, IndicTrans) + STT (Sherpa) + TTS (Piper).
+     * Пуст, если всё разгружено; обновляется при каждой загрузке/разгрузке
+     * движка.
      */
     val loadedModels: Flow<List<LoadedModelInfo>> = LoadedModelsAggregator.merge(
         listOf(
             marianOnnxRuntime.loadedModels,
             indicTransOnnxRuntime.loadedModels,
             slimtRuntime.loadedModels,
-            sherpaSttEngine.loadedModels
+            sherpaSttEngine.loadedModels,
+            piperTtsRuntime.loadedModels
         )
     )
 
@@ -78,5 +81,8 @@ class RuntimeRouter @Inject constructor(
         indicTransOnnxRuntime.release()
         slimtRuntime.release()
         sherpaSttEngine.release()
+        // Piper release() не suspend: останавливает озвучку и асинхронно
+        // освобождает нативный OfflineTts под своим мьютексом (issue #52).
+        piperTtsRuntime.release()
     }
 }

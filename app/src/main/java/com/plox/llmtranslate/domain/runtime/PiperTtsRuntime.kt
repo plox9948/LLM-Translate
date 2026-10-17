@@ -8,6 +8,8 @@ import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
+import com.plox.llmtranslate.domain.model.InstalledModel
+import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -16,6 +18,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -63,10 +67,11 @@ class PiperTtsRuntime @Inject constructor(
         private const val DRAIN_TIMEOUT_MS = 5000L
     }
 
-    /** Пучок загруженной Piper-модели: нативный OfflineTts + путь каталога. */
+    /** Пучок загруженной Piper-модели: нативный OfflineTts + путь каталога + метаданные для UI. */
     private class LoadedPiper(
         val tts: OfflineTts,
-        val dirPath: String
+        val dirPath: String,
+        val info: LoadedModelInfo
     )
 
     /**
@@ -79,6 +84,15 @@ class PiperTtsRuntime @Inject constructor(
     /** Текущий пучок; меняется только под [engineMutex]. */
     private var loaded: LoadedPiper? = null
 
+    private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
+
+    /**
+     * Реактивное состояние: загруженная в ОЗУ TTS-модель (одна активная;
+     * пуст список, если движок разгружен). Обновляется под [engineMutex]
+     * при загрузке/разгрузке (issue #52).
+     */
+    val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
+
     /** Флаг отмены активного озвучивания ([stop]); пишется из любого потока. */
     @Volatile
     private var stopRequested = false
@@ -90,44 +104,63 @@ class PiperTtsRuntime @Inject constructor(
     /**
      * Загрузить Piper-модель из каталога [modelDir]. Повторная загрузка того же
      * пути — no-op; при смене каталога предыдущая модель освобождается.
+     * [model] — запись установленной модели для метаданных карточки
+     * «Загружено в память» (id, имя, оценка ОЗУ); без неё метаданные
+     * выводятся из имени каталога (issue #52).
      * @return null при успехе или [RuntimeError].
      */
-    suspend fun load(modelDir: File): RuntimeError? = withContext(Dispatchers.IO) {
-        engineMutex.withLock {
-            val path = modelDir.absolutePath
-            val current = loaded
-            if (current != null && current.dirPath == path) return@withLock null
+    suspend fun load(modelDir: File, model: InstalledModel? = null): RuntimeError? =
+        withContext(Dispatchers.IO) {
+            engineMutex.withLock {
+                val path = modelDir.absolutePath
+                val current = loaded
+                if (current != null && current.dirPath == path) return@withLock null
 
-            val layout = discoverLayout(modelDir)
-                ?: return@withLock RuntimeError.LoadFailed(
-                    "piper", "В каталоге модели нет .onnx или tokens.txt: $path"
-                )
-
-            try {
-                current?.releaseNative()
-                val config = OfflineTtsConfig(
-                    model = OfflineTtsModelConfig(
-                        vits = OfflineTtsVitsModelConfig(
-                            model = layout.modelPath,
-                            tokens = layout.tokensPath,
-                            dataDir = layout.espeakDataPath
-                        ),
-                        numThreads = NUM_THREADS
+                val layout = discoverLayout(modelDir)
+                    ?: return@withLock RuntimeError.LoadFailed(
+                        "piper", "В каталоге модели нет .onnx или tokens.txt: $path"
                     )
-                )
-                // Файловая загрузка — AssetManager нативному конструктору не нужен.
-                val tts = OfflineTts(null, config)
-                loaded = LoadedPiper(tts, path)
-                Timber.d("Piper TTS загружена: $path")
-                null
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Timber.e(e, "Не удалось загрузить Piper-модель $path")
-                RuntimeError.LoadFailed("piper", e.message ?: "Неизвестная ошибка")
+
+                try {
+                    current?.releaseNative()
+                    val config = OfflineTtsConfig(
+                        model = OfflineTtsModelConfig(
+                            vits = OfflineTtsVitsModelConfig(
+                                model = layout.modelPath,
+                                tokens = layout.tokensPath,
+                                dataDir = layout.espeakDataPath
+                            ),
+                            numThreads = NUM_THREADS
+                        )
+                    )
+                    // Файловая загрузка — AssetManager нативному конструктору не нужен.
+                    val tts = OfflineTts(null, config)
+                    loaded = LoadedPiper(
+                        tts = tts,
+                        dirPath = path,
+                        info = LoadedModelInfo(
+                            modelId = model?.id ?: modelDir.name,
+                            displayName = model?.displayName ?: modelDir.name,
+                            category = ModelCategory.TTS,
+                            ramRequiredMb = model?.ramRequiredMb ?: 0
+                        )
+                    )
+                    publishLoadedUnlocked()
+                    Timber.d("Piper TTS загружена: $path")
+                    null
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Старый пучок уже освобождён (releaseNative выше) — снимаем
+                    // его и из состояния, чтобы «Загружено в память» не показывал
+                    // несуществующую модель (issue #52).
+                    loaded = null
+                    publishLoadedUnlocked()
+                    Timber.e(e, "Не удалось загрузить Piper-модель $path")
+                    RuntimeError.LoadFailed("piper", e.message ?: "Неизвестная ошибка")
+                }
             }
         }
-    }
 
     /**
      * Синтезировать и озвучить [text]. Возвращается по завершении
@@ -207,8 +240,17 @@ class PiperTtsRuntime @Inject constructor(
             engineMutex.withLock {
                 loaded?.releaseNative()
                 loaded = null
+                publishLoadedUnlocked()
             }
         }
+    }
+
+    /**
+     * Опубликовать состояние загруженной модели (одна активная или пусто).
+     * Вызывать только под [engineMutex].
+     */
+    private fun publishLoadedUnlocked() {
+        _loadedModels.value = loaded?.let { listOf(it.info) } ?: emptyList()
     }
 
     /** Освободить нативный OfflineTts пучка (ошибки — только в лог). */

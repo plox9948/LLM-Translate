@@ -48,7 +48,7 @@ class TtsPlaybackCoordinatorTest {
         every { modelManager.ttsByLanguage } returns assignmentsFlow
         every { modelManager.installedModels(ModelCategory.TTS) } returns installedFlow
         every { modelManager.catalog } returns catalogFlow
-        coEvery { piperRuntime.load(any()) } returns null
+        coEvery { piperRuntime.load(any(), any()) } returns null
         coEvery { piperRuntime.speak(any(), any(), any(), any()) } returns null
         // Контекст с «сетью»: connectivity-проверка перед автоскачиванием (issue #50).
         val connectivity = mockk<android.net.ConnectivityManager>(relaxed = true)
@@ -128,7 +128,7 @@ class TtsPlaybackCoordinatorTest {
 
         coordinator.speak("привет мир", "ru")
 
-        coVerify(exactly = 1) { piperRuntime.load(any()) }
+        coVerify(exactly = 1) { piperRuntime.load(any(), any()) }
         coVerify(exactly = 1) { piperRuntime.speak("привет мир", any(), any(), any()) }
         coVerify(exactly = 0) { ttsRuntime.speak(any(), any(), any()) }
         assertTrue(coordinator.status.value.isSpeaking)

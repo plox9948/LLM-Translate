@@ -83,10 +83,21 @@ class LoadedModelsAggregatorTest {
     private val indicTrans = FakeTranslationEngine()
     private val stt = FakeSttEngine()
 
-    /** Тот же порядок движков, что в RuntimeRouter.loadedModels. */
+    /**
+     * Состояние Piper-движка (issue #52): движок держит одну активную модель,
+     * публикация — при загрузке, очистка — при разгрузке. Тот же порядок
+     * движков, что в RuntimeRouter.loadedModels.
+     */
+    private val piperTts = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
+
     private fun routerFlow(): Flow<List<LoadedModelInfo>> =
         LoadedModelsAggregator.merge(
-            listOf(marian.loadedModels, indicTrans.loadedModels, stt.loadedModels)
+            listOf(
+                marian.loadedModels,
+                indicTrans.loadedModels,
+                stt.loadedModels,
+                piperTts
+            )
         )
 
     private suspend fun snapshot(): List<LoadedModelInfo> = routerFlow().first()
@@ -254,6 +265,32 @@ class LoadedModelsAggregatorTest {
         assertEquals(4, snapshots.size)
 
         collector.cancel()
+    }
+
+    @Test
+    fun `piper tts model appears in memory section after load and clears on release`() = runTest {
+        // Issue #52: загруженная Piper-модель должна отображаться в
+        // «Загружено в память» послеtranslation/STT-движков (порядок конструктора Router).
+        marian.ensureLoaded(translation("opus-ru-en", "Opus-MT Tiny (RU→EN)", 480))
+
+        piperTts.value = listOf(
+            LoadedModelInfo("tts-ru-piper-ruslan", "Piper Ruslan (RU)", ModelCategory.TTS, 90)
+        )
+        assertEquals(
+            listOf(
+                LoadedModelInfo("opus-ru-en", "Opus-MT Tiny (RU→EN)", ModelCategory.TRANSLATION, 480),
+                LoadedModelInfo("tts-ru-piper-ruslan", "Piper Ruslan (RU)", ModelCategory.TTS, 90)
+            ),
+            snapshot()
+        )
+
+        piperTts.value = emptyList()
+        assertEquals(
+            listOf(
+                LoadedModelInfo("opus-ru-en", "Opus-MT Tiny (RU→EN)", ModelCategory.TRANSLATION, 480)
+            ),
+            snapshot()
+        )
     }
 
     @Test
