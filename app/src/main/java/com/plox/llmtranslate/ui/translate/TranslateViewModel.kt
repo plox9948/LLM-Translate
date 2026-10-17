@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.ui.translate
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.R
@@ -114,7 +115,10 @@ class TranslateViewModel @Inject constructor(
     private val preferences: ModelPreferences,
     private val historyRepository: TranslationHistoryRepository,
     private val pendingHolder: PendingTranslationHolder,
-    private val favoritesRepository: FavoritesRepository
+    private val favoritesRepository: FavoritesRepository,
+    // Контекст — человекочитаемые тексты ошибок из ресурсов (issue #57).
+    @dagger.hilt.android.qualifiers.ApplicationContext
+    private val appContext: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TranslateUiState())
@@ -611,12 +615,23 @@ class TranslateViewModel @Inject constructor(
         }
     }
 
-    /** Показывает ошибку при отсутствии разрешения на микрофон или STT-модели. */
+    /**
+     * Ошибка отказа в разрешении на запись с микрофона (issue #57: текст
+     * отделён от сообщения про отсутствующую STT-модель и вынесен в ресурсы).
+     */
     fun onPermissionDenied() {
         update {
-            it.copy(
-                error = "Нужно разрешение на микрофон и установленная модель распознавания"
-            )
+            it.copy(error = appContext.getString(R.string.translate_mic_permission_denied))
+        }
+    }
+
+    /**
+     * Ошибка тапа по микрофону без установленной STT-модели распознавания
+     * (issue #57 — отдельное сообщение с подсказкой скачать модель).
+     */
+    fun onSttModelMissing() {
+        update {
+            it.copy(error = appContext.getString(R.string.translate_mic_missing_stt_model))
         }
     }
 

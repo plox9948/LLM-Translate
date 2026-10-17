@@ -67,9 +67,10 @@ data class TtsPlaybackStatus(
  *   `espeak-ng-data/`, поиск раскладывает сам рантайм);
  * - иначе → системный [TtsRuntime].
  *
- * Фолбэк (issue #50): если системный TTS вернул
- * [RuntimeError.LanguageNotSupported], берётся карточка по умолчанию для языка
- * ([TtsModelSelector.defaultCardId]):
+ * Фолбэк (issues #50, #57): при ЛЮБОЙ ошибке системного TTS
+ * (неподдерживаемый язык [RuntimeError.LanguageNotSupported], LANG_MISSING_DATA,
+ * сбой или недоступность движка инициализации) берётся карточка по умолчанию
+ * для языка ([TtsModelSelector.defaultCardId]):
  * - готова → автоназначение ([ModelManager.setTtsForLanguage]) и немедленная
  *   озвучка Piper-моделью;
  * - не установлена → запуск скачивания через [ModelManager.startDownload]
@@ -192,12 +193,15 @@ class TtsPlaybackCoordinator @Inject constructor(
             TtsModelSelector.TtsChoice.SystemEngine -> {
                 val error = ttsRuntime.speak(text, language, onDone = { onSpeakDone(token) })
                 if (error == null) return
-                if (error is RuntimeError.LanguageNotSupported) {
-                    // Автоматический фолбэк на Piper-модель языка (issue #50).
-                    startFallback(text, language, token)
-                } else {
-                    finishWithError(error, token)
-                }
+                // Фолбэк на Piper-модель языка при ЛЮБОЙ недоступности системного
+                // синтеза (issue #57): LANG_MISSING_DATA / LANG_NOT_SUPPORTED
+                // [RuntimeError.LanguageNotSupported], сбой/таймаут инициализации
+                // и недоступный движок [RuntimeError.LoadFailed], ошибка старта
+                // озвучки [RuntimeError.InferenceFailed]. Прежняя ветвка только по
+                // LanguageNotSupported оставляла устройства без движка (напр.
+                // Huawei без голоса языка) с generic-ошибкой вместо предложения
+                // скачать модель озвучки (issue #50 покрывал лишь этот один тип).
+                startFallback(text, language, token, error)
             }
         }
     }
@@ -217,13 +221,20 @@ class TtsPlaybackCoordinator @Inject constructor(
     }
 
     /**
-     * Фолбэк при [RuntimeError.LanguageNotSupported]: карточка Piper по
-     * умолчанию для языка → автоназначение/скачивание (см. класс-док).
+     * Фолбэк при любой недоступности системного синтеза (issues #50, #57):
+     * карточка Piper по умолчанию для языка → автоназначение/скачивание
+     * (см. класс-док). Если для языка нет заготовки — показывается исходная
+     * ошибка системного движка [engineError], а не подменённая.
      */
-    private fun startFallback(text: String, language: String, token: Long) {
+    private fun startFallback(
+        text: String,
+        language: String,
+        token: Long,
+        engineError: RuntimeError
+    ) {
         val cardId = TtsModelSelector.defaultCardId(language)
         if (cardId == null) {
-            finishWithError(RuntimeError.LanguageNotSupported("system", language), token)
+            finishWithError(engineError, token)
             return
         }
         val installed = piperModels.firstOrNull { it.id == cardId }
@@ -233,7 +244,7 @@ class TtsPlaybackCoordinator @Inject constructor(
         }
         val card = catalogCards.firstOrNull { it.id == cardId }
         if (card == null) {
-            finishWithError(RuntimeError.LanguageNotSupported("system", language), token)
+            finishWithError(engineError, token)
             return
         }
         // Не установлена (или в ERROR) — автоскачивание с показом прогресса.

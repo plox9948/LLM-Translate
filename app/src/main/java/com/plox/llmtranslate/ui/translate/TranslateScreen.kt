@@ -84,7 +84,9 @@ fun TranslateScreen(
         if (state.isRecording) {
             viewModel.stopRecordingAndTranscribe()
         } else if (!state.hasSttModel) {
-            viewModel.onPermissionDenied()
+            // Отдельное сообщение про отсутствующую STT-модель (issue #57):
+            // раньше оно смешивалось с текстом про разрешение микрофона.
+            viewModel.onSttModelMissing()
         } else {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }

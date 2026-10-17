@@ -23,10 +23,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Unit-тесты [TtsPlaybackCoordinator] (issue #50): выбор готовой назначенной
- * Piper-модели, фолбэк при LanguageNotSupported с автоназначением готовой
+ * Unit-тесты [TtsPlaybackCoordinator] (issues #50, #57): выбор готовой
+ * назначенной Piper-модели, фолбэк при любой недоступности системного TTS
+ * (LanguageNotSupported, сбой движка/инициализации) с автоназначением готовой
  * карточки по умолчанию, автоскачивание с ОДНИМ повторным озвучиванием после
- * READY, стадия ошибки скачивания и ошибка без карточки по умолчанию.
+ * READY, стадия ошибки скачивания, фолбэк без сети и ошибка без карточки
+ * по умолчанию.
  *
  * Реальный координатор + фейковые рантаймы и [ModelManager]; потоки —
  * [MutableStateFlow] с синхронными эмиссиями на unconfined-диспетчере.
@@ -50,23 +52,31 @@ class TtsPlaybackCoordinatorTest {
         every { modelManager.catalog } returns catalogFlow
         coEvery { piperRuntime.load(any(), any()) } returns null
         coEvery { piperRuntime.speak(any(), any(), any(), any()) } returns null
-        // Контекст с «сетью»: connectivity-проверка перед автоскачиванием (issue #50).
-        val connectivity = mockk<android.net.ConnectivityManager>(relaxed = true)
-        val capabilities = mockk<android.net.NetworkCapabilities>(relaxed = true)
-        every { capabilities.hasCapability(any()) } returns true
-        every { connectivity.activeNetwork } returns mockk()
-        every { connectivity.getNetworkCapabilities(any()) } returns capabilities
-        val context = mockk<Context>()
-        every {
-            context.getSystemService(Context.CONNECTIVITY_SERVICE)
-        } returns connectivity
         coordinator = TtsPlaybackCoordinator(
             ttsRuntime,
             piperRuntime,
             modelManager,
             CoroutineScope(UnconfinedTestDispatcher()),
-            context
+            contextWithNetwork(true)
         )
+    }
+
+    /** Контекст с активным (или отсутствующим) сетевым подключением. */
+    private fun contextWithNetwork(online: Boolean): Context {
+        val connectivity = mockk<android.net.ConnectivityManager>(relaxed = true)
+        if (online) {
+            val capabilities = mockk<android.net.NetworkCapabilities>(relaxed = true)
+            every { capabilities.hasCapability(any()) } returns true
+            every { connectivity.activeNetwork } returns mockk()
+            every { connectivity.getNetworkCapabilities(any()) } returns capabilities
+        } else {
+            every { connectivity.activeNetwork } returns null
+        }
+        val context = mockk<Context>()
+        every {
+            context.getSystemService(Context.CONNECTIVITY_SERVICE)
+        } returns connectivity
+        return context
     }
 
     /** Готовая PIPER-модель TTS с путём каталога. */
@@ -219,5 +229,96 @@ class TtsPlaybackCoordinatorTest {
         verify(exactly = 0) { modelManager.startDownload(any()) }
         coVerify(exactly = 0) { piperRuntime.speak(any(), any(), any(), any()) }
         assertTrue(coordinator.status.value.isSpeaking.not())
+    }
+
+    // ── issue #57: любая недоступность синтеза ведёт к фолбэку, а не к generic-ошибке ──
+
+    @Test
+    fun `engine not ready (init failure) routes to default card fallback`() {
+        // Сбой/отсутствие инициализации движка (напр. Huawei без голоса языка):
+        // TtsRuntime.speak отдаёт LoadFailed, а не LanguageNotSupported.
+        coEvery {
+            ttsRuntime.speak(any(), any(), any())
+        } returns RuntimeError.LoadFailed("tts", "TTS не готов")
+        val card = piperCard("tts-ru-piper-ruslan")
+        catalogFlow.value = listOf(card)
+
+        coordinator.speak("привет", "ru")
+
+        verify(exactly = 1) { modelManager.startDownload(card) }
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+        assertEquals("tts-ru-piper-ruslan", coordinator.status.value.downloadModelId)
+        assertNull(coordinator.status.value.error)
+    }
+
+    @Test
+    fun `engine unavailable and ready default card auto-assigns and speaks piper`() {
+        coEvery {
+            ttsRuntime.speak(any(), any(), any())
+        } returns RuntimeError.LoadFailed("tts", "TTS не инициализирован")
+        installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
+
+        coordinator.speak("озвучь", "ru")
+
+        coVerify(exactly = 1) {
+            modelManager.setTtsForLanguage("ru", "tts-ru-piper-ruslan")
+        }
+        coVerify(exactly = 1) { piperRuntime.speak("озвучь", any(), any(), any()) }
+        assertNull(coordinator.status.value.error)
+        assertTrue(coordinator.status.value.isSpeaking)
+    }
+
+    @Test
+    fun `speak start failure routes to fallback instead of generic error`() {
+        coEvery {
+            ttsRuntime.speak(any(), any(), any())
+        } returns RuntimeError.InferenceFailed("tts", "Не удалось озвучить текст")
+        val card = piperCard("tts-ru-piper-ruslan")
+        catalogFlow.value = listOf(card)
+
+        coordinator.speak("текст", "ru")
+
+        verify(exactly = 1) { modelManager.startDownload(card) }
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+        assertNull(coordinator.status.value.error)
+    }
+
+    @Test
+    fun `offline fallback sets download error status without starting download`() {
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+        val offline = TtsPlaybackCoordinator(
+            ttsRuntime,
+            piperRuntime,
+            modelManager,
+            CoroutineScope(UnconfinedTestDispatcher()),
+            contextWithNetwork(false)
+        )
+
+        offline.speak("текст", "ru")
+
+        // Сети нет → скачивание не стартует, UI получает подсказку скачать
+        // модель на экране «Модели» (stadium ERROR), без сообщения про микрофон.
+        verify(exactly = 0) { modelManager.startDownload(any()) }
+        assertEquals(TtsDownloadStatus.ERROR, offline.status.value.downloadStatus)
+        assertEquals("tts-ru-piper-ruslan", offline.status.value.downloadModelId)
+        assertNull(offline.status.value.error)
+    }
+
+    @Test
+    fun `engine error without default card exposes original engine error`() {
+        coEvery {
+            ttsRuntime.speak(any(), any(), any())
+        } returns RuntimeError.LoadFailed("tts", "Таймаут инициализации TTS")
+
+        coordinator.speak("text", "de")
+
+        // Для языка без заготовки показывается исходная ошибка движка,
+        // не подменённая на LanguageNotSupported.
+        assertEquals(
+            RuntimeError.LoadFailed("tts", "Таймаут инициализации TTS"),
+            coordinator.status.value.error
+        )
+        assertEquals(TtsDownloadStatus.NONE, coordinator.status.value.downloadStatus)
     }
 }

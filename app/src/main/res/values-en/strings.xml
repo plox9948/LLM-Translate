@@ -39,6 +39,8 @@
     <string name="translate_speak_cd">Read aloud</string>
     <string name="translate_copy_cd">Copy translation</string>
     <string name="translate_recording_hint">● Recording… Tap the microphone to stop</string>
+    <string name="translate_mic_permission_denied">Microphone recording permission is not granted. Allow microphone access in the app settings</string>
+    <string name="translate_mic_missing_stt_model">To recognize speech, download a speech recognition model on the \"Models\" screen</string>
     <string name="translate_select_language">Select language</string>
     <string name="translate_history_delete_cd">Delete from history</string>
 

@@ -1,5 +1,7 @@
 package com.plox.llmtranslate.ui.translate
 
+import android.content.Context
+import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.model.FavoritesRepository
 import com.plox.llmtranslate.data.model.TranslationHistoryRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
@@ -51,6 +53,8 @@ class TranslateViewModelTest {
     private val historyRepository = mockk<TranslationHistoryRepository>(relaxed = true)
     private val favoritesRepository = mockk<FavoritesRepository>(relaxed = true)
     private val pendingHolder = PendingTranslationHolder()
+    // Контекст ресурсов (issue #57): getString возвращает различимые заглушки.
+    private val appContext = mockk<Context>(relaxed = true)
 
     private lateinit var viewModel: TranslateViewModel
 
@@ -61,6 +65,8 @@ class TranslateViewModelTest {
 
     /** Создать ViewModel (коллекторы init стартуют здесь — стабы должны быть готовы). */
     private fun createViewModel() {
+        every { appContext.getString(R.string.translate_mic_permission_denied) } returns "MIC_PERM"
+        every { appContext.getString(R.string.translate_mic_missing_stt_model) } returns "MIC_STT"
         viewModel = TranslateViewModel(
             modelManager,
             runtimeRouter,
@@ -70,7 +76,8 @@ class TranslateViewModelTest {
             preferences,
             historyRepository,
             pendingHolder,
-            favoritesRepository
+            favoritesRepository,
+            appContext
         )
     }
 
@@ -275,5 +282,27 @@ class TranslateViewModelTest {
         val sttHint = viewModel.uiState.value.missingSttModels.first()
         viewModel.downloadMissingModel(sttHint)
         io.mockk.verify(exactly = 1) { modelManager.startDownload(sttCard("stt-ru-gigaam", listOf("ru"))) }
+    }
+
+    // ── Раздельные сообщения микрофона из ресурсов (issue #57) ──
+
+    @Test
+    fun `permission denied shows resource message only about microphone permission`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        createViewModel()
+
+        viewModel.onPermissionDenied()
+
+        assertEquals("MIC_PERM", viewModel.uiState.value.error)
+    }
+
+    @Test
+    fun `missing stt model shows resource message only about recognition model`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        createViewModel()
+
+        viewModel.onSttModelMissing()
+
+        assertEquals("MIC_STT", viewModel.uiState.value.error)
     }
 }
