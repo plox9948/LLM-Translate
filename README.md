@@ -94,7 +94,7 @@ scripts/                   # download_models.ps1 / .sh (с проверкой SH
 
 ## Сборка
 
-Готовые APK релизов публикуются в **Gitea Releases** репозитория
+Готовые APK релизов публикуются в **[GitHub Releases](https://github.com/plox9948/LLM-Translate/releases)**
 (начиная с v0.5.7 — подписанные release-сборки, см. «Подписанные релизы»),
 собирать из исходников не обязательно.
 
@@ -107,7 +107,7 @@ scripts/                   # download_models.ps1 / .sh (с проверкой SH
 1. Клонировать репозиторий:
 
    ```bash
-   git clone --recursive http://31.44.89.204:3000/plox/LLM-Translate.git
+   git clone --recursive https://github.com/plox9948/LLM-Translate.git
    cd LLM-Translate
    ```
 
