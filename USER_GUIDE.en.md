@@ -93,7 +93,9 @@ models) together with an estimated memory consumption.
   look the same in every interface language). "Авто" detects the input language
   automatically; in this mode the "Swap languages" arrow and the favorites star
   are unavailable — pick a specific language when you know the direction.
-- The arrow between the chips swaps the translation direction.
+- The arrow between the chips swaps the translation direction; the shown
+  translation is automatically placed into the input field, so you can check
+  the translation both ways without copying it manually.
 - Type text into the field ("Enter text to translate…") and press "Translate".
   During a long translation a "Cancel" button appears. "Clear" empties both
   fields.
