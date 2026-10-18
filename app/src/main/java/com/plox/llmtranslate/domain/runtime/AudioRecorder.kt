@@ -314,6 +314,22 @@ class AudioRecorder @Inject constructor(
     }
 
     /**
+     * Общий преамбул cleanup-участка остановки (одинаков в [cancel] и
+     * [stopRecording]): дождаться выхода цикла чтения, чтобы не освободить
+     * AudioRecord посреди блокирующего read(), и отсоединить захваченный
+     * рекордер от поля — только пока в нём всё ещё он же (новая запись,
+     * стартованная в окне join(), этим вызовом не освобождается).
+     */
+    private suspend fun detachStoppedScene(scene: StoppedScene) {
+        scene.job?.join()
+        synchronized(sceneLock) {
+            if (audioRecord === scene.record) {
+                audioRecord = null
+            }
+        }
+    }
+
+    /**
      * Принудительно остановить запись без сохранения WAV (выгрузка рантаймов
      * при ON_STOP, ревью): рекордер — app-scope синглтон и без остановки
      * микрофон оставался захваченным после сворачивания приложения.
@@ -325,12 +341,7 @@ class AudioRecorder @Inject constructor(
         scope.launch {
             // Дожидаемся выхода цикла чтения, чтобы не освободить AudioRecord
             // посреди блокирующего read() (тот же порядок, что в stopRecording).
-            scene.job?.join()
-            synchronized(sceneLock) {
-                if (audioRecord === scene.record) {
-                    audioRecord = null
-                }
-            }
+            detachStoppedScene(scene)
             try {
                 scene.record?.stop()
             } catch (e: IllegalStateException) {
@@ -350,12 +361,7 @@ class AudioRecorder @Inject constructor(
         val scene = captureStopScene() ?: return null
         // Тот же сценарий вызова, что в cancel(): новая запись, стартованная
         // в окне join(), этим вызовом не освобождается и не сохраняется.
-        scene.job?.join()
-        synchronized(sceneLock) {
-            if (audioRecord === scene.record) {
-                audioRecord = null
-            }
-        }
+        detachStoppedScene(scene)
 
         // Блокирующие вызовы (AudioRecord.stop/release, запись WAV) — на IO.
         return withContext(Dispatchers.IO) {

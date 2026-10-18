@@ -194,9 +194,7 @@ class TtsRuntime @Inject constructor(
         // фразы больше не сработает, а без вызова у прежнего экрана останется
         // залипший флаг «озвучиваем» (issue #40).
         val previous = utterances.start(utteranceId, onDone)
-        previous.forEach { callback ->
-            scope.launch(Dispatchers.Main) { callback() }
-        }
+        notifyFinished(previous)
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
             override fun onDone(utteranceId: String?) {
@@ -250,8 +248,15 @@ class TtsRuntime @Inject constructor(
      */
     fun stop() {
         tts?.stop()
-        val pending = utterances.drain()
-        pending.forEach { callback ->
+        notifyFinished(utterances.drain())
+    }
+
+    /**
+     * известить экраны снятых фраз: каждый pending-колбэк выполняется на
+     * главном потоке (тот же паттерн доставки, что у onDone/onError).
+     */
+    private fun notifyFinished(callbacks: List<() -> Unit>) {
+        callbacks.forEach { callback ->
             scope.launch(Dispatchers.Main) { callback() }
         }
     }
@@ -270,10 +275,7 @@ class TtsRuntime @Inject constructor(
         // «озвучиваем» при смене TTS-движка во время озвучки (issue #40).
         // Порядок относительно shutdown не важен: однократность гарантирует
         // атомарный изъём из реестра (как в finish()).
-        val pending = utterances.drain()
-        pending.forEach { callback ->
-            scope.launch(Dispatchers.Main) { callback() }
-        }
+        notifyFinished(utterances.drain())
     }
 }
 

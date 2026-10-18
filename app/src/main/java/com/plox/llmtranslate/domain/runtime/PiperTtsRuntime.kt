@@ -401,14 +401,12 @@ class PiperTtsRuntime @Inject constructor(
                         currentCoroutineContext().ensureActive()
                         if (stopRequested) break
                         val head = track.playbackHeadPosition.toLong()
-                        if (head >= framesWritten) {
-                            Timber.d("Piper TTS: выведено %d фреймов из %d", head, framesWritten)
-                            break
-                        }
-                        // В MODE_STREAM при исчерпании записанных данных трек сам
-                        // переходит из PLAYING в STOPPED — это тоже признак
-                        // полного вывода.
-                        if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                        // Полный вывод: головка догнала записанные кадры ИЛИ
+                        // трек сам перешёл из PLAYING в STOPPED (в MODE_STREAM
+                        // происходит автоматически при исчерпании данных).
+                        if (head >= framesWritten ||
+                            track.playState != AudioTrack.PLAYSTATE_PLAYING
+                        ) {
                             Timber.d("Piper TTS: выведено %d фреймов из %d", head, framesWritten)
                             break
                         }

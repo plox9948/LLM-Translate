@@ -270,9 +270,7 @@ class TtsPlaybackCoordinator @Inject constructor(
         pendingRetry = null
         ttsRuntime.stop()
         piperRuntime.stop()
-        _status.update {
-            it.copy(isSpeaking = false, language = null, text = null)
-        }
+        markNotSpeaking()
     }
 
     /** Снять показанную ошибку озвучивания (закрыта UI-диалогом/баннером). */
@@ -527,6 +525,11 @@ class TtsPlaybackCoordinator @Inject constructor(
     /** Колбэк завершения активной фразы (токен-страховка от прежних фраз). */
     private fun onSpeakDone(token: Long) {
         if (token != utteranceToken.get()) return
+        markNotSpeaking()
+    }
+
+    /** Снять флаг озвучивания и язык/текст активной фразы из статуса. */
+    private fun markNotSpeaking() {
         _status.update {
             it.copy(isSpeaking = false, language = null, text = null)
         }
