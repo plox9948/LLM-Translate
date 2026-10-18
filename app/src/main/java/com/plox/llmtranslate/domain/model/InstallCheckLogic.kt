@@ -28,8 +28,12 @@ object InstallCheckLogic {
         }
         val warnings = mutableListOf<String>()
         if (device.freeDiskBytes < card.sizeBytes * DISK_HEADROOM_FACTOR) {
+            // Требуемый запас в тексте — по тому же множителю, что и критерий
+            // (ревью раунд 2): прежний размер модели без запаса расходился
+            // с фактическим порогом и дезориентировал пользователя.
+            val requiredBytes = (card.sizeBytes * DISK_HEADROOM_FACTOR).toLong()
             warnings.add(
-                "Мало места на диске: нужно ${formatSize(card.sizeBytes)}"
+                "Мало места на диске: нужно ${formatSize(requiredBytes)} (с запасом на распаковку)"
             )
         }
         if (device.totalRamMb > 0 &&

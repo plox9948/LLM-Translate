@@ -455,6 +455,25 @@ class TtsPlaybackCoordinatorTest {
         coVerify(exactly = 1) { piperRuntime.speak("нужный повтор", any(), any(), any()) }
     }
 
+    @Test
+    fun `auto retry after ready stops system tts before piper speak`() {
+        // Ревью раунд 2: авто-ретрай Piper после READY обязан погасить
+        // незавершённую системную фразу (тот же класс, что закрыт для
+        // пользовательской ветки в cc4d0ac) — синтез не должен накладываться.
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        coordinator.speak("текст", "ru")
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+        coVerify(exactly = 0) { ttsRuntime.stop() }
+
+        // Модель дошла до READY → авто-ретрай Piper с явной остановкой системного TTS.
+        installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
+
+        coVerify(exactly = 1) { piperRuntime.speak("текст", any(), any(), any()) }
+        coVerify(exactly = 1) { ttsRuntime.stop() }
+    }
+
     // ── ревью раунд 2 (Н-1): удаление/отмена скачиваемой карточки ──
 
     @Test

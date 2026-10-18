@@ -38,8 +38,14 @@ class TtsRuntime @Inject constructor(
         private const val INIT_TIMEOUT_MS = 10_000L
     }
 
+    // Мутируемое состояние движка читается из speak()/stop()/release() вне
+    // initMutex (вызовы из UI-кординат и app-скоупа) — @Volatile гарантирует
+    // междупоточную видимость записи после инициализации под мьютексом.
+    @Volatile
     private var tts: TextToSpeech? = null
+    @Volatile
     private var ready = false
+    @Volatile
     private var lastEngine: String? = null
 
     /**
@@ -164,7 +170,9 @@ class TtsRuntime @Inject constructor(
      * завершиться (onDone) раньше возврата speak(). Прежняя незавершённая фраза
      * перехватывается QUEUE_FLUSH — её onDone вызывается при старте новой
      * (см. [TtsUtteranceRegistry], issue #40).
-     * @param onDone колбэк завершения озвучивания (вызывается на главном потоке).
+     * @param onDone колбэк завершения озвучивания (вызывается на главном потоке;
+     *   при отказе engine.speak() — синхронно в потоке вызывающего кода до
+     *   возврата ошибки, ревью раунд 2).
      * @return null при успехе или [RuntimeError].
      */
     suspend fun speak(text: String, lang: String, onDone: (() -> Unit)? = null): RuntimeError? {
@@ -218,9 +226,16 @@ class TtsRuntime @Inject constructor(
             // извещаем вызывающий экран по тому же паттерну, что onError
             // (колбэк обязателен, иначе флаг «озвучиваем» залипнет до
             // следующей TTS-операции).
+            //
+            // Извещение — СИНХРОННО в потоке вызывающего кода до возврата
+            // ошибки (ревью раунд 2): finish() уже синхронно и атомарно
+            // изымает колбэк, а отдельная корутина на Main могла пересечься
+            // с статус-апдейтом следующей speak()-попытки (залипший флаг
+            // «озвучиваем» новой фразы). Колбэки координатора — потокобезопасные
+            // CAS-мутации StateFlow; main-контракт сохранён для слушателей
+            // остальных путей (onDone/onError, drain в stop()/release()).
             Timber.e("TTS: engine.speak отклонил фразу $utteranceId")
-            val done = utterances.finish(utteranceId)
-            if (done != null) scope.launch(Dispatchers.Main) { done() }
+            utterances.finish(utteranceId)?.invoke()
             RuntimeError.InferenceFailed("tts", "Не удалось озвучить текст")
         } else {
             null

@@ -433,6 +433,10 @@ class TtsPlaybackCoordinator @Inject constructor(
         }
         speakJob = scope.launch {
             try {
+                // Авто-ретрай Piper (путь READY) — незавершённая системная фраза
+                // не должна накладываться на piper-синтез: системный TTS
+                // останавливаем явно, как в piper-ветке runSpeak (ревью раунд 2).
+                ttsRuntime.stop()
                 val error = speakWithPiper(cardId, text, token)
                 if (error != null) finishWithError(error, token)
             } catch (e: CancellationException) {
