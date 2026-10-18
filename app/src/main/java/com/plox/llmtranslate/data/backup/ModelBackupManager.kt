@@ -8,6 +8,7 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -77,6 +78,7 @@ private fun sha256Hex(file: File): String {
 class ModelBackupManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repository: ModelRepository,
+    private val runtimeRouter: RuntimeRouter,
     private val preferences: ModelPreferences,
     private val json: Json
 ) {
@@ -277,6 +279,13 @@ class ModelBackupManager @Inject constructor(
                     skipped++
                     return@forEach
                 }
+
+                // Issue #70: импорт подменяет файлы модели той же id — eviction
+                // кэша движков по образцу promoteExtractedDir (#69) ДО подмены:
+                // иначе LRU-кэш по id продолжает инференс старым нативным
+                // handle до перезапуска процесса, а удаление прежнего файла
+                // снимает живой mmap. Порядок: release -> подмена -> upsert.
+                repository.getById(entry.id)?.let { runtimeRouter.releaseModel(it) }
 
                 // Переименовываем временный файл в целевой.
                 if (moveToTarget(tempFile, targetPath)) {

@@ -9,8 +9,10 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.flowOf
@@ -52,6 +54,7 @@ class ModelBackupManagerRoundTripTest {
     private val context = mockk<Context>(relaxed = true)
     private val contentResolver = mockk<ContentResolver>(relaxed = true)
     private val repository = mockk<ModelRepository>(relaxed = true)
+    private val runtimeRouter = mockk<RuntimeRouter>(relaxed = true)
     private val preferences = mockk<ModelPreferences>(relaxed = true)
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -80,7 +83,8 @@ class ModelBackupManagerRoundTripTest {
         coEvery { preferences.getActiveModelId(any()) } returns null
     }
 
-    private fun backupManager() = ModelBackupManager(context, repository, preferences, json)
+    private fun backupManager() =
+        ModelBackupManager(context, repository, runtimeRouter, preferences, json)
 
     private fun readyModel(
         id: String,
@@ -161,6 +165,42 @@ class ModelBackupManagerRoundTripTest {
             assertEquals("nested-bytes", File(modelsRoot, "nested/stt-model.onnx").readText())
             assertEquals("encoder-bytes", File(modelsRoot, "dir-model/encoder.onnx").readText())
             assertEquals("tokens-bytes", File(modelsRoot, "dir-model/sub/tokens.txt").readText())
+        }
+    }
+
+    /**
+     * Issue #70: повторный импорт из бэкапа подменяет файлы модели той же id —
+     * движок обязан отпустить старый пучок ДО подмены файлов и upsert
+     * (LRU-кэш движков ключуется по id и иначе держит stale-нативный handle).
+     */
+    @Test
+    fun `import releases cached engine bundle for replaced id before upsert`() {
+        val models = prepareModels()
+        coEvery { repository.observeAll() } returns flowOf(models)
+        // Прежняя запись в БД только у t1 (для остальных id — явный null:
+        // relaxed-мок иначе возвращает chained-мок вместо null).
+        coEvery { repository.getById(any()) } returns null
+        val previousT1 = readyModel(
+            "t1", ModelCategory.TRANSLATION, RuntimeType.MARIAN_ONNX,
+            File(modelsRoot, "marian-ru-en.gguf").absolutePath
+        )
+        coEvery { repository.getById("t1") } returns previousT1
+
+        runBlocking {
+            val manager = backupManager()
+            assertTrue("Экспорт должен завершиться успешно", manager.exportToUri(mockk<Uri>()))
+            val result = manager.importFromUri(mockk<Uri>())
+            assertNull("Импорт не должен возвращать ошибку: ${result.error}", result.error)
+            assertEquals(models.size, result.importedCount)
+
+            // release ровно один раз и только по id с прежней записью в БД…
+            coVerify(exactly = 1) { runtimeRouter.releaseModel(previousT1) }
+            coVerify(exactly = 1) { runtimeRouter.releaseModel(any()) }
+            // …и строго до upsert (подмена файлов происходит между ними).
+            coVerifyOrder {
+                runtimeRouter.releaseModel(previousT1)
+                repository.upsert(any())
+            }
         }
     }
 
