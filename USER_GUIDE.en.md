@@ -269,7 +269,17 @@ before the stop is recognized as usual.
 over from another phone (a ZIP export made by this same app) or from a
 computer, without downloading it again. When the imported version replaces an
 already installed model, the model is replaced whole and reloaded from the new
-files — the previous version stops being used at once and its files are deleted.
+files — the previous version stops being used at once, its files are deleted
+and never mix with the files of the new version.
+
+**Can I delete and import a model several times in a row, quickly?** Yes.
+Operations on one model always run strictly one after another, so quick actions
+(deleting right after or right before an import, two imports of the same ZIP)
+cannot damage it: the result is always consistent — the model is either fully
+installed or fully deleted. A failed import (for example, "Model import failed"
+when there is not enough free space) does not destroy an already installed
+model either: it keeps working, and you only need to retry the import after
+freeing up space.
 
 Technical details, the model catalog and building from source are in README.md.
 This guide is also available in Russian: [USER_GUIDE.md](USER_GUIDE.md).
