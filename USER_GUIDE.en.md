@@ -110,9 +110,11 @@ models) together with an estimated memory consumption.
 - Above the result: "Copy translation" (to the clipboard), "Read aloud"
   (loudspeaker button) and the "Add to favorites" star.
 - The microphone in the input field ("Record audio"): one tap starts recording
-  ("● Recording… Tap the microphone to stop"), the second tap stops it and
-  recognizes the speech into text. Allow microphone access when asked the
-  first time.
+  ("● Recording… Tap the microphone to stop" — an elapsed-time counter ticks
+  next to it), the second tap stops it and recognizes the speech into text.
+  Recording stops automatically after 3 minutes: everything captured before
+  that is recognized as usual. Allow microphone access when asked the first
+  time.
 
 ## "History" and "Favorites"
 
@@ -194,7 +196,10 @@ archive: damaged files are skipped (such a model can be re-downloaded or
 imported separately), everything else is restored. File replacement is safe: a
 new file overwrites the old model file only after it has been copied
 successfully — if the copy is interrupted, the previously installed model stays
-intact.
+intact. If a restore or import replaces an already installed model, it will not
+keep translating the old way: the app reloads it from the new files right away,
+without a restart, and the files of the previous version are no longer left
+behind on the phone as junk.
 
 The settings backup includes: interface language and theme, per-language
 speech recognition and read-aloud assignments, the model unloading timeout,
@@ -255,9 +260,16 @@ history/favorites operation, or backup. Usually repeating the action is enough:
 if the failure concerned the History or Favorites list, that list reloads on its
 own and the app keeps working.
 
+**Is there a limit on microphone recording length?** Yes: recording stops
+automatically after 3 minutes so that you cannot forget to turn it off. The
+recording indicator shows how long it has been running; everything captured
+before the stop is recognized as usual.
+
 **Why is there an "Import" button on a model card?** It lets you bring a model
 over from another phone (a ZIP export made by this same app) or from a
-computer, without downloading it again.
+computer, without downloading it again. When the imported version replaces an
+already installed model, the model is replaced whole and reloaded from the new
+files — the previous version stops being used at once and its files are deleted.
 
 Technical details, the model catalog and building from source are in README.md.
 This guide is also available in Russian: [USER_GUIDE.md](USER_GUIDE.md).
