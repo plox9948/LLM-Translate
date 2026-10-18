@@ -10,6 +10,7 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.flowOf
@@ -213,5 +214,102 @@ class ModelBackupManagerRoundTripTest {
             assertEquals(0, result.skippedCount)
             assertEquals("legacy-bytes", File(modelsRoot, "legacy1.gguf").readText())
         }
+    }
+
+    /** Entry манифеста одиночного файла с указанным sha256. */
+    private fun shaEntry(filePathRel: String, sha: String?) = BackupModelEntry(
+        id = "shamod",
+        category = ModelCategory.TRANSLATION.name,
+        displayName = "Sha",
+        description = "d",
+        runtime = RuntimeType.MARIAN_ONNX.name,
+        sizeBytes = 5,
+        ramRequiredMb = 100,
+        languages = listOf("ru"),
+        quality = 1,
+        speed = 1,
+        url = "",
+        urls = emptyList(),
+        sha256 = sha,
+        license = "MIT",
+        minAndroidSdk = 26,
+        recommendedRamMb = 0,
+        relativePath = "$MODELS_PREFIX$filePathRel",
+        isBuiltin = false
+    )
+
+    private fun writeZipWithModel(entry: BackupModelEntry, fileBytes: String) {
+        ZipOutputStream(FileOutputStream(zipFile)).use { zip ->
+            zip.putNextEntry(ZipEntry(ModelBackupManager.MANIFEST_NAME))
+            zip.write(
+                json.encodeToString(
+                    BackupManifest.serializer(),
+                    BackupManifest(version = 1, exportedAt = 0L, models = listOf(entry))
+                ).toByteArray()
+            )
+            zip.closeEntry()
+            zip.putNextEntry(ZipEntry(entry.relativePath))
+            zip.write(fileBytes.toByteArray())
+            zip.closeEntry()
+        }
+    }
+
+    private companion object {
+        const val MODELS_PREFIX = "models/"
+    }
+
+    @Test
+    fun `import skips single-file model whose sha256 mismatches manifest`() {
+        // Манифест обещает один хэш, файл в архиве битый — модель не должна
+        // регистрироваться READY (ревью раунд 9), остальные импортируются.
+        val entry = shaEntry("bad-model.onnx", "0".repeat(64))
+        writeZipWithModel(entry, "legacy-bytes")
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNull(result.error)
+            assertEquals(0, result.importedCount)
+            assertEquals(1, result.skippedCount)
+            coVerify(exactly = 0) { repository.upsert(any()) }
+        }
+    }
+
+    @Test
+    fun `import accepts single-file model whose sha256 matches manifest`() {
+        val expected = sha256HexOf(
+            File(tempFolder.root, "expected-bytes.tmp").apply { writeText("legacy-bytes") }
+        )
+        val entry = shaEntry("good-model.onnx", expected)
+        writeZipWithModel(entry, "legacy-bytes")
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNull(result.error)
+            assertEquals(1, result.importedCount)
+            assertEquals(0, result.skippedCount)
+            assertEquals("legacy-bytes", File(modelsRoot, "good-model.onnx").readText())
+        }
+    }
+
+    /** Чистая проверка [backupShaOk] без Android. */
+    @Test
+    fun `backupShaOk tolerates missing hash and directories but rejects corrupt files`() {
+        val good = File(tempFolder.newFolder("sha"), "m.onnx").apply { writeText("legacy-bytes") }
+        val expected = sha256HexOf(good)
+        val entry = shaEntry("m.onnx", expected)
+        assertTrue(backupShaOk(entry, good))
+        // Битые байты — несовпадение.
+        val bad = File(good.parentFile, "bad.onnx").apply { writeText("corrupted!") }
+        assertTrue(!backupShaOk(entry, bad))
+        // Без хэша (импортированная модель) — сверки нет, ok.
+        assertTrue(backupShaOk(entry.copy(sha256 = null), bad))
+        // Каталог: хэш манифеста относится к архиву, не к содержимому — сверка пропускается.
+        assertTrue(backupShaOk(entry, good.parentFile))
+    }
+
+    /** SHA-256 файла в hex — независимая реализация для теста. */
+    private fun sha256HexOf(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        return file.readBytes().let(digest::digest).joinToString("") { "%02x".format(it) }
     }
 }

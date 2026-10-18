@@ -44,12 +44,40 @@ object SentenceSplitter {
      * @return список непустых сегментов в исходном порядке; пустой список для
      *         пустого ввода.
      */
-    fun split(text: String): List<String> {
+    fun split(text: String): List<String> = splitWithSeparators(text).first
+
+    /**
+     * Разбить текст на предложения вместе с разделителями между ними
+     * (ревью раунд 9: склейка перевода через пробел теряла переводы строк
+     * исходника).
+     * @return пара (сегменты, разделители); разделителей ровно
+     *         `сегменты.size - 1`: "\n" если между сегментами в [text] есть
+     *         перевод строки, иначе " ".
+     */
+    fun splitWithSeparators(text: String): Pair<List<String>, List<String>> {
         val segments = ArrayList<String>()
+        val separators = ArrayList<String>()
         val current = StringBuilder()
+        // Позиции сырых фрагментов в исходном тексте: по зазору между
+        // закрытым сегментом и началом следующего определяется разделитель.
+        var rawStart = 0
+        var prevRawEnd = -1
+
+        fun closeRawSegment(rawEnd: Int) {
+            val segment = current.toString().trim()
+            if (segment.isEmpty()) return
+            if (segments.isNotEmpty()) {
+                val gap = text.substring(prevRawEnd, rawStart)
+                separators.add(if (gap.contains('\n')) "\n" else " ")
+            }
+            segments.add(segment)
+            prevRawEnd = rawEnd
+        }
+
         var i = 0
         while (i < text.length) {
             val c = text[i]
+            if (current.isEmpty()) rawStart = i
             current.append(c)
             val boundary = c == '\n' ||
                 (
@@ -57,14 +85,13 @@ object SentenceSplitter {
                         !(c == '.' && isAbbreviation(text, i))
                     )
             if (boundary) {
-                val segment = current.toString().trim()
-                if (segment.isNotEmpty()) segments.add(segment)
+                closeRawSegment(i + 1)
                 current.setLength(0)
             }
             i++
         }
-        current.toString().trim().let { if (it.isNotEmpty()) segments.add(it) }
-        return segments
+        closeRawSegment(text.length)
+        return segments to separators
     }
 
     /**

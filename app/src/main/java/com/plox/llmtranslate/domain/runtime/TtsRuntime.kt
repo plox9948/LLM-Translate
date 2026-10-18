@@ -213,6 +213,14 @@ class TtsRuntime @Inject constructor(
 
         val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
         return if (result == TextToSpeech.ERROR) {
+            // Отказ старта озвучивания: слушатель onStart/onDone/onError для
+            // этой utteranceId не сработает — изымаем её колбэк из реестра и
+            // извещаем вызывающий экран по тому же паттерну, что onError
+            // (колбэк обязателен, иначе флаг «озвучиваем» залипнет до
+            // следующей TTS-операции).
+            Timber.e("TTS: engine.speak отклонил фразу $utteranceId")
+            val done = utterances.finish(utteranceId)
+            if (done != null) scope.launch(Dispatchers.Main) { done() }
             RuntimeError.InferenceFailed("tts", "Не удалось озвучить текст")
         } else {
             null

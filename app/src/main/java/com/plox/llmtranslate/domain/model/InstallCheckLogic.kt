@@ -8,6 +8,13 @@ import java.util.Locale
 object InstallCheckLogic {
 
     /**
+     * Запас свободного места к размеру модели. Для archive-установок пик
+     * распаковки ~(архив + распакованное содержимое) ≈ 2x размера, прежний
+     * x1.2 пропускал загрузку, которая затем не помещалась при распаковке.
+     */
+    private const val DISK_HEADROOM_FACTOR = 2.0
+
+    /**
      * Проверить возможность установки модели на устройство.
      * @param card карточка модели
      * @param device информация об устройстве
@@ -20,7 +27,7 @@ object InstallCheckLogic {
             )
         }
         val warnings = mutableListOf<String>()
-        if (device.freeDiskBytes < card.sizeBytes * 1.2) {
+        if (device.freeDiskBytes < card.sizeBytes * DISK_HEADROOM_FACTOR) {
             warnings.add(
                 "Мало места на диске: нужно ${formatSize(card.sizeBytes)}"
             )

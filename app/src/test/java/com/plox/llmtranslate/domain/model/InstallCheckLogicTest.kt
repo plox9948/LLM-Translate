@@ -62,6 +62,25 @@ class InstallCheckLogicTest {
     }
 
     @Test
+    fun `warning when free space covers size but not unpack peak of 2x`() {
+        // Пик archive-распаковки ~2x размера: 1.5x места — уже предупреждение
+        // (аудит: прежний порог x1.2 занижен).
+        val size = 500L * 1024 * 1024
+        val device = goodDevice.copy(freeDiskBytes = size * 3 / 2)
+        val result = InstallCheckLogic.evaluate(card(sizeBytes = size), device)
+        assertTrue(result is InstallCheck.Warning)
+        assertTrue((result as InstallCheck.Warning).message.contains("Мало места"))
+    }
+
+    @Test
+    fun `ready when free space covers the 2x unpack peak`() {
+        val size = 500L * 1024 * 1024
+        val device = goodDevice.copy(freeDiskBytes = size * 2)
+        val result = InstallCheckLogic.evaluate(card(sizeBytes = size), device)
+        assertEquals(InstallCheck.Ready, result)
+    }
+
+    @Test
     fun `warning when not enough ram`() {
         val device = goodDevice.copy(totalRamMb = 2048)
         val result = InstallCheckLogic.evaluate(card(ramRequiredMb = 1500), device)

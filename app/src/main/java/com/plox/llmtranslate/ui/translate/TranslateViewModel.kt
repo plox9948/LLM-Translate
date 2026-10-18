@@ -702,7 +702,9 @@ class TranslateViewModel @Inject constructor(
      * Перевести текст движком по предложениям: tiny-модели Marian теряют хвост
      * на длинном многосоставном входе (ранний EOS после первой фразы), поэтому
      * вход разбивается [SentenceSplitter], сегменты переводятся по отдельности
-     * и склеиваются через пробел.
+     * и склеиваются разделителями границ исходника: где граница содержала
+     * перевод строки — сохраняем «\n», прочие границы — пробел
+     * (ревью раунд 9: прежняя склейка пробелом теряла переносы строк ввода).
      */
     private suspend fun translateSegments(
         engine: TranslationEngine,
@@ -710,13 +712,18 @@ class TranslateViewModel @Inject constructor(
         from: String,
         to: String
     ): Result<String> {
-        val segments = SentenceSplitter.split(text).ifEmpty { listOf(text) }
+        val (segments, separators) = SentenceSplitter.splitWithSeparators(text)
+        if (segments.isEmpty()) return engine.translate(text, from, to)
         if (segments.size == 1) return engine.translate(segments.first(), from, to)
 
         val translated = StringBuilder()
-        for (segment in segments) {
-            engine.translate(segment, from, to).fold(
-                onSuccess = { translated.append(it).append(' ') },
+        for (index in segments.indices) {
+            engine.translate(segments[index], from, to).fold(
+                onSuccess = { out ->
+                    // Разделитель перед сегментом — каким он был в исходнике.
+                    if (index > 0) translated.append(separators[index - 1])
+                    translated.append(out.trim())
+                },
                 onFailure = { return Result.failure(it) }
             )
         }

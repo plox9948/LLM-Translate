@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.domain.runtime
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -91,6 +92,21 @@ class TtsUtteranceRegistryTest {
         // вызывающим кодом (issue #40 — залипший флаг «озвучиваем»).
         assertSame(doneA, registry.drain().single())
 
+        assertNull(registry.finish("a"))
+        assertTrue(registry.start("b", null).isEmpty())
+    }
+
+    @Test
+    fun `speak error finish removes callback and late onDone is ignored`() {
+        val registry = TtsUtteranceRegistry()
+        var invoked = 0
+        registry.start("a") { invoked++ }
+
+        // Отказ engine.speak(): слушатель для utteranceId не придёт, фраза
+        // изымается finish() (тот же путь, что onError). Колбэк выдаётся
+        // однократно; запоздалый onDone с тем же id (finish повторно)
+        // возвращает null — извещение не дублируется и реестр пуст.
+        assertNotNull(registry.finish("a"))
         assertNull(registry.finish("a"))
         assertTrue(registry.start("b", null).isEmpty())
     }

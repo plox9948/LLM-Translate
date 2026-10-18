@@ -230,8 +230,9 @@ class TtsPlaybackCoordinator @Inject constructor(
      */
     fun speak(text: String, language: String) {
         if (text.isBlank()) return
-        // Прежняя piper-озвучка координатора снимается; системный TTS
-        // перехватывает новую фразу сам (QUEUE_FLUSH).
+        // Прежняя piper-озвучка координатора снимается; в ветке системного
+        // TTS новую фразу перехватывает сам движок (QUEUE_FLUSH), в Piper-ветке
+        // незавершённая системная озвучка останавливается явно (runSpeak).
         speakJob?.cancel()
         val token = utteranceToken.incrementAndGet()
         val watching = watchedDownloadId != null
@@ -283,6 +284,12 @@ class TtsPlaybackCoordinator @Inject constructor(
     private suspend fun runSpeak(text: String, language: String, token: Long) {
         when (val choice = TtsModelSelector.select(language, ttsAssignments, piperModels)) {
             is TtsModelSelector.TtsChoice.Model -> {
+                // Смена движка на Piper: прежняя системная фраза не должна
+                // накладываться на piper-синтез — отмена speakJob снимает
+                // только piper-озвучку, системный TTS останавливаем явно
+                // (pending-колбэки изымаются stop()-ом, флаг новой фразы
+                // не трогает — фильтр по токену).
+                ttsRuntime.stop()
                 val error = speakWithPiper(choice.id, text, token)
                 if (error != null) finishWithError(error, token)
             }

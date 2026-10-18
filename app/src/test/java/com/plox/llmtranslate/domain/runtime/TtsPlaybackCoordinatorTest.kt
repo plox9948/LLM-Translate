@@ -151,6 +151,9 @@ class TtsPlaybackCoordinatorTest {
         coVerify(exactly = 1) { piperRuntime.load(any(), any()) }
         coVerify(exactly = 1) { piperRuntime.speak("привет мир", any(), any(), any()) }
         coVerify(exactly = 0) { ttsRuntime.speak(any(), any(), any()) }
+        // Piper-ветка останавливает системный TTS: незавершённая системная
+        // фраза не должна накладываться на piper-синтез (ревью раунд 9).
+        verify(exactly = 1) { ttsRuntime.stop() }
         assertTrue(coordinator.status.value.isSpeaking)
         assertEquals("ru", coordinator.status.value.language)
     }

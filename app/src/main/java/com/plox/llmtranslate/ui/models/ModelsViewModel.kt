@@ -16,6 +16,7 @@ import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.ModelFileNaming
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.TtsEngines
 import com.plox.llmtranslate.domain.model.TtsModelSelector
@@ -382,15 +383,14 @@ class ModelsViewModel @Inject constructor(
         if (!model.isReady) return
         val path = model.filePath?.takeIf { it.isNotBlank() } ?: return
         val source = File(path)
-        val ext = path.substringAfterLast('.', "").lowercase()
-        // Каталог модели упаковывается в zip — расширение должно быть .zip,
-        // чтобы повторный импорт распознал ZIP-экспорт.
-        val finalExt = when {
-            ext in listOf("gguf", "onnx", "zip") -> ext
-            source.isDirectory -> "zip"
-            else -> "gguf"
-        }
-        val request = ExportRequest(model.id, "${model.displayName}.$finalExt")
+        // Имя экспорта — из фактического расширения файла/ displayName
+        // (каталог → .zip): выдуманное «.gguf» для путей без расширения
+        // импорт отвергал (формат мёртв), round-trip экспорт→импорт own-моделей
+        // был сломан (ревью раунд 9). Правила — [ModelFileNaming.exportFileName].
+        val request = ExportRequest(
+            model.id,
+            ModelFileNaming.exportFileName(path, model.displayName, source.isDirectory)
+        )
         pendingExportRequest = request
         // exportingModelId ставится сразу: карточка заблокирована на всё время
         // выбора цели в пикере и записи ZIP (issue #31), даже когда

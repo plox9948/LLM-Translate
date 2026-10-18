@@ -15,6 +15,7 @@ import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.ModelFileNaming
 import com.plox.llmtranslate.domain.model.ModelImportMeta
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
@@ -681,21 +682,13 @@ class ModelManagerImpl @Inject constructor(
     }
 
     /**
-     * Угадать рантайм по имени файла. null — формат не распознан: импорт
-     * отклоняется вместо записи с битым умолчанием MARIAN_ONNX.
+     * Угадать рантайм по имени файла (реализация — [ModelFileNaming.guessRuntime],
+     * общая с round-trip тестом именования экспорта). null — формат не распознан:
+     * импорт отклоняется (с предупреждением в лог) вместо записи с битым
+     * умолчанием MARIAN_ONNX.
      */
-    private fun guessRuntime(fileName: String): RuntimeType? {
-        val lower = fileName.lowercase()
-        return when {
-            lower.contains("indictrans") -> RuntimeType.INDICTRANS_ONNX
-            lower.contains("sherpa") || DownloadLayout.isArchive(lower) ->
-                // Архивы (.zip/.tar.bz2/.tar.gz) без явных признаков ONNX/Marian
-                // — пачки sherpa.
-                RuntimeType.SHERPA
-            lower.endsWith(".onnx") -> RuntimeType.MARIAN_ONNX // явный ONNX — Marian fallback
-            else -> null
-        }
-    }
+    private fun guessRuntime(fileName: String): RuntimeType? =
+        ModelFileNaming.guessRuntime(fileName)
 
     override suspend fun deviceInfo(): DeviceInfo = deviceInfoProvider.get()
 }

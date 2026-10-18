@@ -37,6 +37,35 @@ internal fun assignmentOps(
 }
 
 /**
+ * Сверка контрольной суммы распакованного файла модели с хэшем манифеста
+ * (ревью раунд 9). ok=true когда сверка невозможна корректно: [BackupModelEntry.sha256]
+ * пуст (импортированная модель без хэша) либо модель — каталог (хэш каталожных
+ * установок относится к скачанному архиву/пачке URL, а не к отдельным файлам
+ * содержимого). Для одиночного файла с непустым хэшем — строгое сравнение
+ * SHA-256 байт файла с hex-хэшем манифеста (регистронезависимо).
+ */
+internal fun backupShaOk(entry: BackupModelEntry, file: File): Boolean {
+    val expected = entry.sha256?.takeIf { it.isNotBlank() } ?: return true
+    if (file.isDirectory) return true
+    val actual = runCatching { sha256Hex(file) }.getOrNull() ?: return false
+    return actual.equals(expected, ignoreCase = true)
+}
+
+/** SHA-256 файла в hex (нижний регистр). */
+private fun sha256Hex(file: File): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+    file.inputStream().buffered().use { input ->
+        val buffer = ByteArray(8192)
+        while (true) {
+            val read = input.read(buffer)
+            if (read <= 0) break
+            digest.update(buffer, 0, read)
+        }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
+}
+
+/**
  * Менеджер резервного копирования моделей и настроек.
  *
  * Формат архива:
@@ -198,6 +227,20 @@ class ModelBackupManager @Inject constructor(
 
                 if (tempFile == null) {
                     Timber.w("Файл модели не найден в архиве: ${entry.relativePath}")
+                    skipped++
+                    return@forEach
+                }
+
+                // Контрольная сумма из манифеста (ревью раунд 9): битый файл
+                // модели в архиве не должен регистрироваться READY. Каталоги
+                // не проверяем — [BackupModelEntry.sha256] у archive/мультифайловых
+                // установок это хэш скачанного файла (архива), а не распакованного
+                // содержимого; одиночные файлы без хэша (импортированные модели)
+                // сверить нечем.
+                if (!backupShaOk(entry, tempFile)) {
+                    Timber.w(
+                        "SHA-256 файла модели ${entry.id} в архиве не совпала с манифестом — пропуск"
+                    )
                     skipped++
                     return@forEach
                 }

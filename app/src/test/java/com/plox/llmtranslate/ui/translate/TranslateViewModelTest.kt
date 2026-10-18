@@ -21,6 +21,7 @@ import com.plox.llmtranslate.domain.runtime.TtsDownloadStatus
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackStatus
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
+import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -386,5 +387,52 @@ class TranslateViewModelTest {
         // Выход из ERROR — флаг снимается.
         status.value = status.value.copy(downloadStatus = TtsDownloadStatus.NONE)
         assertFalse(viewModel.uiState.value.ttsDownloadFailed)
+    }
+
+    // ── Разделители склейки сегментов сохраняют переносы строк (ревью раунд 9) ──
+
+    /** Echo-движок: segment → «segment» через [runtimeRouter] для MARIAN_SLIMT. */
+    private fun stubEchoEngine(): TranslationEngine {
+        every { modelManager.installedModels(ModelCategory.TRANSLATION) } returns
+            flowOf(listOf(readyTranslationRuEn()))
+        val engine = mockk<TranslationEngine>(relaxed = true)
+        coEvery { engine.ensureLoaded(any()) } returns null
+        coEvery { engine.translate(any(), any(), any()) } answers {
+            Result.success("«${firstArg<String>()}»")
+        }
+        every { runtimeRouter.translationEngine(RuntimeType.MARIAN_SLIMT) } returns engine
+        return engine
+    }
+
+    @Test
+    fun `translate joins segments preserving newline boundary of source`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val engine = stubEchoEngine()
+        createViewModel()
+        viewModel.onSourceLangChange(TranslateLanguage.RU)
+        viewModel.onTargetLangChange(TranslateLanguage.EN)
+        viewModel.onInputTextChanged("Первый абзац.\nВторой абзац.")
+
+        viewModel.translate()
+
+        assertEquals("«Первый абзац.»\n«Второй абзац.»", viewModel.uiState.value.resultText)
+        coVerify(exactly = 2) { engine.translate(any(), "ru", "en") }
+    }
+
+    @Test
+    fun `translate joins sentence-boundary segments with a space`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        stubEchoEngine()
+        createViewModel()
+        viewModel.onSourceLangChange(TranslateLanguage.RU)
+        viewModel.onTargetLangChange(TranslateLanguage.EN)
+        viewModel.onInputTextChanged("Первое предложение. Второе предложение.")
+
+        viewModel.translate()
+
+        assertEquals(
+            "«Первое предложение.» «Второе предложение.»",
+            viewModel.uiState.value.resultText
+        )
     }
 }
