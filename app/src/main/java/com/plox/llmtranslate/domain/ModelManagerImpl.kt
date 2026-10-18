@@ -29,6 +29,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import timber.log.Timber
@@ -64,6 +66,16 @@ class ModelManagerImpl @Inject constructor(
 
     private val modelsDir: File
         get() = context.getExternalFilesDir("models") ?: context.filesDir
+
+    /**
+     * Issue #75: сериализация импортов — promoteExtractedDir работает с общим
+     * staging-каталогом `<id>.promoting`, и два параллельных импорта одной id
+     * стартовой уборкой deleteRecursively рвали staging друг друга (в цель
+     * попадала смесь файлов двух версий при READY-записи в БД). Взаимной
+     * блокировки с мьютексами движков нет: importFromUri вызывается только из
+     * UI, под engineMutex импорт не выполняется.
+     */
+    private val importMutex = Mutex()
 
     override val catalog: Flow<List<ModelCard>> = catalogProvider.catalog
 
@@ -255,42 +267,47 @@ class ModelManagerImpl @Inject constructor(
                     return@withContext importZip(uri, fileName)
                 }
 
-                val targetFile = copyFromUri(uri) ?: return@withContext null
+                // Issue #75: исполняемое тело одиночного импорта под importMutex —
+                // общая точка входа с импортом ZIP (общий staging по id, upsert
+                // и чистка прежних файлов одной модели).
+                importMutex.withLock {
+                    val targetFile = copyFromUri(uri) ?: return@withContext null
 
-                val runtime = guessRuntime(fileName)
-                if (runtime == null) {
-                    Timber.w("Неизвестный формат файла модели $fileName — импорт отклонён")
-                    targetFile.delete()
-                    return@withContext null
+                    val runtime = guessRuntime(fileName)
+                    if (runtime == null) {
+                        Timber.w("Неизвестный формат файла модели $fileName — импорт отклонён")
+                        targetFile.delete()
+                        return@withContext null
+                    }
+
+                    val modelId = fileName.removeSuffix(".gguf").removeSuffix(".onnx")
+                    // Старая запись под этим id (до upsert) — нужна для удаления
+                    // осиротевшего файла предыдущего импорта (issue #40).
+                    val previousRecord = repository.getById(modelId)
+                    val model = guessedImportedModel(
+                        modelId = modelId,
+                        sourceName = fileName,
+                        runtime = runtime,
+                        size = targetFile.length(),
+                        filePath = targetFile.absolutePath
+                    )
+                    repository.upsert(model)
+                    // Issue #68: повторный импорт подменяет бинарник той же id —
+                    // движки обязаны забыть старый пучок (тот же eviction, что в
+                    // delete()): иначе LRU-кэш по id молча продолжает инференс
+                    // старым нативным handle, а удаление осиротевшего файла ниже
+                    // снимает живой mmap. Порядок: сначала releaseModel (движок
+                    // под своим мьютексом дожидается окончания активного инференса
+                    // и отпускает старый файл), затем удаление файла.
+                    previousRecord?.let { runtimeRouter.releaseModel(it) }
+                    // Повторный импорт той же модели: copyFromUri каждый раз пишет
+                    // новый imported_* файл, старый осиротел (issue #40); если же
+                    // прежняя запись была каталожной моделью — осиротел её пучок
+                    // рантайма (issue #69).
+                    deleteSupersededImportFiles(previousRecord, targetFile)
+                    Timber.d("Импортирована модель $modelId из $uri")
+                    modelId
                 }
-
-                val modelId = fileName.removeSuffix(".gguf").removeSuffix(".onnx")
-                // Старая запись под этим id (до upsert) — нужна для удаления
-                // осиротевшего файла предыдущего импорта (issue #40).
-                val previousRecord = repository.getById(modelId)
-                val model = guessedImportedModel(
-                    modelId = modelId,
-                    sourceName = fileName,
-                    runtime = runtime,
-                    size = targetFile.length(),
-                    filePath = targetFile.absolutePath
-                )
-                repository.upsert(model)
-                // Issue #68: повторный импорт подменяет бинарник той же id —
-                // движки обязаны забыть старый пучок (тот же eviction, что в
-                // delete()): иначе LRU-кэш по id молча продолжает инференс
-                // старым нативным handle, а удаление осиротевшего файла ниже
-                // снимает живой mmap. Порядок: сначала releaseModel (движок
-                // под своим мьютексом дожидается окончания активного инференса
-                // и отпускает старый файл), затем удаление файла.
-                previousRecord?.let { runtimeRouter.releaseModel(it) }
-                // Повторный импорт той же модели: copyFromUri каждый раз пишет
-                // новый imported_* файл, старый осиротел (issue #40); если же
-                // прежняя запись была каталожной моделью — осиротел её пучок
-                // рантайма (issue #69).
-                deleteSupersededImportFiles(previousRecord, targetFile)
-                Timber.d("Импортирована модель $modelId из $uri")
-                modelId
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка импорта модели из $uri")
                 null
@@ -483,75 +500,80 @@ class ModelManagerImpl @Inject constructor(
      * совпадает с карточкой каталога. Иначе параметры угадываются по имени.
      */
     private suspend fun importZip(uri: Uri, sourceName: String): String? {
-        val tempDir = File(context.cacheDir, "model_import_${System.currentTimeMillis()}")
-        try {
-            tempDir.mkdirs()
-            var meta: ModelImportMeta? = null
-            var fileCount = 0
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                ZipInputStream(input.buffered()).use { zip ->
-                    var entry = zip.nextEntry
-                    while (entry != null) {
-                        val name = entry.name
-                        if (entry.isDirectory) {
+        // Issue #75: всё тело ZIP-импорта под importMutex — общий с одиночным
+        // импортом (staging `<id>.promoting`, upsert и чистка прежних файлов
+        // одной модели; параллельные импорты одной id иначе рвут staging).
+        importMutex.withLock {
+            val tempDir = File(context.cacheDir, "model_import_${System.currentTimeMillis()}")
+            try {
+                tempDir.mkdirs()
+                var meta: ModelImportMeta? = null
+                var fileCount = 0
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    ZipInputStream(input.buffered()).use { zip ->
+                        var entry = zip.nextEntry
+                        while (entry != null) {
+                            val name = entry.name
+                            if (entry.isDirectory) {
+                                zip.closeEntry()
+                                entry = zip.nextEntry
+                                continue
+                            }
+                            if (name == META_ENTRY_NAME) {
+                                val content = String(zip.readBytes(), Charsets.UTF_8)
+                                meta = try {
+                                    json.decodeFromString(ModelImportMeta.serializer(), content)
+                                } catch (e: Exception) {
+                                    Timber.w(e, "Некорректная метаданная в ZIP $sourceName")
+                                    null
+                                }
+                            } else {
+                                val outFile = File(tempDir, name)
+                                // Защита от zip-slip: файл не должен выходить за пределы временного каталога.
+                                val canonicalTemp = tempDir.canonicalPath
+                                if (!outFile.canonicalPath.startsWith(canonicalTemp + File.separator)) {
+                                    Timber.w("ZIP-запись вне каталога, пропущена: $name")
+                                } else {
+                                    outFile.parentFile?.mkdirs()
+                                    outFile.outputStream().use { zip.copyTo(it) }
+                                    fileCount++
+                                }
+                            }
                             zip.closeEntry()
                             entry = zip.nextEntry
-                            continue
                         }
-                        if (name == META_ENTRY_NAME) {
-                            val content = String(zip.readBytes(), Charsets.UTF_8)
-                            meta = try {
-                                json.decodeFromString(ModelImportMeta.serializer(), content)
-                            } catch (e: Exception) {
-                                Timber.w(e, "Некорректная метаданная в ZIP $sourceName")
-                                null
-                            }
-                        } else {
-                            val outFile = File(tempDir, name)
-                            // Защита от zip-slip: файл не должен выходить за пределы временного каталога.
-                            val canonicalTemp = tempDir.canonicalPath
-                            if (!outFile.canonicalPath.startsWith(canonicalTemp + File.separator)) {
-                                Timber.w("ZIP-запись вне каталога, пропущена: $name")
-                            } else {
-                                outFile.parentFile?.mkdirs()
-                                outFile.outputStream().use { zip.copyTo(it) }
-                                fileCount++
-                            }
-                        }
-                        zip.closeEntry()
-                        entry = zip.nextEntry
                     }
                 }
-            }
-            if (fileCount == 0) {
-                Timber.w("ZIP не содержит файлов модели: $sourceName")
+                if (fileCount == 0) {
+                    Timber.w("ZIP не содержит файлов модели: $sourceName")
+                    return null
+                }
+
+                // Issue #69: eviction кэша движков выполняется ВНУТРИ
+                // promoteExtractedDir до перезаписи файлов каталога (см. его KDoc),
+                // здесь остаётся только регистрация новой записи.
+                val model = meta?.let { modelFromMeta(it, tempDir) }
+                    ?: modelFromZipName(sourceName, tempDir)
+                    ?: return null
+
+                // Issue #72: прежняя запись той же id читается ДО upsert —
+                // ZIP-импорт, замещающий одиночный импорт, осиротевший прежний
+                // imported_* файл (или пучок по другому пути). Eviction движка
+                // уже выполнен внутри promoteExtractedDir (releaseModel до
+                // copyRecursively), здесь остаётся чистка прежнего пути; guard
+                // oldPath == newPath внутри deleteSupersededImportFiles не даст
+                // удалить только что промоутенный целевой каталог.
+                val previousRecord = repository.getById(model.id)
+                repository.upsert(model)
+                model.filePath?.let { deleteSupersededImportFiles(previousRecord, File(it)) }
+                Timber.d("Импортирована модель ${model.id} (ZIP $sourceName)")
+                return model.id
+            } catch (e: Exception) {
+                Timber.e(e, "Ошибка импорта ZIP-модели из $uri")
                 return null
+            } finally {
+                tempDir.deleteRecursively()
             }
-
-            // Issue #69: eviction кэша движков выполняется ВНУТРИ
-            // promoteExtractedDir до перезаписи файлов каталога (см. его KDoc),
-            // здесь остаётся только регистрация новой записи.
-            val model = meta?.let { modelFromMeta(it, tempDir) }
-                ?: modelFromZipName(sourceName, tempDir)
-                ?: return null
-
-            // Issue #72: прежняя запись той же id читается ДО upsert —
-            // ZIP-импорт, замещающий одиночный импорт, осиротевший прежний
-            // imported_* файл (или пучок по другому пути). Eviction движка
-            // уже выполнен внутри promoteExtractedDir (releaseModel до
-            // copyRecursively), здесь остаётся чистка прежнего пути; guard
-            // oldPath == newPath внутри deleteSupersededImportFiles не даст
-            // удалить только что промоутенный целевой каталог.
-            val previousRecord = repository.getById(model.id)
-            repository.upsert(model)
-            model.filePath?.let { deleteSupersededImportFiles(previousRecord, File(it)) }
-            Timber.d("Импортирована модель ${model.id} (ZIP $sourceName)")
-            return model.id
-        } catch (e: Exception) {
-            Timber.e(e, "Ошибка импорта ZIP-модели из $uri")
-            return null
-        } finally {
-            tempDir.deleteRecursively()
         }
     }
 

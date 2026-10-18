@@ -21,7 +21,10 @@ import io.mockk.mockkStatic
 import io.mockk.spyk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -529,6 +532,65 @@ class ModelManagerTest {
         // Staging удалён, записей-остатков в каталоге рантайма нет.
         assertFalse(File(File(modelsDir, "SHERPA"), "zip-model.promoting").exists())
         assertFalse(File(File(modelsDir, "SHERPA"), "zip-model.old").exists())
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `concurrent zip imports of the same id are serialized`() = runBlocking<Unit> {
+        // Issue #75: два параллельных ZIP-импорта одной id работали с общим
+        // staging `<id>.promoting` — вторая стартовая уборка deleteRecursively
+        // рвала staging первого посреди копирования (смесь версий при READY).
+        // Seam copyExtractedToStaging задерживает копирование; счётчик активных
+        // копирований не должен превышать 1, целевой каталог — ровно из одной
+        // версии без перемешивания и без остатков .promoting/.old.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        var current: InstalledModel? = null
+        coEvery { repository.getById("zip-model") } answers { current }
+        coEvery { repository.upsert(any()) } answers {
+            current = firstArg()
+            Unit
+        }
+
+        val managerSpy = spyk(manager)
+        val active = java.util.concurrent.atomic.AtomicInteger(0)
+        val maxActive = java.util.concurrent.atomic.AtomicInteger(0)
+        every { managerSpy.copyExtractedToStaging(any(), any()) } answers {
+            val now = active.incrementAndGet()
+            maxActive.updateAndGet { m -> maxOf(m, now) }
+            Thread.sleep(80)
+            val copied = callOriginal()
+            active.decrementAndGet()
+            copied
+        }
+
+        val zip = zipOf(mapOf("a.bin" to byteArrayOf(1), "b.bin" to byteArrayOf(2)))
+        every { context.contentResolver.openInputStream(any()) } answers {
+            ByteArrayInputStream(zip)
+        }
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "zip-model.zip"
+
+        val first = async { managerSpy.importFromUri(uri) }
+        val second = async { managerSpy.importFromUri(uri) }
+        joinAll(first, second)
+
+        assertEquals("zip-model", first.await())
+        assertEquals("zip-model", second.await())
+        assertEquals(
+            "копирования не должны перекрываться",
+            1,
+            maxActive.get()
+        )
+        val bundleDir = File(File(modelsDir, "SHERPA"), "zip-model")
+        val names = bundleDir.walkTopDown().filter { it.isFile }.map { it.name }.toSet()
+        assertEquals(setOf("a.bin", "b.bin"), names)
+        assertArrayEquals(byteArrayOf(1), File(bundleDir, "a.bin").readBytes())
+        assertArrayEquals(byteArrayOf(2), File(bundleDir, "b.bin").readBytes())
+        val runtimeDir = File(modelsDir, "SHERPA")
+        assertTrue(runtimeDir.listFiles()!!.none { it.name.endsWith(".promoting") })
+        assertTrue(runtimeDir.listFiles()!!.none { it.name.endsWith(".old") })
         modelsDir.deleteRecursively()
     }
 
