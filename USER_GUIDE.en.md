@@ -124,6 +124,11 @@ models) together with an estimated memory consumption.
   source text and the translation (case-insensitive). Cards have "Read source
   aloud" and "Read translation aloud" buttons; the star removes the entry from
   favorites; tapping a card goes back to "Translate".
+- If an operation on entries fails (saving, deleting, clearing, adding to
+  favorites), the app says so in a clear message in the interface language. When
+  the database misbehaves the app does not close: the History and Favorites lists
+  reload automatically, and the cause is shown as a message like "Failed to load
+  history".
 
 ## The "Settings" screen
 
@@ -186,7 +191,10 @@ models) together with an estimated memory consumption.
 
 While restoring, model files are checked against the checksums stored in the
 archive: damaged files are skipped (such a model can be re-downloaded or
-imported separately), everything else is restored.
+imported separately), everything else is restored. File replacement is safe: a
+new file overwrites the old model file only after it has been copied
+successfully — if the copy is interrupted, the previously installed model stays
+intact.
 
 The settings backup includes: interface language and theme, per-language
 speech recognition and read-aloud assignments, the model unloading timeout,
@@ -233,6 +241,19 @@ permission is not granted…" — allow microphone access in the app settings;
 STT model for the language (right from the "Speech recognition" section of the
 reminder on the "Translate" screen) and assign the language with the "Speech
 recognition language:" chips on the "Models" screen.
+
+**Instead of a Russian ⇄ English translation, a model loading error appeared.**
+If the model file (language pack) is damaged or does not fit the app, the app now
+reports a loading error instead of producing nonsense text. Delete such a model
+on the "Models" screen and download or import it again (for example, from a
+backup made on another device).
+
+**The app showed a "Failed to…" message — what should I do?** Error messages are
+uniform and appear in the interface language (Russian, English, Nepali) and say
+exactly what failed: translation, recognition, microphone recording, a
+history/favorites operation, or backup. Usually repeating the action is enough:
+if the failure concerned the History or Favorites list, that list reloads on its
+own and the app keeps working.
 
 **Why is there an "Import" button on a model card?** It lets you bring a model
 over from another phone (a ZIP export made by this same app) or from a
