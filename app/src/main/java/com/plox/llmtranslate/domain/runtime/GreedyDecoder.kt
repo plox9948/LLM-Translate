@@ -44,8 +44,8 @@ import java.util.Optional
  * закрываются в finally так же, как при исключении, и
  * [kotlinx.coroutines.CancellationException] всплывает выше неглотаемой.
  *
- * @return список сгенерированных id (вместе с [initialIds] и, при достижении,
- *         EOS).
+ * @return результат цикла [DecodeOutcome]: сгенерированные id (вместе с
+ *         [initialIds] и, при достижении, EOS) плюс флаги остановки.
  * @throws любое исключение из коллбэков пробрасывается вызывающему движку.
  */
 internal suspend fun greedyDecode(
@@ -63,7 +63,7 @@ internal suspend fun greedyDecode(
         firstResult: OrtSession.Result?,
         prevResult: OrtSession.Result?
     ) -> OrtSession.Result
-): List<Int> = greedyDecodeCore(
+): DecodeOutcome = greedyDecodeCore(
     initialIds = initialIds,
     startTokenId = startTokenId,
     maxNewTokens = maxNewTokens,
@@ -90,6 +90,19 @@ internal suspend fun greedyDecode(
 )
 
 /**
+ * Результат greedy-цикла: список сгенерированных id (включая [initialIds] и,
+ * при достижении, EOS) и флаги остановки:
+ * - [eosReached] — pickToken вернул EOS (штатная остановка);
+ * - [hitMaxLength] — цикл выполнил все maxNewTokens шагов без EOS —
+ *   вероятное вырождение декодера (зацикливание), см. isDegenerateOutput.
+ */
+internal data class DecodeOutcome(
+    val generated: List<Int>,
+    val eosReached: Boolean,
+    val hitMaxLength: Boolean
+)
+
+/**
  * Ядро greedy-цикла, не зависящее от ONNX Runtime: типы входа шага и
  * результата шага обобщены ([I]/[R]) и обязаны быть [AutoCloseable].
  * [greedyDecode] — production-обёртка с ORT-типами; юнит-тесты прогоняют
@@ -97,6 +110,11 @@ internal suspend fun greedyDecode(
  * инициализируют нативную библиотеку (вне Android это невозможно).
  *
  * Вся логика владения ресурсами и проверок отмены — здесь.
+ *
+ * Флаги результата:
+ * - `eosReached` — [pickToken] вернул [eosTokenId] (штатная остановка);
+ * - `hitMaxLength` — цикл выполнил все [maxNewTokens] шагов без EOS
+ *   (потенциальное вырождение декодера — см. isDegenerateOutput).
  */
 internal suspend fun <I : AutoCloseable, R : AutoCloseable> greedyDecodeCore(
     initialIds: List<Int>,
@@ -112,10 +130,11 @@ internal suspend fun <I : AutoCloseable, R : AutoCloseable> greedyDecodeCore(
         firstResult: R?,
         prevResult: R?
     ) -> R
-): List<Int> {
+): DecodeOutcome {
     val generated = initialIds.toMutableList()
     var firstResult: R? = null
     var prevResult: R? = null
+    var eosReached = false
     try {
         for (step in 0 until maxNewTokens) {
             // Отмена длинного инференса: проверка на каждой итерации,
@@ -140,14 +159,18 @@ internal suspend fun <I : AutoCloseable, R : AutoCloseable> greedyDecodeCore(
 
             val token = pickToken(result, generated)
             generated.add(token)
-            if (token == eosTokenId) break
+            if (token == eosTokenId) {
+                eosReached = true
+                break
+            }
         }
     } finally {
         // Освобождаем results первого и последнего шага на любом пути.
         firstResult?.close()
         if (prevResult !== firstResult) prevResult?.close()
     }
-    return generated
+    // EOS не достигнут за все maxNewTokens шагов — декодер упёрся в лимит.
+    return DecodeOutcome(generated, eosReached, hitMaxLength = !eosReached)
 }
 
 /**
@@ -162,6 +185,33 @@ internal fun argMax(values: FloatArray): Int {
             bestVal = values[i]
             best = i
         }
+    }
+    return best
+}
+
+/**
+ * Индекс максимального значения с защитой от NaN/Inf (decode-hygiene, issue #62).
+ * Отдельные NaN/±Inf игнорируются при выборе (не могут выиграть); если же
+ * ВСЕ значения NaN или бесконечные — выбирать токен не из чего, бросается
+ * [IllegalStateException] с описанием шага. Пустой массив тоже считается
+ * некорректными logits.
+ *
+ * @param values логи последней позиции.
+ * @param stepDesc описание шага для сообщения об ошибке.
+ */
+internal fun argMaxSafe(values: FloatArray, stepDesc: String): Int {
+    var best = -1
+    var bestVal = 0f
+    for (i in values.indices) {
+        val v = values[i]
+        if (v.isNaN() || v.isInfinite()) continue
+        if (best == -1 || v > bestVal) {
+            bestVal = v
+            best = i
+        }
+    }
+    if (best == -1) {
+        throw IllegalStateException("Некорректные logits на шаге: $stepDesc")
     }
     return best
 }

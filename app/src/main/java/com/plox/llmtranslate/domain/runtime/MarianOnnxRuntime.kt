@@ -327,7 +327,7 @@ class MarianOnnxRuntime @Inject constructor(
 
                         // Greedy-генерация. Encoder-past неизменен — берём его из
                         // результата первого шага, decoder-past — из предыдущего.
-                        val generatedIds = greedyDecode(
+                        val outcome = greedyDecode(
                             ortEnv = ortEnv,
                             attentionMask = attentionMask,
                             startTokenId = bundle.decoderStartTokenId,
@@ -370,9 +370,13 @@ class MarianOnnxRuntime @Inject constructor(
                                 decPast.run(inputs)
                             }
                         }
+                        Timber.d(
+                            "Marian: eosReached=${outcome.eosReached}, " +
+                                "hitMaxLength=${outcome.hitMaxLength}"
+                        )
 
                         // Декодирование сгенерированных id (decode пропускает спец-токены).
-                        val resultText = tok.decode(generatedIds)
+                        val resultText = tok.decode(outcome.generated)
                         if (resultText.isBlank()) {
                             Result.failure(RuntimeError.InferenceFailed("marian", "Пустой перевод"))
                         } else {

@@ -51,7 +51,15 @@ class IndicTransOnnxRuntime @Inject constructor(
 ) : TranslationEngine {
 
     companion object {
-        private const val MAX_NEW_TOKENS = 128
+        /**
+         * Лимит генерации: positional-эмбеддинги декодера IndicTrans2
+         * (embed_positions) содержат 258 строк — с учётом decoder-start
+         * итоговая длина последовательности не должна превышать 258,
+         * берём 256 с запасом.
+         */
+        private const val MAX_NEW_TOKENS = 256
+        /** Размер no_repeat_ngram для ретрайного прохода при вырожденном выводе (issue #62). */
+        private const val NO_REPEAT_NGRAM_SIZE = 3
         /** Значение по умолчанию для unk_id из tokenizer_meta.json (в каталоге = 3). */
         private const val DEFAULT_UNK_ID = 3
         private const val INTRA_OP_THREADS = 4
@@ -288,11 +296,7 @@ class IndicTransOnnxRuntime @Inject constructor(
                     return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
                 val ortEnv = OrtEnvironment.getEnvironment()
-                val enc = bundle.encoderSession
-                val dec = bundle.decoderSession
-                val decPast = bundle.decoderPastSession
                 val srcTok = bundle.srcTokenizer
-                val tgtTok = bundle.tgtTokenizer
 
                 try {
                     // Flores-коды языков (по схеме IndicTransToolkit).
@@ -342,102 +346,64 @@ class IndicTransOnnxRuntime @Inject constructor(
 
                     val attentionMask = LongArray(inputIds.size) { 1L }
 
-                    // Encoder. Входные тензоры закрываем сразу после run — на любом пути.
-                    // Если второй createTensor упадёт — первый закрываем сразу,
-                    // иначе его нативная память утечёт мимо внешнего finally.
-                    val encInputIds = OnnxTensor.createTensor(
-                        ortEnv, LongBuffer.wrap(inputIds), longArrayOf(1L, inputIds.size.toLong())
+                    // Decode-hygiene (issue #62): первый проход — чистый greedy
+                    // без маски; если вывод вырожден (хвостовой цикл / бедный
+                    // словарь / упор в лимит без EOS) — РОВНО ОДИН ретрай с
+                    // жёсткой маской no_repeat_ngram. Детектор — по TRIMMED
+                    // тексту; порядок decode → trim → postprocess фиксирован,
+                    // postprocess — финальному победителю и ровно один раз.
+                    val (firstText, firstOutcome) = translateOnce(
+                        ortEnv, bundle, inputIds, attentionMask, noRepeatNgramSize = 0
                     )
-                    val encAttnMask = try {
-                        OnnxTensor.createTensor(
-                            ortEnv, LongBuffer.wrap(attentionMask),
-                            longArrayOf(1L, attentionMask.size.toLong())
+                    val firstDegenerate = isDegenerateOutput(
+                        firstText, firstOutcome.eosReached, firstOutcome.hitMaxLength
+                    )
+                    Timber.d(
+                        "IndicTrans: проход 1 вырожден=$firstDegenerate " +
+                            "(eosReached=${firstOutcome.eosReached}, " +
+                            "hitMaxLength=${firstOutcome.hitMaxLength})"
+                    )
+                    val winnerText = if (!firstDegenerate) {
+                        firstText
+                    } else {
+                        // encOutput первого прохода закрыт в finally translateOnce;
+                        // отмена между проходами обязана срабатывать.
+                        currentCoroutineContext().ensureActive()
+                        val (retryText, retryOutcome) = translateOnce(
+                            ortEnv, bundle, inputIds, attentionMask,
+                            noRepeatNgramSize = NO_REPEAT_NGRAM_SIZE
                         )
-                    } catch (e: Exception) {
-                        encInputIds.close()
-                        throw e
-                    }
-                    val encOutput = try {
-                        enc.run(mapOf("input_ids" to encInputIds, "attention_mask" to encAttnMask))
-                    } finally {
-                        encInputIds.close()
-                        encAttnMask.close()
-                    }
-
-                    // Greedy-генерация общим драйвером. Все нативные ресурсы
-                    // закрывает greedyDecode — в т.ч. при раннем выходе и при
-                    // исключении. Стартовый токен входит в итоговый список,
-                    // past_key_values (и encoder-, и decoder-) — из результата
-                    // предыдущего шага: encoder-past неизменен между шагами.
-                    val resultText: String
-                    try {
-                        val generatedIds = greedyDecode(
-                            ortEnv = ortEnv,
-                            attentionMask = attentionMask,
-                            startTokenId = bundle.decoderStartTokenId,
-                            maxNewTokens = MAX_NEW_TOKENS,
-                            eosTokenId = bundle.eosTokenId,
-                            initialIds = listOf(bundle.decoderStartTokenId),
-                            pickToken = { result, _ -> argMax(logitsLastPosition(result)) }
-                        ) { step, decInputIds, decAttnMask, _, prev ->
-                            if (step == 0) {
-                                val encHidden = ortTensor(encOutput, "last_hidden_state")
-                                    ?: error("Нет last_hidden_state")
-                                dec.run(
-                                    mapOf(
-                                        "input_ids" to decInputIds,
-                                        "encoder_hidden_states" to encHidden,
-                                        "encoder_attention_mask" to decAttnMask
-                                    )
-                                )
-                            } else {
-                                val past = prev ?: error("Нет past_key_values")
-                                val inputs = HashMap<String, OnnxTensorLike>()
-                                inputs["input_ids"] = decInputIds
-                                inputs["encoder_attention_mask"] = decAttnMask
-                                for (i in 0 until bundle.numLayers) {
-                                    for (suffix in PAST_SUFFIXES) {
-                                        ortTensor(past, "present.$i.$suffix")?.let {
-                                            inputs["past_key_values.$i.$suffix"] = it
-                                        }
-                                    }
-                                }
-                                decPast.run(inputs)
-                            }
-                        }
-
-                        // Декодирование (skip-специальные), id зажимаем размером словаря.
-                        // tgt-clamp = 0: недостижим (логиты = tgt_dict_size),
-                        // менять на unk нельзя — <unk> попадёт в видимый текст.
-                        val rawText = tgtTok.decode(
-                            generatedIds.map { clampId(it, bundle.tgtDictSize, 0) }
+                        val retryDegenerate = isDegenerateOutput(
+                            retryText, retryOutcome.eosReached, retryOutcome.hitMaxLength
                         )
                         Timber.d(
-                            "IndicTrans: сгенерировано ${generatedIds.size} токенов, " +
-                                "сырой вывод: «$rawText»"
+                            "IndicTrans: ретрай (ngram=$NO_REPEAT_NGRAM_SIZE) " +
+                                "вырожден=$retryDegenerate " +
+                                "(eosReached=${retryOutcome.eosReached}, " +
+                                "hitMaxLength=${retryOutcome.hitMaxLength})"
                         )
-                        // Дедупликация полного повтора фразы декодером (issue #28):
-                        // post-processing без штрафов в логитах — penalty менял
-                        // бы качество IndicTrans2-переводов (у Marian свой penalty).
-                        val trimmed = RepetitionTrimmer.trim(rawText)
-                        if (trimmed != rawText) {
-                            Timber.d("IndicTrans: схлопнут повтор: «$rawText» => «$trimmed»")
+                        if (retryDegenerate) {
+                            return@withContext Result.failure(
+                                RuntimeError.InferenceFailed(
+                                    "indictrans",
+                                    "Декодер не смог построить устойчивый перевод"
+                                )
+                            )
                         }
-                        // Порядок фиксирован: decode → trim → postprocess.
-                        // Правилу 2 RepetitionTrimmer нужны пробелы как разделители
-                        // слов, детокенизация до триммера его ломает
-                        // (тал . ताल । склеится в तал. ताल।).
-                        val finalText = IndicProcessorLite.postprocess(trimmed, tgtLang)
-                        Timber.d("IndicTrans: после postprocess: «$finalText»")
-                        resultText = finalText
-                    } finally {
-                        encOutput.close()
+                        retryText
                     }
 
-                    if (resultText.isBlank()) {
+                    // Детокенизация строго после триммера: правилу 2
+                    // RepetitionTrimmer нужны пробелы как разделители слов.
+                    // Порядок фиксирован: decode, trim, затем postprocess —
+                    // postprocess финальному победителю ровно один раз.
+                    val finalText = IndicProcessorLite.postprocess(winnerText, tgtLang)
+                    Timber.d("IndicTrans: после postprocess: [$finalText]")
+
+                    if (finalText.isBlank()) {
                         Result.failure(RuntimeError.InferenceFailed("indictrans", "Пустой перевод"))
                     } else {
-                        Result.success(resultText)
+                        Result.success(finalText)
                     }
                 } catch (e: CancellationException) {
                     // Отмена инференса (кнопка «Отмена»/смена экрана) — не ошибка:
@@ -449,6 +415,116 @@ class IndicTransOnnxRuntime @Inject constructor(
                 }
             }
         }
+
+    /**
+     * Один проход генерации: encoder.run → greedyDecode → декодирование →
+     * trim. Возвращает TRIMMED текст и флаги остановки цикла
+     * ([DecodeOutcome]). Нативные ресурсы прохода (входы энкодера и
+     * encOutput) закрываются на любом пути — штатном, раннем выходе по
+     * EOS/лимиту, отмена, исключение; encOutput закрывается до возврата,
+     * поэтому перед ретраем ресурсы первого прохода уже освобождены.
+     *
+     * Все нативные ресурсы жадного цикла закрывает [greedyDecode].
+     * Стартовый токен входит в итоговый список, past_key_values (и encoder-,
+     * и decoder-) — из результата предыдущего шага: encoder-past неизменен
+     * между шагами. pickToken — [pickGreedyTokenSafe] (NaN/Inf-защита +
+     * жёсткая маска no_repeat_ngram при [noRepeatNgramSize] > 0).
+     */
+    private suspend fun translateOnce(
+        ortEnv: OrtEnvironment,
+        bundle: ModelBundle,
+        inputIds: LongArray,
+        attentionMask: LongArray,
+        noRepeatNgramSize: Int
+    ): Pair<String, DecodeOutcome> {
+        val enc = bundle.encoderSession
+        val dec = bundle.decoderSession
+        val decPast = bundle.decoderPastSession
+
+        // Входные тензоры закрываем сразу после run — на любом пути.
+        // Если второй createTensor упадёт — первый закрываем сразу,
+        // иначе его нативная память утечёт мимо внешнего finally.
+        val encInputIds = OnnxTensor.createTensor(
+            ortEnv, LongBuffer.wrap(inputIds), longArrayOf(1L, inputIds.size.toLong())
+        )
+        val encAttnMask = try {
+            OnnxTensor.createTensor(
+                ortEnv, LongBuffer.wrap(attentionMask),
+                longArrayOf(1L, attentionMask.size.toLong())
+            )
+        } catch (e: Exception) {
+            encInputIds.close()
+            throw e
+        }
+        val encOutput = try {
+            enc.run(mapOf("input_ids" to encInputIds, "attention_mask" to encAttnMask))
+        } finally {
+            encInputIds.close()
+            encAttnMask.close()
+        }
+        try {
+            val outcome = greedyDecode(
+                ortEnv = ortEnv,
+                attentionMask = attentionMask,
+                startTokenId = bundle.decoderStartTokenId,
+                maxNewTokens = MAX_NEW_TOKENS,
+                eosTokenId = bundle.eosTokenId,
+                initialIds = listOf(bundle.decoderStartTokenId),
+                pickToken = { result, generated ->
+                    pickGreedyTokenSafe(result, generated, noRepeatNgramSize)
+                }
+            ) { step, decInputIds, decAttnMask, _, prev ->
+                if (step == 0) {
+                    val encHidden = ortTensor(encOutput, "last_hidden_state")
+                        ?: error("Нет last_hidden_state")
+                    dec.run(
+                        mapOf(
+                            "input_ids" to decInputIds,
+                            "encoder_hidden_states" to encHidden,
+                            "encoder_attention_mask" to decAttnMask
+                        )
+                    )
+                } else {
+                    val past = prev ?: error("Нет past_key_values")
+                    val inputs = HashMap<String, OnnxTensorLike>()
+                    inputs["input_ids"] = decInputIds
+                    inputs["encoder_attention_mask"] = decAttnMask
+                    for (i in 0 until bundle.numLayers) {
+                        for (suffix in PAST_SUFFIXES) {
+                            ortTensor(past, "present.$i.$suffix")?.let {
+                                inputs["past_key_values.$i.$suffix"] = it
+                            }
+                        }
+                    }
+                    decPast.run(inputs)
+                }
+            }
+
+            // Декодирование (skip-специальные), id зажимаем размером словаря.
+            // tgt-clamp = 0: недостижим (логиты = tgt_dict_size),
+            // менять на unk нельзя — <unk> попадёт в видимый текст.
+            val rawText = bundle.tgtTokenizer.decode(
+                outcome.generated.map { clampId(it, bundle.tgtDictSize, 0) }
+            )
+            // Дедупликация полного повтора фразы декодером (issue #28):
+            // post-processing без штрафов в логитах — penalty менял
+            // бы качество IndicTrans2-переводов (у Marian свой penalty).
+            val trimmed = RepetitionTrimmer.trim(rawText)
+            if (trimmed != rawText) {
+                Timber.d("IndicTrans: схлопнут повтор: [$rawText] => [$trimmed]")
+            }
+            Timber.d(
+                "IndicTrans: проход (ngram=$noRepeatNgramSize): " +
+                    "${outcome.generated.size} токенов, " +
+                    "eosReached=${outcome.eosReached}, " +
+                    "hitMaxLength=${outcome.hitMaxLength}, " +
+                    "trimmed: [$trimmed]"
+            )
+            return Pair(trimmed, outcome)
+        } finally {
+            encOutput.close()
+        }
+    }
 
     /**
      * Разгрузить ВСЕ удерживаемые движком модели. Ждёт окончания активного
