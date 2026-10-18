@@ -1,7 +1,6 @@
 package com.plox.llmtranslate.ui.favorites
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,16 +15,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -33,6 +29,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.FavoriteEntry
+import com.plox.llmtranslate.ui.EmptyListPlaceholder
+import com.plox.llmtranslate.ui.ErrorDialog
 import com.plox.llmtranslate.ui.TranslationEntryCard
 
 /**
@@ -51,31 +49,11 @@ fun FavoritesScreen(
     val errorMessageRes by viewModel.errorMessageRes.collectAsStateWithLifecycle()
 
     // Сбой репозиторной операции (ревью #65): диалог как на экране «Перевод».
-    errorMessageRes?.let { res ->
-        AlertDialog(
-            onDismissRequest = viewModel::clearError,
-            title = { Text(stringResource(R.string.error_title)) },
-            text = { Text(stringResource(res)) },
-            confirmButton = {
-                TextButton(onClick = viewModel::clearError) {
-                    Text(stringResource(R.string.ok))
-                }
-            }
-        )
-    }
+    ErrorDialog(errorMessageRes, viewModel::clearError)
 
     // Избранного нет вовсе и поиск не вводился — обычное пустое состояние.
     if (favorites.isEmpty() && searchQuery.isBlank()) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = stringResource(R.string.favorites_empty),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        EmptyListPlaceholder(stringResource(R.string.favorites_empty))
         return
     }
 
@@ -87,18 +65,12 @@ fun FavoritesScreen(
         if (favorites.isEmpty()) {
             // Поиск без совпадений — то же идиоматичное пустое состояние,
             // что и в «Истории», но с текстом «Ничего не найдено».
-            Box(
+            EmptyListPlaceholder(
+                text = stringResource(R.string.favorites_search_empty),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = stringResource(R.string.favorites_search_empty),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+                    .weight(1f)
+            )
             return@Column
         }
 

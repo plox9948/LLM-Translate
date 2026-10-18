@@ -54,6 +54,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.ModelCard
+import com.plox.llmtranslate.ui.ErrorDialog
 import com.plox.llmtranslate.ui.FavoriteStarIcon
 import com.plox.llmtranslate.ui.models.formatBytes
 
@@ -320,18 +321,7 @@ fun TranslateScreen(
         }
 
         // Ошибка.
-        state.error?.let { error ->
-            AlertDialog(
-                onDismissRequest = viewModel::clearError,
-                title = { Text(stringResource(R.string.error_title)) },
-                text = { Text(error) },
-                confirmButton = {
-                    TextButton(onClick = viewModel::clearError) {
-                        Text(stringResource(R.string.ok))
-                    }
-                }
-            )
-        }
+        ErrorDialog(state.error, viewModel::clearError)
     }
 
     // Одноразовый онбординг первого запуска (issue #33): выбор направления;

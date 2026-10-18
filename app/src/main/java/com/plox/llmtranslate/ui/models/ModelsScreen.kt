@@ -731,18 +731,17 @@ private fun ModelCardItem(
                 }
             }
 
-            // Бейджи совместимости.
-            if (check is InstallCheck.Warning) {
+            // Бейджи совместимости: предупреждение и блокировка рисуются
+            // одинаково, различается только источник текста.
+            val checkMessage = when (check) {
+                is InstallCheck.Warning -> check.message
+                is InstallCheck.Blocked -> check.reason
+                else -> null
+            }
+            if (checkMessage != null) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = check.message,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            } else if (check is InstallCheck.Blocked) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = check.reason,
+                    text = checkMessage,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error
                 )
