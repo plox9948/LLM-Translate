@@ -57,8 +57,6 @@ class MarianOnnxRuntime @Inject constructor(
         // до инференса (SentenceSplitter в ViewModel), 64 токена на крошечных
         // моделях обрезал длинные одиночные предложения.
         private const val MAX_NEW_TOKENS = 128
-        private const val INTRA_OP_THREADS = 4
-        private const val INTER_OP_THREADS = 1
 
         /**
          * Штраф повторения (аналог `repetition_penalty` в HF generate):
@@ -176,26 +174,12 @@ class MarianOnnxRuntime @Inject constructor(
                         )
                     }
 
-                    val sessionOpts = OrtSession.SessionOptions().apply {
-                        setIntraOpNumThreads(INTRA_OP_THREADS)
-                        setInterOpNumThreads(INTER_OP_THREADS)
-                    }
-                    // SessionOptions нужны только на создание сессий — закрываем
-                    // нативный ресурс после всех createSession, в том числе при
-                    // исключении на любом из них (иначе утечка native-памяти ORT).
-                    try {
-                        // Границы отмены: само createSession (десятки секунд)
-                        // не прерываемо, но между ними отмена обязана срабатывать,
-                        // иначе «Отмена» не действует на загрузку модели.
-                        currentCoroutineContext().ensureActive()
-                        encoder = ortEnv.createSession(encoderFile.absolutePath, sessionOpts)
-                        currentCoroutineContext().ensureActive()
-                        decoder = ortEnv.createSession(decoderFile.absolutePath, sessionOpts)
-                        currentCoroutineContext().ensureActive()
-                        decoderPast = ortEnv.createSession(decoderPastFile.absolutePath, sessionOpts)
-                    } finally {
-                        sessionOpts.close()
-                    }
+                    val sessions = createEncoderDecoderSessions(
+                        "Marian", ortEnv, encoderFile, decoderFile, decoderPastFile
+                    )
+                    encoder = sessions.first
+                    decoder = sessions.second
+                    decoderPast = sessions.third
 
                     // numLayers = (число выходов декодера - 1) / 4
                     // (выходы: logits + present.{layer}.{decoder,encoder}.{key,value}).
@@ -209,7 +193,7 @@ class MarianOnnxRuntime @Inject constructor(
                         // возвращал пустой список и инференс падал с
                         // «Пустой ввод» вместо явной ошибки загрузки.
                         Timber.e("Marian: не удалось загрузить tokenizer.json в $path")
-                        closeCreated(encoder, decoder, decoderPast)
+                        closePartiallyCreated("Marian", encoder, decoder, decoderPast)
                         return@withContext RuntimeError.LoadFailed(
                             "marian", "Не удалось загрузить tokenizer"
                         )
@@ -252,11 +236,11 @@ class MarianOnnxRuntime @Inject constructor(
                     // остаются в кэше) и всплываем выше, не конвертируя отмену
                     // в LoadFailed.
                     Timber.d("Загрузка Marian-модели отменена: $path")
-                    closeCreated(encoder, decoder, decoderPast)
+                    closePartiallyCreated("Marian", encoder, decoder, decoderPast)
                     throw e
                 } catch (e: Exception) {
                     Timber.e(e, "Не удалось загрузить Marian-модель $path")
-                    closeCreated(encoder, decoder, decoderPast)
+                    closePartiallyCreated("Marian", encoder, decoder, decoderPast)
                     RuntimeError.LoadFailed("marian", e.message ?: "Неизвестная ошибка")
                 }
             }
@@ -470,18 +454,6 @@ class MarianOnnxRuntime @Inject constructor(
         _loadedModels.value = cache.all()
             .sortedByDescending { (id, _) -> id == active }
             .map { (_, bundle) -> bundle.info }
-    }
-
-    /**
-     * Закрыть сессии незавершённой загрузки (отмена/ошибка) — пучок в кэш
-     * ещё не положен, другие пучки кэша не затрагиваются.
-     */
-    private fun closeCreated(vararg sessions: OrtSession?) {
-        try {
-            sessions.filterNotNull().forEach { it.close() }
-        } catch (e: Exception) {
-            Timber.e(e, "Ошибка при освобождении частично созданных Marian-сессий")
-        }
     }
 
     /**
