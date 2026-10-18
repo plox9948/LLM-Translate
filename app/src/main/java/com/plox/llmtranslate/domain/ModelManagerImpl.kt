@@ -566,8 +566,8 @@ class ModelManagerImpl @Inject constructor(
      * Перенести распакованный временный каталог в каталог модели
      * ([modelTargetDir]) и посчитать суммарный размер его файлов. Общий шаг
      * импорта ZIP из метаданных (modelFromMeta) и из имени (modelFromZipName).
-     * @return пара (каталог модели, размер в байтах); null при сбое копирования —
-     *   полу-скопированный каталог удалён, извлечённый temp чистится
+     * @return пара (каталог модели, размер в байтах); null при любом сбое —
+     *   прежний пучок нетронут, staging удалён, извлечённый temp чистится
      *   в finally [importZip].
      */
     private suspend fun promoteExtractedDir(
@@ -576,27 +576,65 @@ class ModelManagerImpl @Inject constructor(
         modelId: String
     ): Pair<File, Long>? {
         val targetDir = modelTargetDir(runtime, modelId)
-        // Issue #69: eviction кэша движков по образцу delete() — ДО in-place
-        // перезаписи. copyRecursively(overwrite=true) затирает файлы старого
-        // пучка по одному, а живой mmap активного инференса в кэше движка читает
-        // тот же файл (обрезанные данные → мусор или SIGBUS). releaseModel под
+        // Issue #69: eviction кэша движков по образцу delete() — ДО подмены
+        // каталога. Живой mmap активного инференса в кэше движка читает файлы
+        // старого пучка (обрезанные данные → мусор или SIGBUS). releaseModel под
         // своим мьютексом дожидается окончания активного инференса и отпускает
-        // старый файл; следующий ensureLoaded построит движок по новым файлам.
+        // старый каталог; следующий ensureLoaded построит движок по новым файлам.
         // Старая запись читается из БД до upsert, поэтому доступна здесь.
         repository.getById(modelId)?.let { runtimeRouter.releaseModel(it) }
-        // Issue #73: замена каталога целиком, а не слияние — файлы старого
-        // пучка, отсутствующие в новом ZIP, не должны переживать апгрейд.
-        targetDir.deleteRecursively()
-        if (!extracted.copyRecursively(targetDir, overwrite = true)) {
-            Timber.w("Не удалось распаковать модель $modelId в ${targetDir.path}")
-            targetDir.deleteRecursively()
+
+        // Issue #74: staging + rename-подмена вместо wipe-then-copy. Раньше
+        // targetDir.deleteRecursively() уничтожал рабочий пучок ДО копирования,
+        // и отказ copyRecursively (например нехватка места на внешнем разделе)
+        // оставлял БД READY на несуществующие файлы — падение на ensureLoaded;
+        // возврат deleteRecursively игнорировался, частичное удаление превращало
+        // копирование в merge-остатки (возврат #73). Копируем в соседний staging
+        // того же тома и меняем каталоги renameTo: при любом отказе прежний
+        // пучок остаётся на месте, замена цели — целиком, без слияния (#73).
+        val runtimeDir = targetDir.parentFile ?: modelsDir
+        val stagingDir = File(runtimeDir, "${targetDir.name}.promoting")
+        val swappedOutDir = File(runtimeDir, "${targetDir.name}.old")
+        stagingDir.deleteRecursively()   // мусор от прошлой неудачной промоции
+        swappedOutDir.deleteRecursively()
+        if (!copyExtractedToStaging(extracted, stagingDir)) {
+            Timber.w("Не удалось скопировать модель $modelId в staging ${stagingDir.path}")
+            stagingDir.deleteRecursively()
             return null
+        }
+        val hadTarget = targetDir.exists()
+        if (hadTarget && !targetDir.renameTo(swappedOutDir)) {
+            Timber.w("Не удалось отодвинуть старый каталог ${targetDir.path} — промоция отменена")
+            stagingDir.deleteRecursively()
+            return null
+        }
+        if (!stagingDir.renameTo(targetDir)) {
+            Timber.w("Не удалось подменить каталог ${targetDir.path} — промоция отменена")
+            if (hadTarget && !swappedOutDir.renameTo(targetDir)) {
+                Timber.w("Не удалось вернуть старый каталог ${swappedOutDir.path} на место")
+            }
+            stagingDir.deleteRecursively()
+            return null
+        }
+        // Вытесненный каталог чистим best-effort: файлы под новым именем уже
+        // на месте, остатки старого тома лишь тратят место.
+        if (swappedOutDir.exists() && !swappedOutDir.deleteRecursively()) {
+            Timber.w("Не удалось удалить вытесненный каталог ${swappedOutDir.path}")
         }
         // Размер считаем один раз: каталог между этими полями не меняется
         // (sizeBytes и bytesDone всегда равны сумме файлов каталога).
         val size = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
         return targetDir to size
     }
+
+    /**
+     * Seam (issue #74): чистое копирование extracted → staging вынесено в
+     * internal-метод, чтобы unit-тест мог инъектировать отказ copyRecursively
+     * (нехватку места на FS смоделировать сложно) и проверить сохранность
+     * прежнего пучка при провале промоции.
+     */
+    internal fun copyExtractedToStaging(extracted: File, stagingDir: File): Boolean =
+        extracted.copyRecursively(stagingDir, overwrite = true)
 
     /**
      * Распакованный ZIP → модель из вложенных метаданных (id из каталога).

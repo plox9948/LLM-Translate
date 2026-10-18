@@ -18,6 +18,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.spyk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flowOf
@@ -27,6 +28,7 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -475,6 +477,58 @@ class ModelManagerTest {
         assertEquals(setOf("a.bin", "c.bin"), names)
         assertArrayEquals(byteArrayOf(3), File(bundleDir, "a.bin").readBytes())
         assertArrayEquals(byteArrayOf(4), File(bundleDir, "c.bin").readBytes())
+        // Issue #74: staging-подмена не должна оставлять служебных каталогов
+        // (.promoting / .old) после успешного свопа.
+        val runtimeDir = File(modelsDir, "SHERPA")
+        assertTrue(runtimeDir.listFiles()!!.none { it.name.endsWith(".promoting") })
+        assertTrue(runtimeDir.listFiles()!!.none { it.name.endsWith(".old") })
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `failed zip promotion keeps previous bundle intact`() = runTest {
+        // Issue #74: прежний wipe-then-copy уничтошал рабочий пучок до
+        // копирования — отказ copyRecursively (нехватка места) оставлял БД
+        // READY на несуществующие файлы (падение на ensureLoaded). Отказ
+        // копирования инъектирован через seam copyExtractedToStaging
+        // (смоделировать ENOSPC на FS сложно): прежний пучок обязан выжить,
+        // upsert в БД не должен наступить, staging — удалён.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        val bundleDir = File(File(modelsDir, "SHERPA"), "zip-model")
+        bundleDir.mkdirs()
+        File(bundleDir, "old.bin").writeBytes(byteArrayOf(1))
+        val previous = readyModel("zip-model", ModelCategory.STT).copy(
+            runtime = RuntimeType.SHERPA,
+            filePath = bundleDir.absolutePath
+        )
+        coEvery { repository.getById("zip-model") } returns previous
+        val managerSpy = spyk(manager)
+        every { managerSpy.copyExtractedToStaging(any(), any()) } returns false
+
+        val zip = zipOf(mapOf("new.bin" to byteArrayOf(9, 9)))
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(zip),
+            ByteArrayInputStream(zip)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "zip-model.zip"
+
+        val importedId = managerSpy.importFromUri(uri)
+
+        assertNull(importedId)
+        coVerify(exactly = 0) { repository.upsert(any()) }
+        // Прежний пучок цел и нетронут.
+        assertTrue(bundleDir.exists())
+        assertArrayEquals(
+            byteArrayOf(1),
+            File(bundleDir, "old.bin").readBytes()
+        )
+        assertFalse(File(bundleDir, "new.bin").exists())
+        // Staging удалён, записей-остатков в каталоге рантайма нет.
+        assertFalse(File(File(modelsDir, "SHERPA"), "zip-model.promoting").exists())
+        assertFalse(File(File(modelsDir, "SHERPA"), "zip-model.old").exists())
         modelsDir.deleteRecursively()
     }
 
