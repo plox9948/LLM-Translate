@@ -176,14 +176,41 @@ class TranslateViewModelTest {
         createViewModel()
         applyPendingEntry()
 
-        // Тот же обмен, что делает кнопка-стрелка на экране.
-        val before = viewModel.uiState.value
-        viewModel.onSourceLangChange(before.targetLang)
-        viewModel.onTargetLangChange(before.sourceLang)
+        // Обмен направления кнопкой-стрелкой (issue #60).
+        viewModel.swapDirections()
 
         assertEquals("", viewModel.uiState.value.visibleResult)
         viewModel.speakResult()
         io.mockk.verify(exactly = 0) { ttsCoordinator.speak(any(), any()) }
+    }
+
+    @Test
+    fun `swapDirections carries visible result into input and swaps languages`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        createViewModel()
+        applyPendingEntry() // ru→en, ввод «privet», результат «hello»
+
+        viewModel.swapDirections()
+
+        // Языки обменены, показанный результат подставлен в поле ввода…
+        assertEquals(TranslateLanguage.EN, viewModel.uiState.value.sourceLang)
+        assertEquals(TranslateLanguage.RU, viewModel.uiState.value.targetLang)
+        assertEquals("hello", viewModel.uiState.value.inputText)
+        // …а сам результат скрыт: привязан к прежнему направлению (issue #59).
+        assertEquals("", viewModel.uiState.value.visibleResult)
+    }
+
+    @Test
+    fun `swapDirections without result only swaps languages keeping input`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        createViewModel()
+        viewModel.onInputTextChanged("plain input")
+
+        viewModel.swapDirections()
+
+        assertEquals(TranslateLanguage.EN, viewModel.uiState.value.sourceLang)
+        assertEquals(TranslateLanguage.RU, viewModel.uiState.value.targetLang)
+        assertEquals("plain input", viewModel.uiState.value.inputText)
     }
 
     @Test

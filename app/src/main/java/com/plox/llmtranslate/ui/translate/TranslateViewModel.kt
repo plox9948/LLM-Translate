@@ -310,6 +310,31 @@ class TranslateViewModel @Inject constructor(
     }
 
     /**
+     * Обменять направления перевода местами (кнопка-стрелка, issue #60):
+     * sourceLang/targetLang меняются значениями; если под текущим направлением
+     * есть видимый результат и он отличается от поля ввода, он подставляется
+     * в [TranslateUiState.inputText] для обратного перевода. Сам результат
+     * при этом скрывается — остаётся привязан к прежнему направлению
+     * (issue #59, см. [TranslateUiState.visibleResult]).
+     */
+    fun swapDirections() {
+        val state = _uiState.value
+        // Подставляем только реально показанный результат текущего направления.
+        val carried = state.visibleResult.isNotEmpty() && state.visibleResult != state.inputText
+        update {
+            it.copy(
+                sourceLang = state.targetLang,
+                targetLang = state.sourceLang,
+                inputText = if (carried) state.visibleResult else it.inputText,
+                error = null
+            )
+        }
+        saveLastDirection()
+        refreshTranslationAvailability()
+        refreshResultFavorite()
+    }
+
+    /**
      * Пересчитать флаг избранности текущего результата (issue #38).
      * Ключ строится по текущему явному направлению; для AUTO-источника
      * фактический язык результата неизвестен UI — звезда неактивна (false).

@@ -110,10 +110,7 @@ fun TranslateScreen(
                 allowAuto = true
             )
             IconButton(
-                onClick = {
-                    viewModel.onSourceLangChange(state.targetLang)
-                    viewModel.onTargetLangChange(state.sourceLang)
-                },
+                onClick = viewModel::swapDirections,
                 enabled = explicitSource
             ) {
                 Icon(
