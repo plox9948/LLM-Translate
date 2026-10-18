@@ -74,6 +74,9 @@ class ModelManagerImpl @Inject constructor(
      * попадала смесь файлов двух версий при READY-записи в БД). Взаимной
      * блокировки с мьютексами движков нет: importFromUri вызывается только из
      * UI, под engineMutex импорт не выполняется.
+     * Issue #76: удаление (delete) сериализуется тем же мьютексом — гонка
+     * import↔delete одной id давала висячий READY на удалённый каталог или
+     * осиротевшие файлы без записи.
      */
     private val importMutex = Mutex()
 
@@ -361,36 +364,43 @@ class ModelManagerImpl @Inject constructor(
         ModelDownloadWorker.cancel(context, modelId)
         scope.launch {
             try {
-                val model = repository.getById(modelId) ?: return@launch
-                val path = model.filePath
-                if (!path.isNullOrBlank()) {
-                    val file = File(path)
-                    if (file.isDirectory) file.deleteRecursively() else file.delete()
-                } else {
-                    // У записи нет пути при прерванной установке — чистим
-                    // известные места раскладки DownloadLayout (issue #40:
-                    // иначе переименованные целевые файлы установки, снятой
-                    // до finalizeDownload, остаются на диске навсегда).
-                    deleteOrphanParts(model)
-                }
-                repository.deleteById(modelId)
-                // Кэш движков по id модели (issue #40): без eviction удалённая
-                // модель остаётся «загруженной» в loadedModels, а повторная
-                // загрузка того же id берёт из LRU-кэша старый нативный handle
-                // по уже удалённым файлам. Движок под своим мьютексом ждёт
-                // окончания активного инференса — use-after-free исключён.
-                runtimeRouter.releaseModel(model)
-                // Если удалена активная модель — переключаемся на первую доступную.
-                if (preferences.getActiveModelId(model.category) == modelId) {
-                    val fallback = repository.getFirstReady(model.category)
-                    if (fallback != null) {
-                        Timber.d("Переключаемся на ${fallback.id} (категория ${model.category})")
+                // Issue #76: тело удаления под importMutex (тот же мьютекс, что у
+                // импортов) — иначе delete и импорт одной id гонят файловые операции
+                // с upsert/deleteById: висячий READY на удалённый каталог либо
+                // осиротевшие imported_* файлы без записи. Порядок локов тот же
+                // (import/delete → engineMutex via releaseModel), реверса нет.
+                importMutex.withLock {
+                    val model = repository.getById(modelId) ?: return@launch
+                    val path = model.filePath
+                    if (!path.isNullOrBlank()) {
+                        val file = File(path)
+                        if (file.isDirectory) file.deleteRecursively() else file.delete()
                     } else {
-                        Timber.d("Нет доступных моделей категории ${model.category}")
+                        // У записи нет пути при прерванной установке — чистим
+                        // известные места раскладки DownloadLayout (issue #40:
+                        // иначе переименованные целевые файлы установки, снятой
+                        // до finalizeDownload, остаются на диске навсегда).
+                        deleteOrphanParts(model)
                     }
-                    preferences.setActiveModelId(model.category, fallback?.id)
+                    repository.deleteById(modelId)
+                    // Кэш движков по id модели (issue #40): без eviction удалённая
+                    // модель остаётся «загруженной» в loadedModels, а повторная
+                    // загрузка того же id берёт из LRU-кэша старый нативный handle
+                    // по уже удалённым файлам. Движок под своим мьютексом ждёт
+                    // окончания активного инференса — use-after-free исключён.
+                    runtimeRouter.releaseModel(model)
+                    // Если удалена активная модель — переключаемся на первую доступную.
+                    if (preferences.getActiveModelId(model.category) == modelId) {
+                        val fallback = repository.getFirstReady(model.category)
+                        if (fallback != null) {
+                            Timber.d("Переключаемся на ${fallback.id} (категория ${model.category})")
+                        } else {
+                            Timber.d("Нет доступных моделей категории ${model.category}")
+                        }
+                        preferences.setActiveModelId(model.category, fallback?.id)
+                    }
+                    Timber.d("Модель $modelId удалена")
                 }
-                Timber.d("Модель $modelId удалена")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -653,9 +663,12 @@ class ModelManagerImpl @Inject constructor(
      * Seam (issue #74): чистое копирование extracted → staging вынесено в
      * internal-метод, чтобы unit-тест мог инъектировать отказ copyRecursively
      * (нехватку места на FS смоделировать сложно) и проверить сохранность
-     * прежнего пучка при провале промоции.
+     * прежнего пучка при провале промоции. suspend (issue #76): тестовый
+     * seam может вызвать delay — настоящее переключение корутин для проверки
+     * сериализации импортов под importMutex (Thread.sleep блокирует поток
+     * и не даёт детеминированной interleaving-картины).
      */
-    internal fun copyExtractedToStaging(extracted: File, stagingDir: File): Boolean =
+    internal suspend fun copyExtractedToStaging(extracted: File, stagingDir: File): Boolean =
         extracted.copyRecursively(stagingDir, overwrite = true)
 
     /**

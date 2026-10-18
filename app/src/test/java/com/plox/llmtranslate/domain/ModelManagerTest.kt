@@ -20,8 +20,10 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.spyk
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
@@ -508,7 +510,7 @@ class ModelManagerTest {
         )
         coEvery { repository.getById("zip-model") } returns previous
         val managerSpy = spyk(manager)
-        every { managerSpy.copyExtractedToStaging(any(), any()) } returns false
+        coEvery { managerSpy.copyExtractedToStaging(any(), any()) } returns false
 
         val zip = zipOf(mapOf("new.bin" to byteArrayOf(9, 9)))
         every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
@@ -540,8 +542,11 @@ class ModelManagerTest {
         // Issue #75: два параллельных ZIP-импорта одной id работали с общим
         // staging `<id>.promoting` — вторая стартовая уборка deleteRecursively
         // рвала staging первого посреди копирования (смесь версий при READY).
-        // Seam copyExtractedToStaging задерживает копирование; счётчик активных
-        // копирований не должен превышать 1, целевой каталог — ровно из одной
+        // Issue #76: seam copyExtractedToStaging теперь suspend и вместо
+        // Thread.sleep(блокирующего поток) делает delay(80) — настоящее
+        // переключение корутин: без importMutex оба импорта гарантированно
+        // оказываются внутри seam одновременно (maxActive=2, тест красный).
+        // Со счётчиком активных копирований; целевой каталог — ровно из одной
         // версии без перемешивания и без остатков .promoting/.old.
         val modelsDir = tempModelsDir()
         every { context.getExternalFilesDir("models") } returns modelsDir
@@ -556,10 +561,10 @@ class ModelManagerTest {
         val managerSpy = spyk(manager)
         val active = java.util.concurrent.atomic.AtomicInteger(0)
         val maxActive = java.util.concurrent.atomic.AtomicInteger(0)
-        every { managerSpy.copyExtractedToStaging(any(), any()) } answers {
+        coEvery { managerSpy.copyExtractedToStaging(any(), any()) } coAnswers {
             val now = active.incrementAndGet()
             maxActive.updateAndGet { m -> maxOf(m, now) }
-            Thread.sleep(80)
+            delay(80)
             val copied = callOriginal()
             active.decrementAndGet()
             copied
@@ -633,6 +638,81 @@ class ModelManagerTest {
         assertTrue(bundleDir.exists())
         assertTrue(bundled.exists())
         assertArrayEquals(newContent, bundled.readBytes())
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `delete during running import leaves consistent state`() = runBlocking<Unit> {
+        // Issue #76: delete() был fire-and-forget вне importMutex — гонка
+        // import↔delete одной id: delete удалял промоутенный каталог, и
+        // deleteById коммитился раньше upsert импорта → висячий READY на
+        // несуществующие файлы; в обратном порядке upsert затирал удалённую
+        // запись и на диске навечно оставались файлы без записи. Теперь
+        // delete под тем же importMutex: финал согласован — либо READY-запись
+        // с существующим каталогом, либо ни записи, ни файлов.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+
+        // Фейковый репозиторий: одна запись, upsert/deleteById мутируют её;
+        // upsert имитирует транзакцию Room с задержкой — в это окно без локов
+        // и попадает гонящий delete (удаляет уже промоутенный, но ещё не
+        // зарегистрированный каталог → READY на пустоту).
+        val bundleDir = File(File(modelsDir, "SHERPA"), "zip-model")
+        bundleDir.mkdirs()
+        File(bundleDir, "old.bin").writeBytes(byteArrayOf(1))
+        var current: InstalledModel? = readyModel("zip-model", ModelCategory.STT).copy(
+            runtime = RuntimeType.SHERPA,
+            filePath = bundleDir.absolutePath
+        )
+        val upsertStarted = CompletableDeferred<Unit>()
+        coEvery { repository.getById("zip-model") } answers { current }
+        coEvery { repository.upsert(any()) } coAnswers {
+            upsertStarted.complete(Unit)
+            delay(200)
+            current = firstArg()
+            Unit
+        }
+        coEvery { repository.deleteById(any()) } answers {
+            current = null
+            Unit
+        }
+
+        val managerSpy = spyk(manager)
+        coEvery { managerSpy.copyExtractedToStaging(any(), any()) } coAnswers {
+            delay(80)
+            callOriginal()
+        }
+
+        val zip = zipOf(mapOf("new.bin" to byteArrayOf(9)))
+        every { context.contentResolver.openInputStream(any()) } answers {
+            ByteArrayInputStream(zip)
+        }
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "zip-model.zip"
+
+        val imported = async { managerSpy.importFromUri(uri) }
+        // Импорт уже промоутнул каталог (staging заменён) и вошёл в upsert —
+        // окно, в которое раньше delete влезал посреди транзакции.
+        upsertStarted.await()
+        managerSpy.delete("zip-model")
+        assertEquals("zip-model", imported.await())
+        delay(400) // ждём до_completion delete'а, отпускающего importMutex
+
+        val record = current
+        val bundleReady = bundleDir.exists() && bundleDir.walkTopDown().any { it.isFile }
+        val leftoverFiles = modelsDir.walkTopDown().any { it.isFile }
+        if (record != null && record.status == ModelStatus.READY) {
+            // Вариант «delete отработал ДО импорта»: импортированная модель
+            // обязана иметь на диске свой непустой каталог.
+            assertTrue("READY-запись без файлов на диске", bundleReady)
+            assertFalse("Осиротевшие файлы вне каталога модели", leftoverFiles && !bundleReady)
+        } else {
+            // Вариант «delete отработал ПОСЛЕ импорта» (детеминирован под
+            // importMutex): записи и файлов не должно остаться вовсе.
+            assertNull("Запись осталась без каталога", record)
+            assertFalse("Удалённая модель оставила файлы", leftoverFiles)
+        }
         modelsDir.deleteRecursively()
     }
 }
