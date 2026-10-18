@@ -31,6 +31,7 @@ import com.plox.llmtranslate.domain.runtime.trackEnginePreference
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -88,6 +89,8 @@ data class TranslateUiState(
     val isTranslating: Boolean = false,
     val canCancelTranslation: Boolean = false,
     val isRecording: Boolean = false,
+    /** Истёкшая длительность записи, мс (таймер в индикаторе, issue #68). */
+    val recordingElapsedMs: Long = 0,
     val isSpeaking: Boolean = false,
     /** Прогресс автоскачивания Piper-модели озвучки, % (issue #50; null — нет). */
     val ttsDownloadProgress: Int? = null,
@@ -257,7 +260,18 @@ class TranslateViewModel @Inject constructor(
             // AudioRecorder.cancel() (разгрузка рантаймов при ON_STOP) гасит
             // индикатор «идёт запись», не давая ему залипться в UI экрана.
             audioRecorder.recordingFlow.collect { recording ->
-                update { it.copy(isRecording = recording) }
+                if (!recording) {
+                    // Запись снята извне — авто-остановка по потолку не нужна.
+                    recordingLimitJob?.cancel()
+                    recordingLimitJob = null
+                }
+                update { it.copy(isRecording = recording, recordingElapsedMs = 0L) }
+            }
+        }
+        viewModelScope.launch {
+            // Таймер длительности записи для индикатора (issue #68).
+            audioRecorder.recordingElapsedMs.collect { elapsedMs ->
+                update { it.copy(recordingElapsedMs = elapsedMs) }
             }
         }
         viewModelScope.launch {
@@ -686,7 +700,18 @@ class TranslateViewModel @Inject constructor(
             update { it.copy(error = appContext.getString(R.string.translate_record_start_failed)) }
             return false
         }
-        update { it.copy(isRecording = true, error = null) }
+        update { it.copy(isRecording = true, error = null, recordingElapsedMs = 0L) }
+        // Авто-остановка по жёсткому потолку рекордера (issue #68): STT-аудио
+        // длиннее MAX_RECORDING_MS не распознаётся осмысленно; сценарий
+        // идентичен ручному тапу по микрофону.
+        recordingLimitJob?.cancel()
+        recordingLimitJob = viewModelScope.launch {
+            delay(AudioRecorder.MAX_RECORDING_MS)
+            if (audioRecorder.isRecording && !stopRecordingInProgress) {
+                Timber.d("Достигнут потолок длительности записи — авто-остановка")
+                stopRecordingAndTranscribe()
+            }
+        }
         return true
     }
 
@@ -700,15 +725,23 @@ class TranslateViewModel @Inject constructor(
     private var stopRecordingInProgress = false
 
     /**
+     * Таймер авто-остановки записи по потолку [AudioRecorder.MAX_RECORDING_MS]
+     * (issue #68); снимается при остановке/снятии записи.
+     */
+    private var recordingLimitJob: Job? = null
+
+    /**
      * Остановить запись и сразу распознать речь.
      */
     fun stopRecordingAndTranscribe() {
         if (stopRecordingInProgress) return
         stopRecordingInProgress = true
+        recordingLimitJob?.cancel()
+        recordingLimitJob = null
         viewModelScope.launch {
             try {
                 val wavPath = audioRecorder.stopRecording()
-                update { it.copy(isRecording = false) }
+                update { it.copy(isRecording = false, recordingElapsedMs = 0L) }
                 if (wavPath == null) {
                     update { it.copy(error = appContext.getString(R.string.translate_record_empty)) }
                     return@launch

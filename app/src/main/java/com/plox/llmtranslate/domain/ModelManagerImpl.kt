@@ -276,6 +276,14 @@ class ModelManagerImpl @Inject constructor(
                     filePath = targetFile.absolutePath
                 )
                 repository.upsert(model)
+                // Issue #68: повторный импорт подменяет бинарник той же id —
+                // движки обязаны забыть старый пучок (тот же eviction, что в
+                // delete()): иначе LRU-кэш по id молча продолжает инференс
+                // старым нативным handle, а удаление осиротевшего файла ниже
+                // снимает живой mmap. Порядок: сначала releaseModel (движок
+                // под своим мьютексом дожидается окончания активного инференса
+                // и отпускает старый файл), затем удаление файла.
+                previousRecord?.let { runtimeRouter.releaseModel(it) }
                 // Повторный импорт той же модели: copyFromUri каждый раз пишет
                 // новый imported_* файл, старый осиротел (issue #40).
                 deleteSupersededImportFile(previousRecord, targetFile)
@@ -501,7 +509,17 @@ class ModelManagerImpl @Inject constructor(
                 ?: modelFromZipName(sourceName, tempDir)
                 ?: return null
 
+            // Старая запись под этим id (до upsert): promoteExtractedDir уже
+            // перезаписал её файлы поверх (overwrite=true), живой mmap старого
+            // бинарника в кэше движка остался без актуальных данных (issue #68).
+            val previousRecord = repository.getById(model.id)
             repository.upsert(model)
+            // Eviction кэша движков по образцу delete(): повторный импорт той
+            // же id не должен продолжать инференс старым нативным handle;
+            // releaseModel под мьютексом движка ждёт окончания активного
+            // инференса, следующий ensureLoaded построит движок по новым
+            // файлам.
+            previousRecord?.let { runtimeRouter.releaseModel(it) }
             Timber.d("Импортирована модель ${model.id} (ZIP $sourceName)")
             return model.id
         } catch (e: Exception) {

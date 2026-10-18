@@ -7,6 +7,7 @@ import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
+import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.runtime.IndicTransOnnxRuntime
 import com.plox.llmtranslate.domain.runtime.RepetitionTrimmer
@@ -217,7 +218,18 @@ class InferenceSmokeTest {
         val wavFile = writeTestWav()
         val result = runBlocking { engine.transcribe(wavFile.absolutePath, language = "en") }
         println("SHERPA PARAKEET STT: success=${result.isSuccess}, text='${result.getOrNull()}'")
-        // Главное — модель загрузилась и пайплайн не упал.
+        // Ассерт исхода (issue #68): модель загрузилась и пайплайн отработал —
+        // синусоида распознаётся (success) или декод даёт пустой текст, что
+        // движок выражает ожидаемым InferenceFailed("Распознавание не выполнено").
+        // Любой другой RuntimeError — дефект пайплайна, тест падает.
+        if (result.isFailure) {
+            val err = result.exceptionOrNull()
+            val inference = err as? RuntimeError.InferenceFailed
+            assertTrue(
+                "Неожиданная ошибка STT: ${err?.javaClass?.simpleName} $err",
+                inference != null && inference.reason == "Распознавание не выполнено"
+            )
+        }
         runBlocking { engine.release() }
     }
 

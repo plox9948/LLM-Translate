@@ -2,6 +2,9 @@ package com.plox.llmtranslate.data.catalog
 
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeType
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -326,6 +329,38 @@ class ModelCatalogParserTest {
                 card.defaultForLanguage
             )
         }
+    }
+
+    @Test
+    fun `assets catalog version matches models manifest version`() {
+        // Issue #68: version в assets/models_catalog.json обязан быть синхронен
+        // с version манифеста models/manifest.json (единственный источник
+        // правды о моделях — см. комментарий самого манифеста).
+        val catalogCandidates = listOf(
+            java.io.File("src/main/assets/models_catalog.json"),
+            java.io.File("app/src/main/assets/models_catalog.json")
+        )
+        val catalog = catalogCandidates.firstOrNull { it.isFile }
+        assertTrue("models_catalog.json не найден относительно $catalogCandidates", catalog != null)
+
+        val manifestCandidates = listOf(
+            java.io.File("models/manifest.json"),
+            java.io.File("../models/manifest.json")
+        )
+        val manifest = manifestCandidates.firstOrNull { it.isFile }
+        assertTrue("models/manifest.json не найден относительно $manifestCandidates", manifest != null)
+
+        val manifestRoot = Json.parseToJsonElement(
+            manifest!!.readText(Charsets.UTF_8)
+        ).jsonObject
+        val manifestVersion = (manifestRoot["version"] as? JsonPrimitive)?.content?.toIntOrNull()
+            ?: error("manifest.json не содержит числового поля version")
+
+        assertEquals(
+            "Версия каталога assets отстала от models/manifest.json",
+            manifestVersion,
+            parser.parseVersion(catalog!!.readText(Charsets.UTF_8))
+        )
     }
 
     @Test

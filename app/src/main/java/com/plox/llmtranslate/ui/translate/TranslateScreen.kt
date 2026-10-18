@@ -308,8 +308,12 @@ fun TranslateScreen(
 
         // Индикатор записи.
         if (state.isRecording) {
+            // таймер длительности записи (issue #68) — подсказка о потолке
+            // 3 минуты, после которого запись остановится автоматически.
+            val totalSec = (state.recordingElapsedMs / 1000L).toInt()
             Text(
-                text = stringResource(R.string.translate_recording_hint),
+                text = stringResource(R.string.translate_recording_hint) +
+                    " " + "%d:%02d".format(totalSec / 60, totalSec % 60),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.error
             )

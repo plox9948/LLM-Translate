@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.domain.runtime
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -70,6 +71,37 @@ class WavWriterTest {
         // 44 (header) + 200 (pcm)
         assertEquals(44 + pcm.size, bytes.size)
         assertEquals('R'.code.toByte(), bytes[0])
+    }
+
+    @Test
+    fun `streamed sink patches header sizes equal to batch write`() {
+        // Issue #68: потоковая запись во временный файл (заголовок с нулевыми
+        // размерами + дописывание чанков) обязательна эквивалентна пакетной.
+        val pcm = ByteArray(500) { (it % 127).toByte() }
+        val sinkFile = Files.createTempFile("wav_sink_test", ".wav").toFile()
+        sinkFile.deleteOnExit()
+
+        val sink = WavSink(sinkFile, 16000, 1, 16)
+        var offset = 0
+        while (offset < pcm.size) {
+            val len = minOf(64, pcm.size - offset)
+            sink.write(pcm, offset, len)
+            offset += len
+        }
+        assertEquals(pcm.size.toLong(), sink.pcmSize)
+        assertTrue(sink.closeAndPatch())
+
+        // Файл побайтово совпадает с записанным пакетно тем же WavWriter.
+        val batchFile = Files.createTempFile("wav_batch_test", ".wav").toFile()
+        batchFile.deleteOnExit()
+        assertTrue(WavWriter.writeWav(batchFile, pcm, 16000, 1, 16))
+        assertArrayEquals(batchFile.readBytes(), sinkFile.readBytes())
+
+        // Потребитель (WavReader) видит data-чанк корректного размера.
+        val located = com.plox.llmtranslate.util.WavReader.locateDataChunk(sinkFile.readBytes())
+        assertTrue(located != null)
+        assertEquals(44, located!!.first)
+        assertEquals(pcm.size, located.second)
     }
 
     private fun readIntLE(bytes: ByteArray, offset: Int): Int {
