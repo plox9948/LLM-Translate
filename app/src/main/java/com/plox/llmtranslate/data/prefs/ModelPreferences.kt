@@ -72,41 +72,12 @@ class ModelPreferences @Inject constructor(
     /**
      * Назначить STT-модель языку; null — снять назначение.
      */
-    suspend fun setSttForLanguage(language: String, modelId: String?) {
-        context.dataStore.edit { prefs ->
-            val map = decodeSttByLanguage(prefs[STT_BY_LANGUAGE_KEY]).toMutableMap()
-            if (modelId == null) map.remove(language) else map[language] = modelId
-            if (map.isEmpty()) {
-                prefs.remove(STT_BY_LANGUAGE_KEY)
-            } else {
-                prefs[STT_BY_LANGUAGE_KEY] = json.encodeToString(STT_MAP_SERIALIZER, map)
-            }
-        }
-    }
+    suspend fun setSttForLanguage(language: String, modelId: String?) =
+        setForLanguage(STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME, language, modelId)
 
+    /** Декод JSON-карты «язык → id» для STT-ключа. */
     private fun decodeSttByLanguage(raw: String?): Map<String, String> =
-        if (raw.isNullOrBlank()) emptyMap() else try {
-            json.decodeFromString(STT_MAP_SERIALIZER, raw)
-        } catch (e: Exception) {
-            Timber.w(e, "Повреждённое значение stt_by_language, сброшено")
-            clearCorruptedSttByLanguage()
-            emptyMap()
-        }
-
-    /**
-     * Удалить повреждённый ключ из DataStore: без этого битое значение
-     * остаётся в хранилище и каждая следующая его запись пересобирается
-     * из пусто-карты вместо явного сброса.
-     */
-    private fun clearCorruptedSttByLanguage() {
-        scope.launch {
-            try {
-                context.dataStore.edit { prefs -> prefs.remove(STT_BY_LANGUAGE_KEY) }
-            } catch (e: Exception) {
-                Timber.w(e, "Не удалось удалить повреждённый ключ stt_by_language")
-            }
-        }
-    }
+        decodeLanguageMap(raw, STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME)
 
     // --- TTS-модель на каждый язык (issue #50) ---
 
@@ -124,37 +95,59 @@ class ModelPreferences @Inject constructor(
      * ([com.plox.llmtranslate.domain.model.TtsModelSelector.SYSTEM_SENTINEL]);
      * null — снять назначение.
      */
-    suspend fun setTtsForLanguage(language: String, modelId: String?) {
+    suspend fun setTtsForLanguage(language: String, modelId: String?) =
+        setForLanguage(TTS_BY_LANGUAGE_KEY, TTS_BY_LANGUAGE_NAME, language, modelId)
+
+    /** Декод JSON-карты «язык → id» для TTS-ключа. */
+    private fun decodeTtsByLanguage(raw: String?): Map<String, String> =
+        decodeLanguageMap(raw, TTS_BY_LANGUAGE_KEY, TTS_BY_LANGUAGE_NAME)
+
+    /**
+     * Общая запись языковой карты (STT/TTS): снять назначение при null,
+     * удалить ключ при опустевшей карте.
+     */
+    private suspend fun setForLanguage(
+        key: Preferences.Key<String>,
+        keyName: String,
+        language: String,
+        modelId: String?
+    ) {
         context.dataStore.edit { prefs ->
-            val map = decodeTtsByLanguage(prefs[TTS_BY_LANGUAGE_KEY]).toMutableMap()
+            val map = decodeLanguageMap(prefs[key], key, keyName).toMutableMap()
             if (modelId == null) map.remove(language) else map[language] = modelId
             if (map.isEmpty()) {
-                prefs.remove(TTS_BY_LANGUAGE_KEY)
+                prefs.remove(key)
             } else {
-                prefs[TTS_BY_LANGUAGE_KEY] = json.encodeToString(TTS_MAP_SERIALIZER, map)
+                prefs[key] = json.encodeToString(LANGUAGE_MAP_SERIALIZER, map)
             }
         }
     }
 
-    private fun decodeTtsByLanguage(raw: String?): Map<String, String> =
+    /**
+     * Декод JSON-карты «язык → id»; повреждённое значение — сброс и удаление
+     * ключа из DataStore. Без удаления битое значение остаётся в хранилище
+     * и каждая следующая запись пересобирается из пусто-карты вместо явного сброса.
+     */
+    private fun decodeLanguageMap(
+        raw: String?,
+        key: Preferences.Key<String>,
+        keyName: String
+    ): Map<String, String> =
         if (raw.isNullOrBlank()) emptyMap() else try {
-            json.decodeFromString(TTS_MAP_SERIALIZER, raw)
+            json.decodeFromString(LANGUAGE_MAP_SERIALIZER, raw)
         } catch (e: Exception) {
-            Timber.w(e, "Повреждённое значение tts_by_language, сброшено")
-            clearCorruptedTtsByLanguage()
+            Timber.w(e, "Повреждённое значение $keyName, сброшено")
+            clearCorruptedLanguageMap(key, keyName)
             emptyMap()
         }
 
-    /**
-     * Удалить повреждённый ключ из DataStore (тот же паттерн, что
-     * [clearCorruptedSttByLanguage]).
-     */
-    private fun clearCorruptedTtsByLanguage() {
+    /** Удалить повреждённый языковой ключ из DataStore (см. [decodeLanguageMap]). */
+    private fun clearCorruptedLanguageMap(key: Preferences.Key<String>, keyName: String) {
         scope.launch {
             try {
-                context.dataStore.edit { prefs -> prefs.remove(TTS_BY_LANGUAGE_KEY) }
+                context.dataStore.edit { prefs -> prefs.remove(key) }
             } catch (e: Exception) {
-                Timber.w(e, "Не удалось удалить повреждённый ключ tts_by_language")
+                Timber.w(e, "Не удалось удалить повреждённый ключ $keyName")
             }
         }
     }
@@ -307,14 +300,17 @@ class ModelPreferences @Inject constructor(
         /** Preference с JSON-картой «язык → id STT-модели». */
         private val STT_BY_LANGUAGE_KEY = stringPreferencesKey("stt_by_language")
 
-        /** Сериализатор карты языков для [STT_BY_LANGUAGE_KEY]. */
-        private val STT_MAP_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
+        /** Имя STT-ключа для логов. */
+        private const val STT_BY_LANGUAGE_NAME = "stt_by_language"
 
         /** Preference с JSON-картой «язык → id Piper TTS-модели» (issue #50). */
         private val TTS_BY_LANGUAGE_KEY = stringPreferencesKey("tts_by_language")
 
-        /** Сериализатор карты языков для [TTS_BY_LANGUAGE_KEY]. */
-        private val TTS_MAP_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
+        /** Имя TTS-ключа для логов. */
+        private const val TTS_BY_LANGUAGE_NAME = "tts_by_language"
+
+        /** Сериализатор карты языков для языковых preference-ключей. */
+        private val LANGUAGE_MAP_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
 
         /** Preference кода исходного языка последнего направления (issue #33). */
         private val LAST_SOURCE_LANG_KEY = stringPreferencesKey("last_source_lang")

@@ -194,9 +194,7 @@ class ModelBackupManager @Inject constructor(
                                 val outFile = File(tempDir, name)
                                 // Защита от zip-slip: файл не должен выходить
                                 // за пределы временного каталога.
-                                val canonicalTemp = tempDir.canonicalPath
-                                val canonicalOut = outFile.canonicalPath
-                                if (!canonicalOut.startsWith(canonicalTemp + File.separator)) {
+                                if (!isInsideDir(tempDir, outFile)) {
                                     Timber.w("ZIP-запись вне каталога, пропущена: $name")
                                 } else {
                                     outFile.parentFile?.mkdirs()
@@ -450,19 +448,22 @@ class ModelBackupManager @Inject constructor(
         val relative = entry.relativePath.removePrefix(MODELS_PREFIX)
         val target = File(modelsRoot, relative)
         return try {
-            val rootCanonical = modelsRoot.canonicalPath
-            val targetCanonical = target.canonicalPath
-            if (targetCanonical == rootCanonical ||
-                targetCanonical.startsWith(rootCanonical + File.separator)
-            ) {
-                target.absolutePath
-            } else {
-                null
-            }
+            if (isInsideDir(modelsRoot, target)) target.absolutePath else null
         } catch (e: Exception) {
             Timber.w(e, "Не удалось канонализировать путь: ${target.absolutePath}")
             null
         }
+    }
+
+    /**
+     * Защита от zip-slip: файл лежит внутри каталога [dir]
+     * (сравнение по каноническим путям, сам каталог тоже считается «внутри»).
+     */
+    private fun isInsideDir(dir: File, file: File): Boolean {
+        val dirCanonical = dir.canonicalPath
+        val fileCanonical = file.canonicalPath
+        return fileCanonical == dirCanonical ||
+            fileCanonical.startsWith(dirCanonical + File.separator)
     }
 
     /**

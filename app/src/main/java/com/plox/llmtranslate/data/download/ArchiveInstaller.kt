@@ -124,18 +124,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         }
     }
 
-    /**
-     * Удалить файлы, созданные распаковкой до отмены — полу-распакованные
-     * файлы не должны оставаться мусором. Ранее скачанные файлы и .part
-     * архива не трогаются (докачка сохраняется).
-     */
-    private fun discardPartial(createdFiles: List<File>) {
-        for (file in createdFiles) {
-            if (!file.delete()) {
-                Timber.w("Не удалось удалить частично распакованный ${file.name}")
-            }
-        }
-    }
+    // discardPartial (очистка полу-распакованных файлов) — общий в BaseDownloader.
 
     /**
      * Записать одну запись архива в [destDir]: проверка отмены, защита от

@@ -101,11 +101,5 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
         }
     }
 
-    private fun discardPartial(files: List<File>) {
-        files.forEach { file ->
-            if (file.isFile) {
-                file.delete()
-            }
-        }
-    }
+    // discardPartial (очистка полу-распакованных файлов) — общий в BaseDownloader.
 }
