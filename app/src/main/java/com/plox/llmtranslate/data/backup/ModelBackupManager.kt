@@ -458,18 +458,38 @@ class ModelBackupManager @Inject constructor(
 
     /**
      * Переместить временный файл в целевой путь.
+     *
+     * Существующая цель удаляется только после успешного переноса нового
+     * содержимого: между томами (cacheDir и getExternalFilesDir) rename
+     * почти всегда падает, поэтому копируем в `<target>.tmp` рядом с целью,
+     * затем удаляем старый файл и переименовываем tmp на его место. При
+     * провале копирования tmp удаляется, старый файл остаётся нетронутым.
      */
     private fun moveToTarget(tempFile: File, targetPath: String): Boolean {
         return try {
             val targetFile = File(targetPath)
             targetFile.parentFile?.mkdirs()
-            if (targetFile.exists()) targetFile.delete()
             if (tempFile.renameTo(targetFile)) return true
-            // rename не работает между томами (cacheDir и getExternalFilesDir):
-            // копируем и удаляем временный файл.
-            val copied = tempFile.copyRecursively(targetFile, overwrite = true)
+            val staged = File(targetFile.parentFile, targetFile.name + ".tmp")
+            staged.deleteRecursively()
+            val copied = tempFile.copyRecursively(staged, overwrite = true)
+            if (!copied) {
+                staged.deleteRecursively()
+                Timber.w("Не удалось скопировать ${tempFile.name} в ${staged.name} — оставляем прежний файл")
+                return false
+            }
             tempFile.deleteRecursively()
-            copied
+            if (targetFile.exists() && !targetFile.deleteRecursively()) {
+                Timber.w("Не удалось удалить прежний $targetPath перед подменой")
+                staged.deleteRecursively()
+                return false
+            }
+            if (staged.renameTo(targetFile)) return true
+            // rename по каким-то причинам не прошёл (тот же том — редкость):
+            // копируем staging в цель напрямую и подчищаем staging.
+            val moved = staged.copyRecursively(targetFile, overwrite = true)
+            staged.deleteRecursively()
+            moved
         } catch (e: Exception) {
             Timber.e(e, "Ошибка перемещения файла в $targetPath")
             false

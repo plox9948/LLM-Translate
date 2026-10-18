@@ -35,6 +35,12 @@ val releaseSigningKeys = listOf(
     "RELEASE_KEY_ALIAS" to localProperties.getProperty("RELEASE_KEY_ALIAS"),
     "RELEASE_KEY_PASSWORD" to localProperties.getProperty("RELEASE_KEY_PASSWORD"),
 )
+// Пусто — ключи заданы и конфиг подписи создаётся; иначе конфиг не создаётся
+// вовсе (release-сборка без ключей лениво падает перед сборкой APK, см. ниже),
+// чтобы конфигурация не валилась в задачах, которым подпись не нужна.
+val missingReleaseSigningKeys = releaseSigningKeys
+    .filter { it.second.isNullOrBlank() }
+    .joinToString(", ") { it.first }
 
 android {
     namespace = "com.plox.llmtranslate"
@@ -68,20 +74,18 @@ android {
         }
     }
 
+    // Конфиг подписи release создаётся только при наличии ключей: валидация на
+    // этапе конфигурации ломала задачи, которым подпись не нужна (test,
+    // assembleDebug). При отсутствии ключей понятную ошибку даёт граф задач
+    // release-сборки (см. gradle.taskGraph ниже).
     signingConfigs {
-        val missingKeys = releaseSigningKeys
-            .filter { it.second.isNullOrBlank() }
-            .joinToString(", ") { it.first }
-        if (missingKeys.isNotEmpty()) {
-            throw GradleException(
-                "local.properties: не заданы RELEASE_STORE_* для подписи release (нет: $missingKeys)"
-            )
-        }
-        create("release") {
-            storeFile = rootProject.file(localProperties.getProperty("RELEASE_STORE_FILE")!!)
-            storePassword = localProperties.getProperty("RELEASE_STORE_PASSWORD")
-            keyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS")
-            keyPassword = localProperties.getProperty("RELEASE_KEY_PASSWORD")
+        if (missingReleaseSigningKeys.isEmpty()) {
+            create("release") {
+                storeFile = rootProject.file(localProperties.getProperty("RELEASE_STORE_FILE")!!)
+                storePassword = localProperties.getProperty("RELEASE_STORE_PASSWORD")
+                keyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS")
+                keyPassword = localProperties.getProperty("RELEASE_KEY_PASSWORD")
+            }
         }
     }
 
@@ -93,7 +97,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            if (missingReleaseSigningKeys.isEmpty()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             isMinifyEnabled = false
@@ -144,6 +150,24 @@ android {
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+// Сборка релизных артефактов без ключей падает с понятной ошибкой перед
+// сборкой их задач (а не молчаливой сборкой unsigned APK): задачи вне
+// release-контура (test, assembleDebug) конфигурируются и выполняются штатно.
+if (missingReleaseSigningKeys.isNotEmpty()) {
+    afterEvaluate {
+        tasks.configureEach {
+            if (name in setOf("assembleRelease", "bundleRelease", "installRelease")) {
+                doFirst {
+                    throw GradleException(
+                        "local.properties: не заданы RELEASE_STORE_* для подписи release " +
+                            "(нет: $missingReleaseSigningKeys)"
+                    )
+                }
+            }
         }
     }
 }

@@ -90,6 +90,71 @@ class ChunkPlannerTest {
         assertTrue(plan.separators.isEmpty())
     }
 
+    // ── Много сегментов: гарантии границ и линейная стоимость (issue #66) ──
+
+    @Test
+    fun `many segments stay within budget and reconstruct the source text`() {
+        val segments = (1..30).map { "Alpha $it beta gamma." }
+        val text = segments.joinToString("\n")
+        val plan = planChunks(text, ::wordTokens, budget = 8)
+        // Каждый чанк — строго в бюджете по счётчику.
+        plan.chunks.forEach { chunk ->
+            assertTrue("чанк вне бюджета (${wordTokens(chunk)} токенов): \"$chunk\"", wordTokens(chunk) <= 8)
+        }
+        assertEquals(segments.size - 1, plan.separators.size)
+        // Границы исходника сохранены: склейка чанков через разделители
+        // воспроизводит исходный текст.
+        val reconstructed = buildString {
+            plan.chunks.forEachIndexed { i, chunk ->
+                append(chunk)
+                if (i < plan.separators.size) append(plan.separators[i])
+            }
+        }
+        assertEquals(text, reconstructed)
+    }
+
+    @Test
+    fun `length-based counter keeps every chunk within budget over many segments`() {
+        // Аддитивный счётчик (длина строки) — проверка точности границ
+        // при упаковке многих сегментов в один чанк.
+        val segments = (1..40).map { "line $it has words." }
+        val text = segments.joinToString("\n")
+        val plan = planChunks(text, { it.length }, budget = 60)
+        plan.chunks.forEach { chunk ->
+            assertTrue("чанк вне бюджета (${chunk.length}): \"$chunk\"", chunk.length <= 60)
+        }
+        val reconstructed = buildString {
+            plan.chunks.forEachIndexed { i, chunk ->
+                append(chunk)
+                if (i < plan.separators.size) append(plan.separators[i])
+            }
+        }
+        assertEquals(text, reconstructed)
+        assertTrue("ожидались многосегментные чанки", plan.chunks.size < segments.size)
+    }
+
+    @Test
+    fun `tokenisation cost is linear in segment count, not quadratic`() {
+        // Старая реализация пересчитывала tokenCount растущей склейки на
+        // каждой итерации — квадратичная стоимость. Регрессия: общая длина
+        // строк, поданных в tokenCount, должна расти линейно с числом
+        // сегментов (константный запас на единичные точные проверки вблизи
+        // бюджета).
+        var charsMeasured = 0
+        val segments = (1..200).map { "w$it." }
+        val text = segments.joinToString(" ")
+        val countingTokenCount: (String) -> Int = { s ->
+            charsMeasured += s.length
+            wordTokens(s)
+        }
+        planChunks(text, countingTokenCount, budget = 40)
+        assertTrue(
+            "стоимость токенизации сверхлинейна: замерено $charsMeasured символов, " +
+                "длинa текста ${text.length}",
+            charsMeasured <= text.length * 12,
+        )
+    }
+
     // ── Реальные числа бюджета IndicTrans (issue #63) ──
     //
     // Дублируют приватные константы IndicTransOnnxRuntime: EMBED_POSITION_LIMIT
