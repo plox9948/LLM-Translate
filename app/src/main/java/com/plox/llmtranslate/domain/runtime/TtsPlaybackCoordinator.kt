@@ -230,6 +230,10 @@ class TtsPlaybackCoordinator @Inject constructor(
      */
     fun speak(text: String, language: String) {
         if (text.isBlank()) return
+        // Issue #69: новая фраза снимает pendingRetry по образцу stop() —
+        // завершившееся после её старта автоскачивание Piper не должно
+        // авто-ретраем старой фразы обрывать актуальное озвучивание.
+        pendingRetry = null
         // Прежняя piper-озвучка координатора снимается; в ветке системного
         // TTS новую фразу перехватывает сам движок (QUEUE_FLUSH), в Piper-ветке
         // незавершённая системная озвучка останавливается явно (runSpeak).

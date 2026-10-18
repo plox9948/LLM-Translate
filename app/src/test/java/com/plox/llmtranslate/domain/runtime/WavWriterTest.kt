@@ -2,6 +2,7 @@ package com.plox.llmtranslate.domain.runtime
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
@@ -102,6 +103,17 @@ class WavWriterTest {
         assertTrue(located != null)
         assertEquals(44, located!!.first)
         assertEquals(pcm.size, located.second)
+    }
+
+    @Test
+    fun `patch sizes refuses missing file without creating phantom`() {
+        // Issue #69: кэш вычищен во время записи — патч не должен создавать
+        // фантомный 44-байтный WAV (RandomAccessFile "rw" создал бы файл).
+        val gone = Files.createTempFile("wav_gone_test", ".wav").toFile()
+        gone.delete()
+
+        assertFalse(WavWriter.patchSizes(gone, 100))
+        assertFalse(gone.exists())
     }
 
     private fun readIntLE(bytes: ByteArray, offset: Int): Int {

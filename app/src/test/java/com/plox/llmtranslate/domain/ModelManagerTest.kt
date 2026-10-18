@@ -306,4 +306,84 @@ class ModelManagerTest {
         assertArrayEquals(newContent, imports.first().readBytes())
         modelsDir.deleteRecursively()
     }
+
+    @Test
+    fun `single file import replacing catalog model removes orphan runtime bundle`() = runTest {
+        // Issue #69: замещение каталожной модели (пучок models/<RUNTIME>/<id>)
+        // одиночным файлом — старый пучок удаляется целиком после releaseModel.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        val bundleDir = File(File(modelsDir, "MARIAN_ONNX"), "model")
+        bundleDir.mkdirs()
+        File(bundleDir, "encoder.onnx").writeBytes(byteArrayOf(1, 2))
+        val previous = readyModel("model", ModelCategory.TRANSLATION).copy(
+            filePath = bundleDir.absolutePath
+        )
+        coEvery { repository.getById("model") } returns previous
+        val newContent = byteArrayOf(7)
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(newContent),
+            ByteArrayInputStream(newContent)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "model.onnx"
+
+        val importedId = manager.importFromUri(uri)
+
+        assertEquals("model", importedId)
+        assertFalse(bundleDir.exists())
+        coVerify { runtimeRouter.releaseModel(previous) }
+        val imports = modelsDir.listFiles()!!.filter { it.name.startsWith("imported_") }
+        assertEquals(1, imports.size)
+        assertArrayEquals(newContent, imports.first().readBytes())
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `zip import releases engine before overwriting model files`() = runTest {
+        // Issue #69: старая запись той же id должна отпускать движок ДО
+        // in-place перезаписи файлов пучка (промоут живого mmap), иначе
+        // активный инференс читает обрезанные данные.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        // Временный каталог распаковки ZIP берётся из cacheDir — мокаем реальным каталогом.
+        every { context.cacheDir } returns tempModelsDir()
+        val bundleDir = File(File(modelsDir, "SHERPA"), "zip-model")
+        bundleDir.mkdirs()
+        val sharedFile = File(bundleDir, "model.bin").apply { writeBytes(byteArrayOf(1)) }
+        val previous = readyModel("zip-model", ModelCategory.STT).copy(
+            runtime = RuntimeType.SHERPA,
+            filePath = bundleDir.absolutePath
+        )
+        coEvery { repository.getById("zip-model") } returns previous
+        // releaseModel обязан наступить, пока старый файл ещё не перетёрт:
+        // снимок содержимого ловим на момент eviction.
+        var releasedContent: ByteArray? = null
+        coEvery { runtimeRouter.releaseModel(any()) } answers {
+            releasedContent = sharedFile.readBytes()
+            Unit
+        }
+
+        val newContent = byteArrayOf(9, 9)
+        val zip = java.io.ByteArrayOutputStream().apply {
+            java.util.zip.ZipOutputStream(this).use { z ->
+                z.putNextEntry(java.util.zip.ZipEntry("model.bin"))
+                z.write(newContent)
+                z.closeEntry()
+            }
+        }.toByteArray()
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(zip),
+            ByteArrayInputStream(zip)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "zip-model.zip"
+
+        val importedId = manager.importFromUri(uri)
+        assertEquals("zip-model", importedId)
+        coVerify(exactly = 1) { runtimeRouter.releaseModel(previous) }
+        assertArrayEquals(byteArrayOf(1), releasedContent)
+        assertArrayEquals(newContent, sharedFile.readBytes())
+        modelsDir.deleteRecursively()
+    }
 }

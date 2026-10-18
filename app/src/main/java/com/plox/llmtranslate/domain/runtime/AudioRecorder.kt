@@ -132,25 +132,35 @@ object WavWriter {
      * Размеры считаются в Long; переполнение 32-битного поля ограничивается
      * максимумом с предупреждением.
      * @param pcmBytes суммарный размер PCM-данных после заголовка.
-     * @return true при успехе.
+     * @return true при успехе; false, если файл исчез (кэш вычищен системой
+     *   во время записи, issue #69) или патч не удался.
      */
-    fun patchSizes(file: File, pcmBytes: Long): Boolean = try {
-        RandomAccessFile(file, "rw").use { raf ->
-            val riff = ByteArray(4)
-            writeIntLE(riff, 0, 36L + pcmBytes)
-            raf.seek(4)
-            raf.write(riff)
-            val data = ByteArray(4)
-            writeIntLE(data, 0, pcmBytes)
-            raf.seek(40)
-            raf.write(data)
+    fun patchSizes(file: File, pcmBytes: Long): Boolean {
+        // Issue #69: RandomAccessFile("rw") при исчезнувшем файле создал бы
+        // фантомный 44-байтный WAV — «успешная» пустая запись. Проверяем
+        // наличие файла до патча; отсутствующий не создаём (запись потеряна,
+        // вызывающий получит false и null-контракт stopRecording).
+        if (!file.exists()) {
+            Timber.w("Файл записи исчез во время записи (кэш вычищен): ${file.path}")
+            return false
         }
-        true
-    } catch (e: Exception) {
-        Timber.e(e, "Не удалось обновить размеры WAV-заголовка: ${file.path}")
-        false
+        return try {
+            RandomAccessFile(file, "rw").use { raf ->
+                val riff = ByteArray(4)
+                writeIntLE(riff, 0, 36L + pcmBytes)
+                raf.seek(4)
+                raf.write(riff)
+                val data = ByteArray(4)
+                writeIntLE(data, 0, pcmBytes)
+                raf.seek(40)
+                raf.write(data)
+            }
+            true
+        } catch (e: Exception) {
+            Timber.e(e, "Не удалось обновить размеры WAV-заголовка: ${file.path}")
+            false
+        }
     }
-
 }
 
 /** Максимум, записываемый в 32-битное знаковое WAV-поле при переполнении. */

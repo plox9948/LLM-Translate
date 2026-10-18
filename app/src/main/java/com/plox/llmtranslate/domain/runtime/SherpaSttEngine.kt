@@ -48,6 +48,14 @@ class SherpaSttEngine @Inject constructor(
 
     companion object {
         const val SAMPLE_RATE = 16000
+
+        /**
+         * Причина InferenceFailed при пустом результате распознавания
+         * (issue #69: общая константа — смоук-тест сверяется с ней через
+         * [com.plox.llmtranslate.domain.model.userMessage], а не с литералом).
+         */
+        const val EMPTY_TRANSCRIPTION_REASON = "Распознавание не выполнено"
+
         private const val TYPE_TRANSDUCER = "transducer"
         private const val TYPE_NEMO_CTC = "nemo_ctc"
         private const val TYPE_WHISPER = "whisper"
@@ -260,7 +268,9 @@ class SherpaSttEngine @Inject constructor(
                         val text = rec.getResult(stream).text.trim()
                         if (text.isEmpty()) {
                             Result.failure(
-                                RuntimeError.InferenceFailed("sherpa", "Распознавание не выполнено")
+                                RuntimeError.InferenceFailed(
+                                    "sherpa", EMPTY_TRANSCRIPTION_REASON
+                                )
                             )
                         } else {
                             Result.success(text)

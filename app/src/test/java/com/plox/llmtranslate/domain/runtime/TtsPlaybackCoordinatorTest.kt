@@ -456,6 +456,40 @@ class TtsPlaybackCoordinatorTest {
     }
 
     @Test
+    fun `speak of new phrase drops pending retry of previous fallback`() {
+        // Issue #69: старт новой фразы снимает pendingRetry по образцу stop() —
+        // завершившееся после неё автоскачивание Piper не должно авто-ретраем
+        // устаревшей фразы обрывать актуальное озвучивание.
+        coEvery {
+            ttsRuntime.speak(any(), any(), any())
+        } answers {
+            if (secondArg<String>() == "ru") {
+                RuntimeError.LanguageNotSupported("system", "ru")
+            } else null
+        }
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        coordinator.speak("устаревшая фраза", "ru")
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+
+        // Новая фраза озвучивается системным движком успешно.
+        coordinator.speak("актуальная фраза", "en")
+        assertTrue(coordinator.status.value.isSpeaking)
+
+        // Автоскачивание доходит до READY — устаревшая русская фраза не
+        // проигрывается, озвучивание английской не прервано.
+        installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
+
+        coVerify(exactly = 0) { piperRuntime.speak(any(), any(), any(), any()) }
+        coVerify(exactly = 0) {
+            modelManager.setTtsForLanguage(any(), any())
+        }
+        assertTrue(coordinator.status.value.isSpeaking)
+        assertEquals("en", coordinator.status.value.language)
+        assertEquals("актуальная фраза", coordinator.status.value.text)
+    }
+
+    @Test
     fun `auto retry after ready stops system tts before piper speak`() {
         // Ревью раунд 2: авто-ретрай Piper после READY обязан погасить
         // незавершённую системную фразу (тот же класс, что закрыт для

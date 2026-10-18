@@ -9,6 +9,7 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.userMessage
 import com.plox.llmtranslate.domain.runtime.IndicTransOnnxRuntime
 import com.plox.llmtranslate.domain.runtime.RepetitionTrimmer
 import com.plox.llmtranslate.domain.runtime.SherpaSttEngine
@@ -225,9 +226,14 @@ class InferenceSmokeTest {
         if (result.isFailure) {
             val err = result.exceptionOrNull()
             val inference = err as? RuntimeError.InferenceFailed
+            // Issue #69: сверка через userMessage() и константу причины движка,
+            // а не литерал — правка формулировок в userMessage не ломает тест.
+            val expectedMessage = RuntimeError
+                .InferenceFailed("sherpa", SherpaSttEngine.EMPTY_TRANSCRIPTION_REASON)
+                .userMessage()
             assertTrue(
                 "Неожиданная ошибка STT: ${err?.javaClass?.simpleName} $err",
-                inference != null && inference.reason == "Распознавание не выполнено"
+                inference != null && inference.userMessage() == expectedMessage
             )
         }
         runBlocking { engine.release() }

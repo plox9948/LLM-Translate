@@ -285,8 +285,10 @@ class ModelManagerImpl @Inject constructor(
                 // и отпускает старый файл), затем удаление файла.
                 previousRecord?.let { runtimeRouter.releaseModel(it) }
                 // Повторный импорт той же модели: copyFromUri каждый раз пишет
-                // новый imported_* файл, старый осиротел (issue #40).
-                deleteSupersededImportFile(previousRecord, targetFile)
+                // новый imported_* файл, старый осиротел (issue #40); если же
+                // прежняя запись была каталожной моделью — осиротел её пучок
+                // рантайма (issue #69).
+                deleteSupersededImportFiles(previousRecord, targetFile)
                 Timber.d("Импортирована модель $modelId из $uri")
                 modelId
             } catch (e: Exception) {
@@ -415,21 +417,41 @@ class ModelManagerImpl @Inject constructor(
     }
 
     /**
-     * Удалить файл предыдущего импорта, вытеснённый повторным импортом той же
-     * модели (issue #40): copyFromUri создаёт каждый раз новый путь
-     * `imported_<ts>`, и без очистки старый файл остаётся мусором без записи
-     * в БД. Удаляем только при отличии путей и только файлы зоны импорта
-     * (`imported_*` в корне каталога моделей) — файлы каталожных моделей по
-     * путям рантаймов не затрагиваются.
+     * Удалить файлы старой записи, вытесненные повторным одиночным импортом
+     * той же модели. Импорт каждый раз пишет новый путь `imported_<ts>`, и без
+     * очистки старые файлы остаются мусором без записи в БД. Два случая:
+     *  - прежний файл зоны импорта (`imported_*` в корне каталога моделей) —
+     *    удаляется файл (issue #40);
+     *  - прежняя запись была каталожной моделью: её filePath — каталог пучка
+     *    рантайма внутри `models/<RUNTIME>/` — удаляется каталог целиком
+     *    (issue #69: иначе после замещения одиночным файлом пучок рантайма
+     *    остаётся осиротевшим на диске).
+     * Удаляем только пути внутри каталога моделей, отличные от нового файла
+     * (ZIP-промоут той же id в тот же путь — иначе удалили бы новые файлы),
+     * и только после [runtimeRouter.releaseModel] вызывающего кода: движок
+     * сначала отпускает старый файл.
      */
-    private fun deleteSupersededImportFile(previous: InstalledModel?, newFile: File) {
+    private fun deleteSupersededImportFiles(previous: InstalledModel?, newFile: File) {
         val oldPath = previous?.filePath ?: return
         if (oldPath == newFile.absolutePath) return
         val oldFile = File(oldPath)
-        if (oldFile.parentFile?.absolutePath != modelsDir.absolutePath) return
-        if (!oldFile.name.startsWith(IMPORT_FILE_PREFIX) || !oldFile.isFile) return
-        if (!oldFile.delete()) {
-            Timber.w("Не удалось удалить осиротевший файл импорта: $oldPath")
+        val modelsRoot = modelsDir.absolutePath
+        if (!oldFile.absolutePath.startsWith(modelsRoot + File.separator)) return
+        if (oldFile.parentFile?.absolutePath == modelsRoot &&
+            oldFile.name.startsWith(IMPORT_FILE_PREFIX) &&
+            oldFile.isFile
+        ) {
+            if (!oldFile.delete()) {
+                Timber.w("Не удалось удалить осиротевший файл импорта: $oldPath")
+            }
+            return
+        }
+        // Каталог пучка рантайма каталожной модели (models/<RUNTIME>/...);
+        // одиночные imported_* файлы обработаны выше.
+        if (oldFile.isDirectory) {
+            if (!oldFile.deleteRecursively()) {
+                Timber.w("Не удалось удалить осиротевший пучок модели: $oldPath")
+            }
         }
     }
 
@@ -505,21 +527,14 @@ class ModelManagerImpl @Inject constructor(
                 return null
             }
 
+            // Issue #69: eviction кэша движков выполняется ВНУТРИ
+            // promoteExtractedDir до перезаписи файлов каталога (см. его KDoc),
+            // здесь остаётся только регистрация новой записи.
             val model = meta?.let { modelFromMeta(it, tempDir) }
                 ?: modelFromZipName(sourceName, tempDir)
                 ?: return null
 
-            // Старая запись под этим id (до upsert): promoteExtractedDir уже
-            // перезаписал её файлы поверх (overwrite=true), живой mmap старого
-            // бинарника в кэше движка остался без актуальных данных (issue #68).
-            val previousRecord = repository.getById(model.id)
             repository.upsert(model)
-            // Eviction кэша движков по образцу delete(): повторный импорт той
-            // же id не должен продолжать инференс старым нативным handle;
-            // releaseModel под мьютексом движка ждёт окончания активного
-            // инференса, следующий ensureLoaded построит движок по новым
-            // файлам.
-            previousRecord?.let { runtimeRouter.releaseModel(it) }
             Timber.d("Импортирована модель ${model.id} (ZIP $sourceName)")
             return model.id
         } catch (e: Exception) {
@@ -545,12 +560,20 @@ class ModelManagerImpl @Inject constructor(
      *   полу-скопированный каталог удалён, извлечённый temp чистится
      *   в finally [importZip].
      */
-    private fun promoteExtractedDir(
+    private suspend fun promoteExtractedDir(
         extracted: File,
         runtime: RuntimeType,
         modelId: String
     ): Pair<File, Long>? {
         val targetDir = modelTargetDir(runtime, modelId)
+        // Issue #69: eviction кэша движков по образцу delete() — ДО in-place
+        // перезаписи. copyRecursively(overwrite=true) затирает файлы старого
+        // пучка по одному, а живой mmap активного инференса в кэше движка читает
+        // тот же файл (обрезанные данные → мусор или SIGBUS). releaseModel под
+        // своим мьютексом дожидается окончания активного инференса и отпускает
+        // старый файл; следующий ensureLoaded построит движок по новым файлам.
+        // Старая запись читается из БД до upsert, поэтому доступна здесь.
+        repository.getById(modelId)?.let { runtimeRouter.releaseModel(it) }
         if (!extracted.copyRecursively(targetDir, overwrite = true)) {
             Timber.w("Не удалось распаковать модель $modelId в ${targetDir.path}")
             targetDir.deleteRecursively()
@@ -566,7 +589,7 @@ class ModelManagerImpl @Inject constructor(
      * Распакованный ZIP → модель из вложенных метаданных (id из каталога).
      * @return null, если category/runtime из метаданных не распознаются.
      */
-    private fun modelFromMeta(meta: ModelImportMeta, extracted: File): InstalledModel? {
+    private suspend fun modelFromMeta(meta: ModelImportMeta, extracted: File): InstalledModel? {
         val runtime = try {
             RuntimeType.valueOf(meta.runtime)
         } catch (e: IllegalArgumentException) {
@@ -647,7 +670,7 @@ class ModelManagerImpl @Inject constructor(
      * Распакованный ZIP без метаданных → модель с параметрами,
      * угаданными по имени файла.
      */
-    private fun modelFromZipName(sourceName: String, extracted: File): InstalledModel? {
+    private suspend fun modelFromZipName(sourceName: String, extracted: File): InstalledModel? {
         val modelId = sourceName
             .removeSuffix(".zip")
             .removeSuffix(".gguf")
