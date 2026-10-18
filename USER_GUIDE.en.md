@@ -99,6 +99,9 @@ models) together with an estimated memory consumption.
   fields.
 - The result keeps the line breaks of the source text: paragraphs and
   multi-line formatting stay exactly as in the original.
+- The result is bound to the translation direction: after changing direction
+  or returning to the tab, a non-matching result is hidden (your input text is
+  kept) and "Read aloud" never reads text in the wrong language.
 - Above the result: "Copy translation" (to the clipboard), "Read aloud"
   (loudspeaker button) and the "Add to favorites" star.
 - The microphone in the input field ("Record audio"): one tap starts recording
