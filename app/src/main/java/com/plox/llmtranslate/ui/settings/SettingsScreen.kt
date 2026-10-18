@@ -61,6 +61,20 @@ class SettingsViewModel @Inject constructor(
     modelManager: ModelManager
 ) : ViewModel() {
 
+    internal companion object {
+        /** Пресет тайм-аута выгрузки «через 15 минут» (минуты). */
+        internal const val UNLOAD_PRESET_15_MINUTES = 15
+
+        /** Пресет тайм-аута выгрузки «через 30 минут» (минуты). */
+        internal const val UNLOAD_PRESET_30_MINUTES = 30
+
+        /** Пресеты тайм-аута выгрузки в порядке показа (кроме дефолтной опции). */
+        internal val UNLOAD_PRESET_MINUTES = listOf(
+            UNLOAD_PRESET_15_MINUTES,
+            UNLOAD_PRESET_30_MINUTES
+        )
+    }
+
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState
 
@@ -213,9 +227,16 @@ fun SettingsScreen(
                         R.plurals.settings_unload_after_default,
                         defaultUnloadMinutes,
                         defaultUnloadMinutes
-                    ),
-                "15" to stringResource(R.string.settings_unload_after_15),
-                "30" to stringResource(R.string.settings_unload_after_30),
+                    )
+            ) + SettingsViewModel.UNLOAD_PRESET_MINUTES.map { minutes ->
+                // Значение опции и подпись — из одной константы (ревью #65):
+                // минуты в тексте не разъезжаются с реальным значением.
+                minutes.toString() to pluralStringResource(
+                    R.plurals.settings_unload_after,
+                    minutes,
+                    minutes
+                )
+            } + listOf(
                 BackgroundUnloadScheduler.NEVER_UNLOAD.toString() to
                     stringResource(R.string.settings_unload_never)
             )

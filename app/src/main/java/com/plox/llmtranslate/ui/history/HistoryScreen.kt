@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +42,21 @@ fun HistoryScreen(
 ) {
     val history by viewModel.history.collectAsStateWithLifecycle()
     val favoriteKeys by viewModel.favoriteKeys.collectAsStateWithLifecycle()
+    val errorMessageRes by viewModel.errorMessageRes.collectAsStateWithLifecycle()
+
+    // Сбой репозиторной операции (ревью #65): диалог как на экране «Перевод».
+    errorMessageRes?.let { res ->
+        AlertDialog(
+            onDismissRequest = viewModel::clearError,
+            title = { Text(stringResource(R.string.error_title)) },
+            text = { Text(stringResource(res)) },
+            confirmButton = {
+                TextButton(onClick = viewModel::clearError) {
+                    Text(stringResource(R.string.ok))
+                }
+            }
+        )
+    }
 
     if (history.isEmpty()) {
         Box(

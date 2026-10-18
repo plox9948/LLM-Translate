@@ -43,6 +43,15 @@
     <string name="translate_mic_missing_stt_model">To recognize speech, download a speech recognition model on the \"Models\" screen</string>
     <string name="translate_select_language">Select language</string>
     <string name="translate_history_delete_cd">Delete from history</string>
+    <string name="translate_detect_language_failed">Could not detect the language. Select it manually.</string>
+    <string name="translate_same_languages">Choose different languages</string>
+    <string name="translate_missing_direction_model">No model for the %1$s→%2$s direction. Download it on the \"Models\" screen.</string>
+    <string name="translate_model_direction_unknown">Could not determine the direction of model %1$s</string>
+    <string name="translate_failed">Translation failed</string>
+    <string name="translate_stt_failed">Speech recognition failed</string>
+    <string name="translate_stt_model_missing">No suitable recognition model. Download it on the \"Models\" screen.</string>
+    <string name="translate_record_start_failed">Could not start recording from the microphone</string>
+    <string name="translate_record_empty">Recording is empty or failed</string>
 
     <!-- Онбординг первого запуска -->
     <string name="onboarding_title">What are we translating?</string>
@@ -54,6 +63,9 @@
 
     <!-- Вкладка «История» -->
     <string name="history_empty">Translation history is empty</string>
+    <string name="history_add_failed">Failed to save the translation to history</string>
+    <string name="history_delete_failed">Failed to delete the entry from history</string>
+    <string name="history_clear_failed">Failed to clear history</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">Backup</string>
@@ -90,6 +102,13 @@
     <string name="models_import_failed">Model import failed</string>
     <string name="models_export_done">Model exported.</string>
     <string name="models_export_failed">Model export failed</string>
+    <string name="models_backup_export_in_progress">Exporting…</string>
+    <string name="models_backup_export_done">Backup saved</string>
+    <string name="models_backup_export_failed">Backup export failed</string>
+    <string name="models_backup_import_in_progress">Importing…</string>
+    <string name="models_backup_import_error">Error: %1$s</string>
+    <string name="models_backup_import_done">Imported: %1$d, skipped: %2$d</string>
+    <string name="models_backup_import_done_settings">Imported: %1$d, skipped: %2$d, settings restored</string>
 
     <!-- Экран «Настройки» -->
     <string name="settings_tts_engine">Speech synthesis engine</string>
@@ -106,8 +125,10 @@
         <item quantity="one">After %1$d minute (default)</item>
         <item quantity="other">After %1$d minutes (default)</item>
     </plurals>
-    <string name="settings_unload_after_15">After 15 minutes</string>
-    <string name="settings_unload_after_30">After 30 minutes</string>
+    <plurals name="settings_unload_after">
+        <item quantity="one">After %1$d minute</item>
+        <item quantity="other">After %1$d minutes</item>
+    </plurals>
     <string name="settings_unload_never">Never unload</string>
     <string name="settings_direction_retention">Behavior on translation direction change</string>
     <string name="settings_retention_keep">Do not unload</string>
@@ -124,4 +145,5 @@
     <string name="favorites_search_hint">Search favorites</string>
     <string name="favorites_search_empty">Nothing found</string>
     <string name="favorites_search_clear_cd">Clear search</string>
+    <string name="favorites_update_failed">Failed to update favorites</string>
 </resources>

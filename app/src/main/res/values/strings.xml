@@ -43,6 +43,15 @@
     <string name="translate_mic_missing_stt_model">Для распознавания речи скачайте модель распознавания на экране «Модели»</string>
     <string name="translate_select_language">Выберите язык</string>
     <string name="translate_history_delete_cd">Удалить из истории</string>
+    <string name="translate_detect_language_failed">Не удалось определить язык. Выберите его вручную.</string>
+    <string name="translate_same_languages">Выберите разные языки</string>
+    <string name="translate_missing_direction_model">Нет модели для направления %1$s→%2$s. Скачайте её на экране «Модели».</string>
+    <string name="translate_model_direction_unknown">Не удалось определить направление модели %1$s</string>
+    <string name="translate_failed">Ошибка перевода</string>
+    <string name="translate_stt_failed">Ошибка распознавания</string>
+    <string name="translate_stt_model_missing">Нет подходящей модели распознавания. Скачайте её на экране «Модели».</string>
+    <string name="translate_record_start_failed">Не удалось запустить запись с микрофона</string>
+    <string name="translate_record_empty">Запись пуста или не удалась</string>
 
     <!-- Онбординг первого запуска -->
     <string name="onboarding_title">Что переводим?</string>
@@ -54,6 +63,9 @@
 
     <!-- Вкладка «История» -->
     <string name="history_empty">История переводов пуста</string>
+    <string name="history_add_failed">Не удалось сохранить перевод в историю</string>
+    <string name="history_delete_failed">Не удалось удалить запись из истории</string>
+    <string name="history_clear_failed">Не удалось очистить историю</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">Бэкап</string>
@@ -90,6 +102,13 @@
     <string name="models_import_failed">Ошибка импорта модели</string>
     <string name="models_export_done">Модель экспортирована.</string>
     <string name="models_export_failed">Ошибка экспорта модели</string>
+    <string name="models_backup_export_in_progress">Экспорт…</string>
+    <string name="models_backup_export_done">Бэкап сохранён</string>
+    <string name="models_backup_export_failed">Ошибка экспорта бэкапа</string>
+    <string name="models_backup_import_in_progress">Импорт…</string>
+    <string name="models_backup_import_error">Ошибка: %1$s</string>
+    <string name="models_backup_import_done">Импортировано: %1$d, пропущено: %2$d</string>
+    <string name="models_backup_import_done_settings">Импортировано: %1$d, пропущено: %2$d, настройки восстановлены</string>
 
     <!-- Экран «Настройки» -->
     <string name="settings_tts_engine">Движок синтеза речи</string>
@@ -108,8 +127,12 @@
         <item quantity="many">Через %1$d минут (по умолчанию)</item>
         <item quantity="other">Через %1$d минут (по умолчанию)</item>
     </plurals>
-    <string name="settings_unload_after_15">Через 15 минут</string>
-    <string name="settings_unload_after_30">Через 30 минут</string>
+    <plurals name="settings_unload_after">
+        <item quantity="one">Через %1$d минуту</item>
+        <item quantity="few">Через %1$d минуты</item>
+        <item quantity="many">Через %1$d минут</item>
+        <item quantity="other">Через %1$d минут</item>
+    </plurals>
     <string name="settings_unload_never">Не выгружать</string>
     <string name="settings_direction_retention">Поведение при смене направления перевода</string>
     <string name="settings_retention_keep">Не выгружать</string>
@@ -126,4 +149,5 @@
     <string name="favorites_search_hint">Поиск по избранным</string>
     <string name="favorites_search_empty">Ничего не найдено</string>
     <string name="favorites_search_clear_cd">Очистить поиск</string>
+    <string name="favorites_update_failed">Не удалось обновить избранное</string>
 </resources>

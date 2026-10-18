@@ -16,11 +16,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -46,6 +48,21 @@ fun FavoritesScreen(
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val speaking by viewModel.speaking.collectAsStateWithLifecycle()
+    val errorMessageRes by viewModel.errorMessageRes.collectAsStateWithLifecycle()
+
+    // Сбой репозиторной операции (ревью #65): диалог как на экране «Перевод».
+    errorMessageRes?.let { res ->
+        AlertDialog(
+            onDismissRequest = viewModel::clearError,
+            title = { Text(stringResource(R.string.error_title)) },
+            text = { Text(stringResource(res)) },
+            confirmButton = {
+                TextButton(onClick = viewModel::clearError) {
+                    Text(stringResource(R.string.ok))
+                }
+            }
+        )
+    }
 
     // Избранного нет вовсе и поиск не вводился — обычное пустое состояние.
     if (favorites.isEmpty() && searchQuery.isBlank()) {

@@ -2,15 +2,18 @@ package com.plox.llmtranslate.ui.history
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.model.FavoritesRepository
 import com.plox.llmtranslate.data.model.TranslationHistoryRepository
 import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 
 /**
@@ -31,6 +34,11 @@ class HistoryViewModel @Inject constructor(
     private val _favoriteKeys = MutableStateFlow<Set<String>>(emptySet())
     val favoriteKeys: StateFlow<Set<String>> = _favoriteKeys
 
+    // Сообщение сбоя репозиторных операций — id строкового ресурса; sticky до
+    // закрытия UI (ревью #65): сбой Room не должен ронять процесс.
+    private val _errorMessageRes = MutableStateFlow<Int?>(null)
+    val errorMessageRes: StateFlow<Int?> = _errorMessageRes
+
     init {
         viewModelScope.launch {
             repository.observeRecent().collect { _history.value = it }
@@ -47,9 +55,15 @@ class HistoryViewModel @Inject constructor(
     /** Переключить избранность записи истории (звезда в карточке). */
     fun toggleFavorite(entry: TranslationHistoryEntry) {
         viewModelScope.launch {
-            favoritesRepository.toggle(
-                entry.sourceLang, entry.targetLang, entry.inputText, entry.resultText
-            )
+            try {
+                favoritesRepository.toggle(
+                    entry.sourceLang, entry.targetLang, entry.inputText, entry.resultText
+                )
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Timber.e(e, "Не удалось переключить избранность записи истории")
+                _errorMessageRes.value = R.string.favorites_update_failed
+            }
         }
     }
 
@@ -62,10 +76,31 @@ class HistoryViewModel @Inject constructor(
     }
 
     fun deleteEntry(id: Long) {
-        viewModelScope.launch { repository.delete(id) }
+        viewModelScope.launch {
+            try {
+                repository.delete(id)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Timber.e(e, "Не удалось удалить запись истории id=$id")
+                _errorMessageRes.value = R.string.history_delete_failed
+            }
+        }
     }
 
     fun clearAll() {
-        viewModelScope.launch { repository.clear() }
+        viewModelScope.launch {
+            try {
+                repository.clear()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Timber.e(e, "Не удалось очистить историю")
+                _errorMessageRes.value = R.string.history_clear_failed
+            }
+        }
+    }
+
+    /** Скрыть сообщение об ошибке (закрытие диалога в UI). */
+    fun clearError() {
+        _errorMessageRes.value = null
     }
 }

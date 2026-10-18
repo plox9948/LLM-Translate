@@ -354,10 +354,19 @@ class TranslateViewModel @Inject constructor(
         val st = _uiState.value
         if (st.sourceLang == TranslateLanguage.AUTO || st.resultText.isBlank()) return
         viewModelScope.launch {
-            val added = favoritesRepository.toggle(
-                st.sourceLang.code, st.targetLang.code, st.inputText, st.resultText
-            )
-            update { it.copy(resultFavorite = added) }
+            try {
+                val added = favoritesRepository.toggle(
+                    st.sourceLang.code, st.targetLang.code, st.inputText, st.resultText
+                )
+                update { it.copy(resultFavorite = added) }
+            } catch (e: Exception) {
+                // Сбой Room: процесс не роняем, лог + sticky-ошибка в UI (ревью #65).
+                if (e is CancellationException) throw e
+                Timber.e(e, "Не удалось переключить избранность перевода")
+                update {
+                    it.copy(error = appContext.getString(R.string.favorites_update_failed))
+                }
+            }
         }
     }
 
@@ -442,11 +451,11 @@ class TranslateViewModel @Inject constructor(
         // Определяем исходный язык (авто или явный).
         val sourceLang = resolveSourceLanguage(state)
         if (sourceLang == null) {
-            update { it.copy(error = "Не удалось определить язык. Выберите его вручную.") }
+            update { it.copy(error = appContext.getString(R.string.translate_detect_language_failed)) }
             return
         }
         if (sourceLang == state.targetLang) {
-            update { it.copy(error = "Выберите разные языки") }
+            update { it.copy(error = appContext.getString(R.string.translate_same_languages)) }
             return
         }
 
@@ -469,7 +478,11 @@ class TranslateViewModel @Inject constructor(
                 )
                 if (chain.isNullOrEmpty()) {
                     endTranslationJobWithError(
-                        "Нет модели для направления ${sourceLang.code.uppercase()}→${state.targetLang.code.uppercase()}. Скачайте её на экране «Модели»."
+                        appContext.getString(
+                            R.string.translate_missing_direction_model,
+                            sourceLang.code.uppercase(),
+                            state.targetLang.code.uppercase()
+                        )
                     )
                     return@launch
                 }
@@ -481,7 +494,10 @@ class TranslateViewModel @Inject constructor(
                 for (model in chain) {
                     val dir = TranslationModelSelector.directionOf(model)
                     if (dir == null) {
-                        failed = "Не удалось определить направление модели ${model.displayName}"
+                        failed = appContext.getString(
+                            R.string.translate_model_direction_unknown,
+                            model.displayName
+                        )
                         break
                     }
                     val engine = runtimeRouter.translationEngine(model.runtime)
@@ -498,7 +514,7 @@ class TranslateViewModel @Inject constructor(
                         onFailure = { e ->
                             failed = when (e) {
                                 is RuntimeError -> e.userMessage()
-                                else -> "Ошибка перевода"
+                                else -> appContext.getString(R.string.translate_failed)
                             }
                         }
                     )
@@ -522,12 +538,23 @@ class TranslateViewModel @Inject constructor(
                         )
                     }
                     refreshResultFavorite()
-                    historyRepository.add(
-                        sourceLang = sourceLang.code,
-                        targetLang = state.targetLang.code,
-                        inputText = state.inputText,
-                        resultText = text
-                    )
+                    // Сбой сохранения в историю (Room) не должен терять уже
+                    // успешный перевод и ронять приложение: ошибка только
+                    // логируется и показывается в UI (ревью #65).
+                    try {
+                        historyRepository.add(
+                            sourceLang = sourceLang.code,
+                            targetLang = state.targetLang.code,
+                            inputText = state.inputText,
+                            resultText = text
+                        )
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Timber.e(e, "Не удалось сохранить перевод в историю")
+                        update {
+                            it.copy(error = appContext.getString(R.string.history_add_failed))
+                        }
+                    }
                 }
             } catch (e: CancellationException) {
                 // Отмена пользователем (кнопка «Отмена») — не ошибка:
@@ -583,7 +610,7 @@ class TranslateViewModel @Inject constructor(
                 )
                 if (model == null) {
                     endTranslationJobWithError(
-                        "Нет подходящей модели распознавания. Скачайте её на экране «Модели»."
+                        appContext.getString(R.string.translate_stt_model_missing)
                     )
                     return@launch
                 }
@@ -607,7 +634,8 @@ class TranslateViewModel @Inject constructor(
                     },
                     onFailure = { e ->
                         endTranslationJobWithError(
-                            (e as? RuntimeError)?.userMessage() ?: "Ошибка распознавания"
+                            (e as? RuntimeError)?.userMessage()
+                                ?: appContext.getString(R.string.translate_stt_failed)
                         )
                     }
                 )
@@ -655,7 +683,7 @@ class TranslateViewModel @Inject constructor(
      */
     fun startRecording(): Boolean {
         if (!audioRecorder.startRecording()) {
-            update { it.copy(error = "Не удалось запустить запись с микрофона") }
+            update { it.copy(error = appContext.getString(R.string.translate_record_start_failed)) }
             return false
         }
         update { it.copy(isRecording = true, error = null) }
@@ -682,7 +710,7 @@ class TranslateViewModel @Inject constructor(
                 val wavPath = audioRecorder.stopRecording()
                 update { it.copy(isRecording = false) }
                 if (wavPath == null) {
-                    update { it.copy(error = "Запись пуста или не удалась") }
+                    update { it.copy(error = appContext.getString(R.string.translate_record_empty)) }
                     return@launch
                 }
                 transcribeAudio(wavPath)

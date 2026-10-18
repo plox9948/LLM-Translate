@@ -27,6 +27,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Единственная активность: хост для Compose-экранов.
@@ -35,6 +36,20 @@ import kotlinx.coroutines.runBlocking
 class MainActivity : ComponentActivity() {
 
     companion object {
+        /**
+         * Предел ожидания кэша uiLanguage в onCreate, мс (ревью #65): если
+         * prefetch из Application не завершился и первое чтение DataStore
+         * зависло, главная нить не блокируется неограниченно — по таймауту
+         * берётся значение по умолчанию.
+         */
+        private const val UI_LANGUAGE_CACHE_TIMEOUT_MS = 500L
+
+        /**
+         * Язык интерфейса по умолчанию («по системе») — тот же дефолт, что
+         * в потоке [ModelPreferences.uiLanguage].
+         */
+        private const val DEFAULT_UI_LANGUAGE = "system"
+
         /**
          * Исходная системная конфигурация, снятая при первом создании активности
          * в процессе. После updateConfiguration() локаль «прилипает» к процессу и
@@ -115,8 +130,14 @@ class MainActivity : ComponentActivity() {
         // ресурсы уже с нужной локалью, первый кадр уже на выбранном языке.
         // prefetch запущен в OfflineTranslatorApp.onCreate — здесь читаем из
         // памяти; при recreate после смены языка кэш уже прогрет, поэтому
-        // главная нить не блокируется на IO.DataStore.
-        val savedLanguage = runBlocking { preferences.awaitUiLanguageCache() }
+        // главная нить не блокируется на IO.DataStore. Ограничение ожидания
+        // таймаутом (ревью #65): при незавершённом prefetch главная нить не
+        // встаёт на IO неограниченно — по таймауту значение по умолчанию.
+        val savedLanguage = runBlocking {
+            withTimeoutOrNull(UI_LANGUAGE_CACHE_TIMEOUT_MS) {
+                preferences.awaitUiLanguageCache()
+            } ?: DEFAULT_UI_LANGUAGE
+        }
         applyUiLanguage(savedLanguage)
 
         // Смена языка вне композиции: пересоздаём активность, чтобы все

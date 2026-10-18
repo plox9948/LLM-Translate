@@ -238,7 +238,9 @@ class ModelsViewModel @Inject constructor(
         _processPssMb.value = null
     }
 
-    val licenseConfirmModel = MutableStateFlow<ModelCard?>(null)
+    /** Карточка модели, ожидающая подтверждения лицензии (диалог в UI). */
+    private val _licenseConfirmModel = MutableStateFlow<ModelCard?>(null)
+    val licenseConfirmModel: StateFlow<ModelCard?> = _licenseConfirmModel
 
     /** Причина последней блокировки установки (баннер в UI). */
     private val _blockedReason = MutableStateFlow<String?>(null)
@@ -271,7 +273,7 @@ class ModelsViewModel @Inject constructor(
             }
             else -> {
                 if (card.requiresLicenseConfirmation) {
-                    licenseConfirmModel.value = card
+                    _licenseConfirmModel.value = card
                 } else {
                     doDownload(card)
                 }
@@ -280,14 +282,14 @@ class ModelsViewModel @Inject constructor(
     }
 
     fun confirmLicenseAndDownload() {
-        licenseConfirmModel.value?.let { card ->
-            licenseConfirmModel.value = null
+        _licenseConfirmModel.value?.let { card ->
+            _licenseConfirmModel.value = null
             doDownload(card)
         }
     }
 
     fun cancelLicenseConfirm() {
-        licenseConfirmModel.value = null
+        _licenseConfirmModel.value = null
     }
 
     private fun doDownload(card: ModelCard) {
@@ -461,11 +463,17 @@ class ModelsViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(backupExportRequest = null)
         if (uri == null) return
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isBusy = true, statusMessage = "Экспорт…")
+            _uiState.value = _uiState.value.copy(
+                isBusy = true,
+                statusMessage = context.getString(R.string.models_backup_export_in_progress)
+            )
             val ok = backupManager.exportToUri(uri)
             _uiState.value = _uiState.value.copy(
                 isBusy = false,
-                statusMessage = if (ok) "Бэкап сохранён" else "Ошибка экспорта бэкапа"
+                statusMessage = context.getString(
+                    if (ok) R.string.models_backup_export_done
+                    else R.string.models_backup_export_failed
+                )
             )
         }
     }
@@ -476,12 +484,24 @@ class ModelsViewModel @Inject constructor(
     fun onBackupImportResult(uri: Uri?) {
         if (uri == null) return
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isBusy = true, statusMessage = "Импорт…")
+            _uiState.value = _uiState.value.copy(
+                isBusy = true,
+                statusMessage = context.getString(R.string.models_backup_import_in_progress)
+            )
             val result = backupManager.importFromUri(uri)
             val msg = when {
-                result.error != null -> "Ошибка: ${result.error}"
-                else -> "Импортировано: ${result.importedCount}, пропущено: ${result.skippedCount}" +
-                    (if (result.settingsRestored) ", настройки восстановлены" else "")
+                result.error != null ->
+                    context.getString(R.string.models_backup_import_error, result.error)
+                result.settingsRestored -> context.getString(
+                    R.string.models_backup_import_done_settings,
+                    result.importedCount,
+                    result.skippedCount
+                )
+                else -> context.getString(
+                    R.string.models_backup_import_done,
+                    result.importedCount,
+                    result.skippedCount
+                )
             }
             _uiState.value = _uiState.value.copy(isBusy = false, statusMessage = msg)
         }

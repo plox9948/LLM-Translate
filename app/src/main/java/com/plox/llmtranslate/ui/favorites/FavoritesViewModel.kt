@@ -2,6 +2,7 @@ package com.plox.llmtranslate.ui.favorites
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.model.FavoritesRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.model.FavoriteEntry
@@ -13,6 +14,7 @@ import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import com.plox.llmtranslate.domain.runtime.trackEnginePreference
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -54,6 +56,11 @@ class FavoritesViewModel @Inject constructor(
     // Что сейчас озвучивается (запись + поле); null — озвучивания нет.
     private val _speaking = MutableStateFlow<SpeakingSelection?>(null)
     val speaking: StateFlow<SpeakingSelection?> = _speaking
+
+    // Сообщение сбоя репозиторной операции — id строкового ресурса; sticky до
+    // закрытия UI (ревью #65): сбой Room не должен ронять процесс.
+    private val _errorMessageRes = MutableStateFlow<Int?>(null)
+    val errorMessageRes: StateFlow<Int?> = _errorMessageRes
 
     /** Последняя залогированная ошибка координатора (однократность лога). */
     private var lastLoggedTtsError: RuntimeError? = null
@@ -143,8 +150,19 @@ class FavoritesViewModel @Inject constructor(
     /** Убрать запись из избранного (звезда в карточке). */
     fun removeFavorite(entry: FavoriteEntry) {
         viewModelScope.launch {
-            favoritesRepository.remove(entry.sourceLang, entry.targetLang, entry.inputText)
+            try {
+                favoritesRepository.remove(entry.sourceLang, entry.targetLang, entry.inputText)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Timber.e(e, "Не удалось убрать запись из избранного id=${entry.id}")
+                _errorMessageRes.value = R.string.favorites_update_failed
+            }
         }
+    }
+
+    /** Скрыть сообщение об ошибке (закрытие диалога в UI). */
+    fun clearError() {
+        _errorMessageRes.value = null
     }
 
     /** Подставить запись на экран «Перевод» (конвертация в формат истории). */
