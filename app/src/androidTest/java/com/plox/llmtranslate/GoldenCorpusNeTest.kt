@@ -268,10 +268,12 @@ class GoldenCorpusNeTest {
         val loadError = runBlocking { engine.ensureLoaded(model) }
         assertTrue("Ошибка загрузки: $loadError", loadError == null)
 
-        // Абзац из предложений корпуса, склеенных дандой без пробела после
-        // (плотная непальская запись) — суммарно заведомо за окном эмбеддингов.
+        // Абзац из предложений корпуса, повторённый трижды и склеенный дандой
+        // без пробела после (плотная непальская запись): суммарно заведомо
+        // больше окна эмбеддингов (258), чтобы on-device шла ветка >1 чанка.
         val corpus = loadCorpus()
-        val paragraph = corpus.ne2en.joinToString("।") { it.src.trimEnd('।') } + "।"
+        val base = corpus.ne2en.joinToString("।") { it.src.trimEnd('।') }
+        val paragraph = "$base।$base।$base।"
         val result = runBlocking { engine.translate(paragraph, "ne", "en") }
         assertTrue("Длинный ne-абзац не переведён: ${result.exceptionOrNull()}", result.isSuccess)
         val out = result.getOrThrow()
