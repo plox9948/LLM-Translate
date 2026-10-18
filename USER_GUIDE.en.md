@@ -4,7 +4,10 @@ An offline translator for Android: Russian ⇄ English ⇄ Nepali. All translati
 run right on your phone — you need the internet **only once**, to download the
 models. After that the app works without a network connection anywhere.
 
-Download the app: https://github.com/plox9948/LLM-Translate/releases
+Download the app (direct link to the latest release APK):
+https://github.com/plox9948/LLM-Translate/releases/latest/download/LLM-Translator-release.apk
+
+All releases: https://github.com/plox9948/LLM-Translate/releases
 
 ## Installation
 

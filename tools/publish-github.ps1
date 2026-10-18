@@ -16,7 +16,8 @@
 [CmdletBinding()]
 param(
     [string]$Tag,
-    [string]$Apk
+    [string]$Apk,
+    [string]$BodyFile
 )
 
 # git пишет прогресс в stderr — при Stop PowerShell 5.1 считал бы его ошибкой;
@@ -58,9 +59,17 @@ if ($Tag) {
 
     $headers = @{ Authorization = "Bearer $token"; 'User-Agent' = 'publish-github' }
     $ErrorActionPreference = 'Stop'
-    $payload = @{ tag_name = $Tag; name = "LLM-Translator $Tag"; draft = $false; prerelease = $false } | ConvertTo-Json
+    $relFields = @{ tag_name = $Tag; name = "LLM-Translator $Tag"; draft = $false; prerelease = $false }
+    if ($BodyFile) {
+        $bodyPath = if ([System.IO.Path]::IsPathRooted($BodyFile)) { $BodyFile } else { Join-Path $repoRoot $BodyFile }
+        if (-not (Test-Path $bodyPath)) { throw "Файл описания релиза не найден: $bodyPath" }
+        # Кириллица в JSON уходит UTF-8 байтами — строковое тело PS 5.1 портит кодировку.
+        $relFields.body = (Get-Content $bodyPath -Raw -Encoding UTF8).TrimEnd([char]0xFEFF)
+    }
+    # GitHub API ждёт JSON в UTF-8 (PS 5.1 по умолчанию шлёт локальную кодировку).
+    $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes(($relFields | ConvertTo-Json -Depth 4))
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases" `
-        -Method Post -Headers $headers -Body $payload -ContentType 'application/json; charset=utf-8'
+        -Method Post -Headers $headers -Body $payloadBytes -ContentType 'application/json; charset=utf-8'
     # Имя ассета без версии: сохраняет ссылку
     # .../releases/latest/download/LLM-Translator-release.apk актуальной для любого релиза.
     $assetName = "LLM-Translator-release.apk"
