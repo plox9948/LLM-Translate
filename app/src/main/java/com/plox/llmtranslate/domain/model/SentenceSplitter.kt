@@ -51,8 +51,9 @@ object SentenceSplitter {
      * (ревью раунд 9: склейка перевода через пробел теряла переводы строк
      * исходника).
      * @return пара (сегменты, разделители); разделителей ровно
-     *         `сегменты.size - 1`: "\n" если между сегментами в [text] есть
-     *         перевод строки, иначе " ".
+     *         `сегменты.size - 1`: "\n" если граница между сегментами в [text]
+     *         содержала перевод строки (сам закрывающий символ или зазор),
+     *         иначе " ".
      */
     fun splitWithSeparators(text: String): Pair<List<String>, List<String>> {
         val segments = ArrayList<String>()
@@ -62,16 +63,23 @@ object SentenceSplitter {
         // закрытым сегментом и началом следующего определяется разделитель.
         var rawStart = 0
         var prevRawEnd = -1
+        // Граница-перевод строки без пунктуации закрывает сырой сегмент СВОИМ
+        // символом, поэтому '\n' остаётся внутри закрытого фрагмента, а зазор
+        // пуст — без этого флага одиночный перевод строки терялся (дефект:
+        // «строка1\nстрока2» склеивался пробелом).
+        var prevClosedByNewline = false
 
         fun closeRawSegment(rawEnd: Int) {
             val segment = current.toString().trim()
             if (segment.isEmpty()) return
             if (segments.isNotEmpty()) {
                 val gap = text.substring(prevRawEnd, rawStart)
-                separators.add(if (gap.contains('\n')) "\n" else " ")
+                val hasNewline = prevClosedByNewline || gap.contains('\n')
+                separators.add(if (hasNewline) "\n" else " ")
             }
             segments.add(segment)
             prevRawEnd = rawEnd
+            prevClosedByNewline = rawEnd > rawStart && text[rawEnd - 1] == '\n'
         }
 
         var i = 0

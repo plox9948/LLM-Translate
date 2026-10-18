@@ -38,6 +38,22 @@ class SentenceSplitterTest {
     }
 
     @Test
+    fun `bare newline boundary yields newline separator`() {
+        // Дефект устройства: «hello world\nsecond line» — граница закрыта
+        // самим переводом строки (без пунктуации), разделитель обязан быть «\n»,
+        // иначе ViewModel склеивает сегменты пробелом.
+        val (segments, separators) = SentenceSplitter.splitWithSeparators("hello world\nsecond line")
+        assertEquals(listOf("hello world", "second line"), segments)
+        assertEquals(listOf("\n"), separators)
+    }
+
+    @Test
+    fun `punctuation boundary yields space separator`() {
+        val (_, separators) = SentenceSplitter.splitWithSeparators("First one. Second one.")
+        assertEquals(listOf(" "), separators)
+    }
+
+    @Test
     fun `decimal point and abbreviation without space are not boundaries`() {
         assertEquals(
             listOf("Температура минус 3.14 градуса устойчива."),

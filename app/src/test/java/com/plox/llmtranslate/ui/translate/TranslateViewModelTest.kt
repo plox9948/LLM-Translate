@@ -419,6 +419,86 @@ class TranslateViewModelTest {
         coVerify(exactly = 2) { engine.translate(any(), "ru", "en") }
     }
 
+    /** Готовая модель перевода указанного направления (для цепочек и direct-тестов). */
+    private fun readyTranslation(id: String, display: String, langs: List<String>) =
+        InstalledModel(
+            id = id,
+            category = ModelCategory.TRANSLATION,
+            displayName = display,
+            description = "",
+            runtime = RuntimeType.MARIAN_SLIMT,
+            sizeBytes = 100,
+            ramRequiredMb = 100,
+            languages = langs,
+            quality = 4,
+            speed = 4,
+            url = "",
+            urls = emptyList(),
+            sha256 = null,
+            license = "Apache-2.0",
+            minAndroidSdk = 26,
+            recommendedRamMb = 0,
+            status = ModelStatus.READY,
+            progress = 100,
+            filePath = "/models/MARIAN_SLIMT/$id",
+            bytesDone = 100,
+            isBuiltin = true
+        )
+
+    /** Echo-движок под произвольный набор готовых моделей перевода. */
+    private fun stubEchoEngine(models: List<InstalledModel>): TranslationEngine {
+        every { modelManager.installedModels(ModelCategory.TRANSLATION) } returns flowOf(models)
+        val engine = mockk<TranslationEngine>(relaxed = true)
+        coEvery { engine.ensureLoaded(any()) } returns null
+        coEvery { engine.translate(any(), any(), any()) } answers {
+            Result.success("«${firstArg<String>()}»")
+        }
+        every { runtimeRouter.translationEngine(RuntimeType.MARIAN_SLIMT) } returns engine
+        return engine
+    }
+
+    @Test
+    fun `translate direct en ru keeps bare newline from two line input`() {
+        // Дефект устройства: «hello world\nsecond line» EN→RU — граница закрыта
+        // самим переводом строки (без пунктуации); склейка обязана сохранить «\n».
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val engine = stubEchoEngine(listOf(readyTranslation("trans-en-ru", "en→ru", listOf("en", "ru"))))
+        createViewModel()
+        viewModel.onSourceLangChange(TranslateLanguage.EN)
+        viewModel.onTargetLangChange(TranslateLanguage.RU)
+        viewModel.onInputTextChanged("hello world\nsecond line")
+
+        viewModel.translate()
+
+        assertEquals("«hello world»\n«second line»", viewModel.uiState.value.resultText)
+        coVerify(exactly = 2) { engine.translate(any(), "en", "ru") }
+    }
+
+    @Test
+    fun `translate chain via en keeps bare newline on both hops`() {
+        // Цепочка ru→en→ne: перенос строки исходника должен пережить оба звена.
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val engine = stubEchoEngine(
+            listOf(
+                readyTranslation("trans-ru-en", "ru→en", listOf("ru", "en")),
+                readyTranslation("trans-en-ne", "en→ne", listOf("en", "ne"))
+            )
+        )
+        createViewModel()
+        viewModel.onSourceLangChange(TranslateLanguage.RU)
+        viewModel.onTargetLangChange(TranslateLanguage.NE)
+        viewModel.onInputTextChanged("первая строка\nвторая строка")
+
+        viewModel.translate()
+
+        assertEquals(
+            "««первая строка»»\n««вторая строка»»",
+            viewModel.uiState.value.resultText
+        )
+        // 2 сегмента × 2 звена цепочки.
+        coVerify(exactly = 4) { engine.translate(any(), any(), any()) }
+    }
+
     @Test
     fun `translate joins sentence-boundary segments with a space`() {
         every { favoritesRepository.observeAll() } returns flowOf(emptyList())
