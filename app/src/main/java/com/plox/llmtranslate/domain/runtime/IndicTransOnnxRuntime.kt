@@ -52,6 +52,8 @@ class IndicTransOnnxRuntime @Inject constructor(
 
     companion object {
         private const val MAX_NEW_TOKENS = 128
+        /** Значение по умолчанию для unk_id из tokenizer_meta.json (в каталоге = 3). */
+        private const val DEFAULT_UNK_ID = 3
         private const val INTRA_OP_THREADS = 4
         private const val INTER_OP_THREADS = 1
         private val PAST_SUFFIXES = listOf(
@@ -77,6 +79,7 @@ class IndicTransOnnxRuntime @Inject constructor(
         val eosTokenId: Int,
         val srcDictSize: Int,
         val tgtDictSize: Int,
+        val unkId: Int,
         val info: LoadedModelInfo
     ) {
         /** Закрыть нативные сессии пучка (ошибки — только в лог). */
@@ -233,6 +236,7 @@ class IndicTransOnnxRuntime @Inject constructor(
                             eosTokenId = gen.eosTokenId,
                             srcDictSize = dict.srcDictSize,
                             tgtDictSize = dict.tgtDictSize,
+                            unkId = dict.unkId,
                             info = LoadedModelInfo(
                                 modelId = modelInfo.id,
                                 displayName = modelInfo.displayName,
@@ -267,10 +271,12 @@ class IndicTransOnnxRuntime @Inject constructor(
     /**
      * Перевести текст (IndicTrans2 encoder-decoder, greedy).
      *
-     * Язык задаётся flores-префиксом в тексте по схеме IndicTransToolkit:
-     * строится prompt "srcLang tgtLang <текст>", нормализуется (NFC) и
-     * токенизируется целиком одним вызовом.
-     * Инференс идёт по активному пучку кэша — [ensureLoaded] вызывают перед
+      * Язык задаётся flores-префиксом в тексте по схеме IndicTransToolkit.
+      * Вход энкодера: `punc_norm(prompt) → encode → clamp → +EOS`
+      * (preprocess уже включает punc_norm; EOS на входе — симметрия с Marian).
+      * Выход: `decode → RepetitionTrimmer.trim → postprocess`
+      * (детокенизация строго после триммера — см. комментарий в теле).
+      * Инференс идёт по активному пучку кэша — [ensureLoaded] вызывают перед
      * переводом, поэтому активный пучок соответствует модели направления;
      * при отсутствии активного — [RuntimeError.ModelNotSelected].
      */
@@ -311,14 +317,29 @@ class IndicTransOnnxRuntime @Inject constructor(
 
                     // Языковой префикс вставляется в текст до токенизации.
                     val prompt = IndicProcessorLite.preprocess(text, srcLang, tgtLang)
-                    val inputIds = srcTok.encode(prompt)
-                        .map { clampId(it, bundle.srcDictSize).toLong() }
-                        .toLongArray()
-                    if (inputIds.isEmpty()) {
+
+                    // Порядок: encode → clamp → +EOS. За unk-токеном — симметрия
+                    // с Marian: src-сторона вместо 0 (<pad>, искажает эмбеддинги)
+                    // подменяет вышедшие за словарь id на <unk> из vocab.
+                    val encoded = srcTok.encode(prompt)
+                        .map { clampId(it, bundle.srcDictSize, bundle.unkId).toLong() }
+                        .toMutableList()
+                    if (encoded.isEmpty()) {
                         return@withContext Result.failure(
                             RuntimeError.InferenceFailed("indictrans", "Пустой вход")
                         )
                     }
+
+                    // EOS на входе энкодера (симметрия с Marian). attentionMask
+                    // строится ПОСЛЕ добавления EOS — длина маски = длине входа.
+                    val eos = srcTok.eosId()
+                    if (eos != null) {
+                        encoded += eos.toLong()
+                    } else {
+                        Timber.w("IndicTrans: eosId недоступен — вход без EOS")
+                    }
+                    val inputIds = encoded.toLongArray()
+
                     val attentionMask = LongArray(inputIds.size) { 1L }
 
                     // Encoder. Входные тензоры закрываем сразу после run — на любом пути.
@@ -386,8 +407,10 @@ class IndicTransOnnxRuntime @Inject constructor(
                         }
 
                         // Декодирование (skip-специальные), id зажимаем размером словаря.
+                        // tgt-clamp = 0: недостижим (логиты = tgt_dict_size),
+                        // менять на unk нельзя — <unk> попадёт в видимый текст.
                         val rawText = tgtTok.decode(
-                            generatedIds.map { clampId(it, bundle.tgtDictSize) }
+                            generatedIds.map { clampId(it, bundle.tgtDictSize, 0) }
                         )
                         Timber.d(
                             "IndicTrans: сгенерировано ${generatedIds.size} токенов, " +
@@ -400,7 +423,13 @@ class IndicTransOnnxRuntime @Inject constructor(
                         if (trimmed != rawText) {
                             Timber.d("IndicTrans: схлопнут повтор: «$rawText» => «$trimmed»")
                         }
-                        resultText = trimmed
+                        // Порядок фиксирован: decode → trim → postprocess.
+                        // Правилу 2 RepetitionTrimmer нужны пробелы как разделители
+                        // слов, детокенизация до триммера его ломает
+                        // (тал . ताल । склеится в तал. ताल।).
+                        val finalText = IndicProcessorLite.postprocess(trimmed, tgtLang)
+                        Timber.d("IndicTrans: после postprocess: «$finalText»")
+                        resultText = finalText
                     } finally {
                         encOutput.close()
                     }
@@ -499,10 +528,11 @@ class IndicTransOnnxRuntime @Inject constructor(
         val eosTokenId: Int
     )
 
-    /** Размеры словарей токенизаторов из tokenizer_meta.json. */
+    /** Размеры словарей и unk-токен токенизаторов из tokenizer_meta.json. */
     private data class DictSizes(
         val srcDictSize: Int,
-        val tgtDictSize: Int
+        val tgtDictSize: Int,
+        val unkId: Int
     )
 
     private fun parseGenerationConfig(file: File): GenerationParams {
@@ -520,21 +550,37 @@ class IndicTransOnnxRuntime @Inject constructor(
     }
 
     private fun parseTokenizerMeta(file: File?): DictSizes {
-        if (file == null) return DictSizes(srcDictSize = Int.MAX_VALUE, tgtDictSize = Int.MAX_VALUE)
+        if (file == null) {
+            return DictSizes(srcDictSize = Int.MAX_VALUE, tgtDictSize = Int.MAX_VALUE, unkId = DEFAULT_UNK_ID)
+        }
         return try {
             val root = Json.parseToJsonElement(file.readText()).jsonObject
             DictSizes(
                 srcDictSize = (root["src_dict_size"] as? JsonPrimitive)?.intOrNull ?: Int.MAX_VALUE,
-                tgtDictSize = (root["tgt_dict_size"] as? JsonPrimitive)?.intOrNull ?: Int.MAX_VALUE
+                tgtDictSize = (root["tgt_dict_size"] as? JsonPrimitive)?.intOrNull ?: Int.MAX_VALUE,
+                unkId = (root["unk_id"] as? JsonPrimitive)?.intOrNull ?: DEFAULT_UNK_ID
             )
         } catch (e: Exception) {
             Timber.w("Не удалось прочитать tokenizer_meta.json: ${e.message}")
-            DictSizes(srcDictSize = Int.MAX_VALUE, tgtDictSize = Int.MAX_VALUE)
+            DictSizes(
+                srcDictSize = Int.MAX_VALUE,
+                tgtDictSize = Int.MAX_VALUE,
+                unkId = DEFAULT_UNK_ID
+            )
         }
     }
 
-    private fun clampId(id: Int, dictSize: Int): Int =
-        if (id < dictSize) id else 0
+    /**
+     * Зажать id за пределы словаря. Для src-стороны вместо 0 подставляется
+     * unk-токен: id 0 (<pad>) на входе энкодера искажает эмбеддинги, а <unk>
+     * — честная кодировка неизвестного токена.
+     *
+     * tgt-сторона вызывает это с unk = 0: tgt-clamp недостижим
+     * (логиты = tgt_dict_size), менять на unk нельзя — <unk> попадёт
+     * в видимый текст.
+     */
+    private fun clampId(id: Int, dictSize: Int, unkId: Int): Int =
+        if (id < dictSize) id else unkId
 
     /**
      * Найти файл модели по части имени.
