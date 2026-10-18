@@ -520,6 +520,31 @@ class ModelManagerImpl @Inject constructor(
         File(File(modelsDir, runtime.name), modelId.replace('/', '_'))
 
     /**
+     * Перенести распакованный временный каталог в каталог модели
+     * ([modelTargetDir]) и посчитать суммарный размер его файлов. Общий шаг
+     * импорта ZIP из метаданных (modelFromMeta) и из имени (modelFromZipName).
+     * @return пара (каталог модели, размер в байтах); null при сбое копирования —
+     *   полу-скопированный каталог удалён, извлечённый temp чистится
+     *   в finally [importZip].
+     */
+    private fun promoteExtractedDir(
+        extracted: File,
+        runtime: RuntimeType,
+        modelId: String
+    ): Pair<File, Long>? {
+        val targetDir = modelTargetDir(runtime, modelId)
+        if (!extracted.copyRecursively(targetDir, overwrite = true)) {
+            Timber.w("Не удалось распаковать модель $modelId в ${targetDir.path}")
+            targetDir.deleteRecursively()
+            return null
+        }
+        // Размер считаем один раз: каталог между этими полями не меняется
+        // (sizeBytes и bytesDone всегда равны сумме файлов каталога).
+        val size = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        return targetDir to size
+    }
+
+    /**
      * Распакованный ZIP → модель из вложенных метаданных (id из каталога).
      * @return null, если category/runtime из метаданных не распознаются.
      */
@@ -536,17 +561,8 @@ class ModelManagerImpl @Inject constructor(
             Timber.w("Неизвестная категория в метаданных ZIP: ${meta.category}")
             return null
         }
-        val targetDir = modelTargetDir(runtime, meta.id)
-        if (!extracted.copyRecursively(targetDir, overwrite = true)) {
-            Timber.w("Не удалось распаковать модель ${meta.id} в ${targetDir.path}")
-            // Полу-скопированный каталог — мусор; извлечённый temp чистится
-            // в finally importZip.
-            targetDir.deleteRecursively()
-            return null
-        }
-        // Размер считаем один раз: каталог между этими полями не меняется
-        // (sizeBytes и bytesDone всегда равны сумме файлов каталога).
-        val size = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        val (targetDir, size) = promoteExtractedDir(extracted, runtime, meta.id)
+            ?: return null
         return InstalledModel(
             id = meta.id,
             category = category,
@@ -624,15 +640,8 @@ class ModelManagerImpl @Inject constructor(
                 Timber.w("Неизвестный формат ZIP-модели $sourceName — импорт отклонён")
                 return null
             }
-        val targetDir = modelTargetDir(runtime, modelId)
-        if (!extracted.copyRecursively(targetDir, overwrite = true)) {
-            Timber.w("Не удалось распаковать модель $modelId в ${targetDir.path}")
-            // Полу-скопированный каталог — мусор; извлечённый temp чистится
-            // в finally importZip.
-            targetDir.deleteRecursively()
-            return null
-        }
-        val size = targetDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        val (targetDir, size) = promoteExtractedDir(extracted, runtime, modelId)
+            ?: return null
         return guessedImportedModel(
             modelId = modelId,
             sourceName = sourceName,
