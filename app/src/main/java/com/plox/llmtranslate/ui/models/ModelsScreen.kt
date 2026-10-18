@@ -840,26 +840,13 @@ private fun ModelCardItem(
             // повторный тап не снимает назначение. У Piper кликабельны только
             // у готовой модели; иначе показывается подсказка скачать.
             if (ttsChips.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = stringResource(R.string.models_tts_lang_label),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    ttsChips.forEachIndexed { index, lang ->
-                        if (index > 0) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                        }
-                        FilterChip(
-                            selected = lang in ttsAssignedLanguages,
-                            enabled = ttsChipsEnabled,
-                            onClick = { onTtsLanguageToggle(lang) },
-                            label = { Text(lang.uppercase(Locale.US)) }
-                        )
-                    }
-                }
+                LanguageChipRow(
+                    labelRes = R.string.models_tts_lang_label,
+                    languages = ttsChips,
+                    assignedLanguages = ttsAssignedLanguages,
+                    enabled = ttsChipsEnabled,
+                    onToggle = onTtsLanguageToggle
+                )
                 if (!ttsChipsEnabled) {
                     Text(
                         text = stringResource(R.string.models_tts_chip_download_first),
@@ -873,26 +860,48 @@ private fun ModelCardItem(
             // (issue #28). Активный чип — язык назначен этой модели; повторный
             // тап снимает назначение; тап по языку другой модели — переназначение.
             if (sttChips.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = stringResource(R.string.models_stt_lang_label),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    sttChips.forEachIndexed { index, lang ->
-                        if (index > 0) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                        }
-                        FilterChip(
-                            selected = lang in sttAssignedLanguages,
-                            onClick = { onSttLanguageToggle(lang) },
-                            label = { Text(lang.uppercase(Locale.US)) }
-                        )
-                    }
-                }
+                LanguageChipRow(
+                    labelRes = R.string.models_stt_lang_label,
+                    languages = sttChips,
+                    assignedLanguages = sttAssignedLanguages,
+                    onToggle = onSttLanguageToggle
+                )
             }
+        }
+    }
+}
+
+/**
+ * Строка чипов «язык назначения» (общий каркас чипов STT и TTS): подпись,
+ * FilterChip на каждый язык [languages], активный — входящий в
+ * [assignedLanguages]; [enabled] — доступность чипов (по умолчанию кликабельны).
+ */
+@Composable
+private fun LanguageChipRow(
+    labelRes: Int,
+    languages: List<String>,
+    assignedLanguages: Set<String>,
+    enabled: Boolean = true,
+    onToggle: (String) -> Unit
+) {
+    Spacer(modifier = Modifier.height(6.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = stringResource(labelRes),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        languages.forEachIndexed { index, lang ->
+            if (index > 0) {
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            FilterChip(
+                selected = lang in assignedLanguages,
+                enabled = enabled,
+                onClick = { onToggle(lang) },
+                label = { Text(lang.uppercase(Locale.US)) }
+            )
         }
     }
 }
@@ -926,6 +935,8 @@ private fun categoryTitle(category: ModelCategory): String = stringResource(
 
 // Пороги форматирования размера (КиБ/МиБ/ГиБ в байтах).
 private const val BYTES_IN_KB = 1_024L
+private const val BYTES_IN_MB = 1_048_576L
+private const val BYTES_IN_GB = 1_073_741_824L
 
 /** Поддерживаемые языки для чипов назначения STT-модели (issue #28). */
 private val STT_CHIP_LANGUAGES = listOf("ru", "en", "ne")
@@ -946,8 +957,6 @@ private fun ttsChipLanguages(card: ModelCard): List<String> =
     } else {
         emptyList()
     }
-private const val BYTES_IN_MB = 1_048_576L
-private const val BYTES_IN_GB = 1_073_741_824L
 
 @Composable
 internal fun formatBytes(bytes: Long): String {

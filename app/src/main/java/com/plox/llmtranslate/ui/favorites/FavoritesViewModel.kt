@@ -6,6 +6,7 @@ import com.plox.llmtranslate.data.model.FavoritesRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
+import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import com.plox.llmtranslate.domain.model.userMessage
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
@@ -53,6 +54,9 @@ class FavoritesViewModel @Inject constructor(
     private val _speaking = MutableStateFlow<SpeakingSelection?>(null)
     val speaking: StateFlow<SpeakingSelection?> = _speaking
 
+    /** Последняя залогированная ошибка координатора (однократность лога). */
+    private var lastLoggedTtsError: RuntimeError? = null
+
     init {
         // Фильтрация на устройстве: избранных записей мало, сортировка
         // репозитория сохраняется (filter порядок не меняет).
@@ -92,9 +96,6 @@ class FavoritesViewModel @Inject constructor(
             }
         }
     }
-
-    /** Последняя залогированная ошибка координатора (однократность лога). */
-    private var lastLoggedTtsError: com.plox.llmtranslate.domain.model.RuntimeError? = null
 
     /** Обновить поисковый запрос (поиск над списком избранного). */
     fun onQueryChange(query: String) {
