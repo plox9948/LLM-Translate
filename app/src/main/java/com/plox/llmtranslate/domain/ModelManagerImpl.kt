@@ -417,8 +417,9 @@ class ModelManagerImpl @Inject constructor(
     }
 
     /**
-     * Удалить файлы старой записи, вытесненные повторным одиночным импортом
-     * той же модели. Импорт каждый раз пишет новый путь `imported_<ts>`, и без
+     * Удалить файлы старой записи, вытесненные повторным импортом (одиночным
+     * файлом или ZIP — issue #72) той же модели. Одиночный импорт каждый раз
+     * пишет новый путь `imported_<ts>`, и без
      * очистки старые файлы остаются мусором без записи в БД. Два случая:
      *  - прежний файл зоны импорта (`imported_*` в корне каталога моделей) —
      *    удаляется файл (issue #40);
@@ -534,7 +535,16 @@ class ModelManagerImpl @Inject constructor(
                 ?: modelFromZipName(sourceName, tempDir)
                 ?: return null
 
+            // Issue #72: прежняя запись той же id читается ДО upsert —
+            // ZIP-импорт, замещающий одиночный импорт, осиротевший прежний
+            // imported_* файл (или пучок по другому пути). Eviction движка
+            // уже выполнен внутри promoteExtractedDir (releaseModel до
+            // copyRecursively), здесь остаётся чистка прежнего пути; guard
+            // oldPath == newPath внутри deleteSupersededImportFiles не даст
+            // удалить только что промоутенный целевой каталог.
+            val previousRecord = repository.getById(model.id)
             repository.upsert(model)
+            model.filePath?.let { deleteSupersededImportFiles(previousRecord, File(it)) }
             Timber.d("Импортирована модель ${model.id} (ZIP $sourceName)")
             return model.id
         } catch (e: Exception) {

@@ -386,4 +386,89 @@ class ModelManagerTest {
         assertArrayEquals(newContent, sharedFile.readBytes())
         modelsDir.deleteRecursively()
     }
+
+    @Test
+    fun `zip import replacing single imported file removes orphan imported file`() = runTest {
+        // Issue #72: прежний одиночный импорт (imported_* в корне models/),
+        // замещённый ZIP-импортом той же id, обязан быть удалён после промоута
+        // пучка — иначе файл сиротеет на диске навсегда.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        val oldFile = File(modelsDir, "imported_1000").apply { writeBytes(byteArrayOf(9)) }
+        val previous = readyModel("zip-model", ModelCategory.STT).copy(
+            runtime = RuntimeType.SHERPA,
+            filePath = oldFile.absolutePath,
+            isBuiltin = false
+        )
+        coEvery { repository.getById("zip-model") } returns previous
+
+        val newContent = byteArrayOf(9, 9)
+        val zip = java.io.ByteArrayOutputStream().apply {
+            java.util.zip.ZipOutputStream(this).use { z ->
+                z.putNextEntry(java.util.zip.ZipEntry("model.bin"))
+                z.write(newContent)
+                z.closeEntry()
+            }
+        }.toByteArray()
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(zip),
+            ByteArrayInputStream(zip)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "zip-model.zip"
+
+        val importedId = manager.importFromUri(uri)
+
+        assertEquals("zip-model", importedId)
+        assertFalse(oldFile.exists())
+        assertTrue(modelsDir.listFiles()!!.none { it.name.startsWith("imported_") })
+        val bundled = File(File(File(modelsDir, "SHERPA"), "zip-model"), "model.bin")
+        assertTrue(bundled.exists())
+        assertArrayEquals(newContent, bundled.readBytes())
+        coVerify(exactly = 1) { runtimeRouter.releaseModel(previous) }
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `repeated zip import of same id keeps promoted bundle`() = runTest {
+        // Issue #72 (guard): ZIP -> ZIP той же id промоутит пучок в тот же
+        // путь — прежний filePath совпадает с новым, чистка не должна удалить
+        // актуальный пучок.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        val bundleDir = File(File(modelsDir, "SHERPA"), "zip-model")
+        bundleDir.mkdirs()
+        File(bundleDir, "model.bin").writeBytes(byteArrayOf(1))
+        val previous = readyModel("zip-model", ModelCategory.STT).copy(
+            runtime = RuntimeType.SHERPA,
+            filePath = bundleDir.absolutePath
+        )
+        coEvery { repository.getById("zip-model") } returns previous
+
+        val newContent = byteArrayOf(7, 7)
+        val zip = java.io.ByteArrayOutputStream().apply {
+            java.util.zip.ZipOutputStream(this).use { z ->
+                z.putNextEntry(java.util.zip.ZipEntry("model.bin"))
+                z.write(newContent)
+                z.closeEntry()
+            }
+        }.toByteArray()
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(zip),
+            ByteArrayInputStream(zip)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "zip-model.zip"
+
+        val importedId = manager.importFromUri(uri)
+
+        assertEquals("zip-model", importedId)
+        val bundled = File(bundleDir, "model.bin")
+        assertTrue(bundleDir.exists())
+        assertTrue(bundled.exists())
+        assertArrayEquals(newContent, bundled.readBytes())
+        modelsDir.deleteRecursively()
+    }
 }
