@@ -102,20 +102,22 @@ object SttModelSelector {
      * true, если карточка каталога — IndicConformer (runtime SHERPA,
      * id содержит маркер).
      */
-    private fun isIndicConformerCard(card: ModelCard): Boolean {
-        if (card.runtime != RuntimeType.SHERPA) return false
-        val id = card.id.lowercase()
-        return INDIC_ID_MARKERS.any { id.contains(it) }
-    }
+    private fun isIndicConformerCard(card: ModelCard): Boolean =
+        indicMatches(card.runtime, card.id)
 
     /**
      * true, если модель — IndicConformer (runtime SHERPA, id содержит маркер).
      */
-    fun isIndicConformer(model: InstalledModel): Boolean {
-        if (model.runtime != RuntimeType.SHERPA) return false
-        val id = model.id.lowercase()
-        return INDIC_ID_MARKERS.any { id.contains(it) }
-    }
+    fun isIndicConformer(model: InstalledModel): Boolean =
+        indicMatches(model.runtime, model.id)
+
+    /**
+     * Критерий IndicConformer по рантайму и id (общий для карточки каталога
+     * и установленной модели).
+     */
+    private fun indicMatches(runtime: RuntimeType, id: String): Boolean =
+        runtime == RuntimeType.SHERPA &&
+            INDIC_ID_MARKERS.any { id.lowercase().contains(it) }
 
     /**
      * true, если id модели содержит маркер Whisper — приоритет выбора для AUTO.
