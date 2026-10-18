@@ -75,6 +75,13 @@ data class TranslateUiState(
     val targetLang: TranslateLanguage = TranslateLanguage.EN,
     val inputText: String = "",
     val resultText: String = "",
+    /**
+     * Направление, к которому был переведён [resultText] (issue #59):
+     * null — результат не привязан. Показывается и озвучивается только
+     * при совпадении с текущими [sourceLang]/[targetLang] — см. [visibleResult].
+     */
+    val resultSourceLang: TranslateLanguage? = null,
+    val resultTargetLang: TranslateLanguage? = null,
     /** Текущий перевод добавлен в избранное (звёздочка результата, issue #38). */
     val resultFavorite: Boolean = false,
     val isTranslating: Boolean = false,
@@ -100,7 +107,23 @@ data class TranslateUiState(
     val hasSttModel: Boolean = false,
     /** Показывать одноразовый онбординг первого запуска (issue #33). */
     val showOnboarding: Boolean = false
-)
+) {
+    /**
+     * Результат для показа и озвучивания (issue #59): непустой только когда
+     * привязан к текущему направлению; при несовпадении направления — пусто
+     * (карточка результата скрывается, «Озвучить» чужой текст не берёт).
+     */
+    val visibleResult: String
+        get() = if (
+            resultText.isNotEmpty() &&
+            resultSourceLang == sourceLang &&
+            resultTargetLang == targetLang
+        ) {
+            resultText
+        } else {
+            ""
+        }
+}
 
 /**
  * ViewModel экрана «Перевод»: конвейер текст/аудио → STT → LLM → TTS.
@@ -462,7 +485,17 @@ class TranslateViewModel @Inject constructor(
                     }
                 } else {
                     update {
-                        it.copy(isTranslating = false, canCancelTranslation = false, resultText = text)
+                        // Привязка результата к направлению перевода на момент
+                        // старта (issue #59): смена направления при живом ViewModel
+                        // (возврат на вкладку) не оставляет чужой результат под
+                        // новыми языками.
+                        it.copy(
+                            isTranslating = false,
+                            canCancelTranslation = false,
+                            resultText = text,
+                            resultSourceLang = state.sourceLang,
+                            resultTargetLang = state.targetLang
+                        )
                     }
                     refreshResultFavorite()
                     historyRepository.add(
@@ -592,9 +625,13 @@ class TranslateViewModel @Inject constructor(
      */
     fun speakResult() {
         val state = _uiState.value
-        if (state.resultText.isBlank()) return
+        // Озвучиваем только результат, привязанный к текущему направлению
+        // (issue #59): язык озвучки (targetLang) всегда относится к произносимому
+        // тексту, чужой язык после возврата на вкладку невозможен.
+        val text = state.visibleResult
+        if (text.isBlank()) return
         update { it.copy(error = null) }
-        ttsCoordinator.speak(state.resultText, state.targetLang.code)
+        ttsCoordinator.speak(text, state.targetLang.code)
     }
 
     /** Остановить озвучивание (координатор гасит оба рантайма). */
@@ -692,6 +729,11 @@ class TranslateViewModel @Inject constructor(
                 targetLang = target ?: it.targetLang,
                 inputText = entry.inputText,
                 resultText = entry.resultText,
+                // Привязка результата к направлению самой записи (issue #59):
+                // если направление применится другое (конкурс с сохранённым
+                // направлением из настроек), результат под ним не показывается.
+                resultSourceLang = source ?: it.sourceLang,
+                resultTargetLang = target ?: it.targetLang,
                 error = null
             )
         }

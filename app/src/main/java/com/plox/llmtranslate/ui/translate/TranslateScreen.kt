@@ -226,8 +226,11 @@ fun TranslateScreen(
             }
         }
 
-        // Результат.
-        if (state.resultText.isNotEmpty()) {
+        // Результат: показываем только привязанный к текущему направлению
+        // (issue #59) — при смене направления или возврате на вкладку чужой
+        // кэш-перевод под новыми языками не отображается и не озвучивается.
+        val visibleResult = state.visibleResult
+        if (visibleResult.isNotEmpty()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -244,7 +247,7 @@ fun TranslateScreen(
                         // Копирование перевода в буфер обмена.
                         IconButton(
                             onClick = {
-                                clipboard.setText(AnnotatedString(state.resultText))
+                                clipboard.setText(AnnotatedString(visibleResult))
                             }
                         ) {
                             Icon(
@@ -274,7 +277,7 @@ fun TranslateScreen(
                     }
                     SelectionContainer {
                         Text(
-                            text = state.resultText,
+                            text = visibleResult,
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium
                         )

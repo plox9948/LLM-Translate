@@ -147,6 +147,87 @@ class TranslateViewModelTest {
         assertFalse(viewModel.uiState.value.resultFavorite)
     }
 
+    // ── Привязка результата к направлению (issue #59) ──
+
+    @Test
+    fun `cached result is not shown or spoken under a different target language`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        createViewModel()
+        applyPendingEntry() // ru→en, результат «hello»
+        assertEquals("hello", viewModel.uiState.value.visibleResult)
+
+        // Смена направления — карточка результата под чужим языком исчезает…
+        viewModel.onTargetLangChange(TranslateLanguage.NE)
+        assertEquals("", viewModel.uiState.value.visibleResult)
+        // …и «Озвучить» не вызывает координатор чужим языком.
+        viewModel.speakResult()
+        io.mockk.verify(exactly = 0) { ttsCoordinator.speak(any(), any()) }
+
+        // Возврат прежнего направления — результат снова согласован и озвучим.
+        viewModel.onTargetLangChange(TranslateLanguage.EN)
+        assertEquals("hello", viewModel.uiState.value.visibleResult)
+        viewModel.speakResult()
+        io.mockk.verify(exactly = 1) { ttsCoordinator.speak("hello", "en") }
+    }
+
+    @Test
+    fun `direction swap hides result of the opposite direction`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        createViewModel()
+        applyPendingEntry()
+
+        // Тот же обмен, что делает кнопка-стрелка на экране.
+        val before = viewModel.uiState.value
+        viewModel.onSourceLangChange(before.targetLang)
+        viewModel.onTargetLangChange(before.sourceLang)
+
+        assertEquals("", viewModel.uiState.value.visibleResult)
+        viewModel.speakResult()
+        io.mockk.verify(exactly = 0) { ttsCoordinator.speak(any(), any()) }
+    }
+
+    @Test
+    fun `recreated view model restores direction without foreign result`() {
+        // Первое создание: подставлена запись ru→en с результатом.
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        createViewModel()
+        applyPendingEntry()
+        assertEquals("hello", viewModel.uiState.value.visibleResult)
+
+        // «Возврат на вкладку»: VM пересоздан, сохранённое направление — en→ru,
+        // pending-запись уже потреблена первым VM.
+        every { preferences.lastSourceLang } returns flowOf("en")
+        every { preferences.lastTargetLang } returns flowOf("ru")
+        createViewModel()
+
+        assertEquals(TranslateLanguage.EN, viewModel.uiState.value.sourceLang)
+        assertEquals(TranslateLanguage.RU, viewModel.uiState.value.targetLang)
+        // Результат при несогласованном направлении отсутствует.
+        assertEquals("", viewModel.uiState.value.visibleResult)
+    }
+
+    @Test
+    fun `saved direction emission hides result bound to another direction`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val lastSource = kotlinx.coroutines.flow.MutableStateFlow<String?>("ru")
+        val lastTarget = kotlinx.coroutines.flow.MutableStateFlow<String?>("en")
+        every { preferences.lastSourceLang } returns lastSource
+        every { preferences.lastTargetLang } returns lastTarget
+        createViewModel()
+        applyPendingEntry() // ru→en, «hello» — привязан к ru→en
+        assertEquals("hello", viewModel.uiState.value.visibleResult)
+
+        // Любая правка DataStore переизлучает сохранённое направление: оно
+        // применяется к живому экрану — результат обязан скрыться.
+        lastSource.value = "en"
+        lastTarget.value = "ru"
+        assertEquals(TranslateLanguage.EN, viewModel.uiState.value.sourceLang)
+        assertEquals(TranslateLanguage.RU, viewModel.uiState.value.targetLang)
+        assertEquals("", viewModel.uiState.value.visibleResult)
+        viewModel.speakResult()
+        io.mockk.verify(exactly = 0) { ttsCoordinator.speak(any(), any()) }
+    }
+
     // ── Памятка недостающих STT-моделей исходного языка (issue #56) ──
 
     /** Готовая модель перевода ru→en (закрывает цепочку направления по умолчанию). */
