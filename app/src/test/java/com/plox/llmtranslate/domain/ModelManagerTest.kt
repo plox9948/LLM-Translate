@@ -430,6 +430,54 @@ class ModelManagerTest {
         modelsDir.deleteRecursively()
     }
 
+    private fun zipOf(entries: Map<String, ByteArray>): ByteArray =
+        java.io.ByteArrayOutputStream().apply {
+            java.util.zip.ZipOutputStream(this).use { z ->
+                entries.forEach { (name, bytes) ->
+                    z.putNextEntry(java.util.zip.ZipEntry(name))
+                    z.write(bytes)
+                    z.closeEntry()
+                }
+            }
+        }.toByteArray()
+
+    @Test
+    fun `repeated zip import replaces catalog without leftover old files`() = runTest {
+        // Issue #73: промоут слиянием (copyRecursively overwrite=true) оставлял
+        // в каталоге файлы прежнего ZIP, отсутствующие в новом архиве, —
+        // движок мог молча выбрать старый бинарник. Цель заменяется целиком.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        var current: InstalledModel? = null
+        coEvery { repository.getById("zip-model") } answers { current }
+        coEvery { repository.upsert(any()) } answers {
+            current = firstArg()
+            Unit
+        }
+
+        val zip1 = zipOf(mapOf("a.bin" to byteArrayOf(1), "b.bin" to byteArrayOf(2)))
+        val zip2 = zipOf(mapOf("a.bin" to byteArrayOf(3), "c.bin" to byteArrayOf(4)))
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(zip1),
+            ByteArrayInputStream(zip1),
+            ByteArrayInputStream(zip2),
+            ByteArrayInputStream(zip2)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "zip-model.zip"
+
+        assertEquals("zip-model", manager.importFromUri(uri))
+        assertEquals("zip-model", manager.importFromUri(uri))
+
+        val bundleDir = File(File(modelsDir, "SHERPA"), "zip-model")
+        val names = bundleDir.walkTopDown().filter { it.isFile }.map { it.name }.toSet()
+        assertEquals(setOf("a.bin", "c.bin"), names)
+        assertArrayEquals(byteArrayOf(3), File(bundleDir, "a.bin").readBytes())
+        assertArrayEquals(byteArrayOf(4), File(bundleDir, "c.bin").readBytes())
+        modelsDir.deleteRecursively()
+    }
+
     @Test
     fun `repeated zip import of same id keeps promoted bundle`() = runTest {
         // Issue #72 (guard): ZIP -> ZIP той же id промоутит пучок в тот же

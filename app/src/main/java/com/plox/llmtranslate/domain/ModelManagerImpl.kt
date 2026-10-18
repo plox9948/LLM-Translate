@@ -584,6 +584,9 @@ class ModelManagerImpl @Inject constructor(
         // старый файл; следующий ensureLoaded построит движок по новым файлам.
         // Старая запись читается из БД до upsert, поэтому доступна здесь.
         repository.getById(modelId)?.let { runtimeRouter.releaseModel(it) }
+        // Issue #73: замена каталога целиком, а не слияние — файлы старого
+        // пучка, отсутствующие в новом ZIP, не должны переживать апгрейд.
+        targetDir.deleteRecursively()
         if (!extracted.copyRecursively(targetDir, overwrite = true)) {
             Timber.w("Не удалось распаковать модель $modelId в ${targetDir.path}")
             targetDir.deleteRecursively()
