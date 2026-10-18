@@ -1,6 +1,5 @@
 package com.plox.llmtranslate.domain.runtime
 
-import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OnnxTensorLike
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
@@ -12,11 +11,9 @@ import com.plox.llmtranslate.domain.tokenizer.IndicProcessorLite
 import com.plox.llmtranslate.domain.tokenizer.TokenizerJson
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -25,7 +22,6 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import timber.log.Timber
 import java.io.File
-import java.nio.LongBuffer
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -116,27 +112,22 @@ class IndicTransOnnxRuntime @Inject constructor(
     }
 
     /**
-     * Защита нативных сессий: инференс, загрузка и разгрузка сериализуются,
-     * поэтому release() ждёт окончания активного инференса (use-after-free ORT
-     * исключён). Инференс может идти десятки секунд — для onStop-разгрузки
-     * это приемлемо, release() вызывается вне главного потока.
-     * Вся работа с [cache] и [activeId] — только под этим мьютексом.
+     * Каркас LRU-кэша пучков (issue #36): инференс, загрузка и разгрузка
+     * сериализуются внутренним мьютексом кэша, поэтому release() ждёт
+     * окончания активного инференса (use-after-free ORT исключён). Инференс
+     * может идти десятки секунд — для onStop-разгрузки это приемлемо,
+     * release() вызывается вне главного потока.
      */
-    private val sessionMutex = Mutex()
+    private val engineCache = EngineCacheScaffold<ModelBundle>(
+        capacity = MODEL_CACHE_CAPACITY,
+        retentionProvider = retentionProvider,
+        logLabel = "IndicTrans",
+        releaseBundle = ModelBundle::release,
+        infoOf = { it.info },
+    )
 
-    /** LRU-кэш загруженных пучков моделей (issue #36). */
-    private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
-
-    /**
-     * Id пучка, на котором работает [translate]; пишется и читается только
-     * под [sessionMutex].
-     */
-    private var activeId: String? = null
-
-    private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
-
-    /** Состояние загруженных моделей; пишется только под [sessionMutex]. */
-    override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
+    /** Состояние загруженных моделей; пишется только под мьютексом [engineCache]. */
+    override val loadedModels: StateFlow<List<LoadedModelInfo>> = engineCache.loadedModels
 
     /**
      * Загрузить IndicTrans-модель (3 сессии + токенизаторы), поместив пучок
@@ -150,26 +141,16 @@ class IndicTransOnnxRuntime @Inject constructor(
             val path = modelInfo.filePath
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
-            sessionMutex.withLock {
-                val cached = cache.get(modelInfo.id)
-                if (cached != null) {
-                    // Быстрый путь под мьютексом: пучок уже в кэше — делать
-                    // активным без повторной загрузки (смена направления, issue #36).
-                    // Политика применяется и здесь: в unload-режиме движок
-                    // обязан держать только текущую модель.
-                    if (!retentionProvider.keepModelsOnDirectionChange()) {
-                        unloadOtherBundlesUnlocked(modelInfo.id)
-                    }
-                    activeId = modelInfo.id
-                    publishLoadedUnlocked()
+            engineCache.sessionMutex.withLock {
+                // Быстрый путь под мьютексом: пучок уже в кэше — делать
+                // активным без повторной загрузки (смена направления, issue #36).
+                if (engineCache.reuseCachedUnlocked(modelInfo.id)) {
                     return@withContext null
                 }
 
                 // Политика выгрузки при смене направления читается на каждую
                 // загрузку — смена настройки применяется сразу.
-                if (!retentionProvider.keepModelsOnDirectionChange()) {
-                    releaseUnlocked()
-                }
+                engineCache.applyRetentionUnlocked()
 
                 var encoder: OrtSession? = null
                 var decoder: OrtSession? = null
@@ -230,7 +211,7 @@ class IndicTransOnnxRuntime @Inject constructor(
                     val gen = parseGenerationConfig(genConfigFile)
                     val dict = parseTokenizerMeta(metaFile)
 
-                    cache.put(
+                    engineCache.cache.put(
                         modelInfo.id,
                         ModelBundle(
                             encoderSession = encoder,
@@ -252,12 +233,7 @@ class IndicTransOnnxRuntime @Inject constructor(
                             )
                         )
                     )
-                    activeId = modelInfo.id
-                    cache.evictOverCapacity().forEach { (evictedId, bundle) ->
-                        Timber.d("IndicTrans: вытеснена из кэша модель $evictedId")
-                        bundle.release()
-                    }
-                    publishLoadedUnlocked()
+                    engineCache.publishActiveUnlocked(modelInfo.id)
                     null
                 } catch (e: CancellationException) {
                     // Отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
@@ -323,8 +299,8 @@ class IndicTransOnnxRuntime @Inject constructor(
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(Dispatchers.IO) {
-            sessionMutex.withLock {
-                val bundle = activeId?.let { cache.get(it) }
+            engineCache.sessionMutex.withLock {
+                val bundle = engineCache.activeBundle()
                 if (bundle == null) {
                     return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
@@ -405,7 +381,7 @@ class IndicTransOnnxRuntime @Inject constructor(
      * `preprocess (префикс + punc_norm) → encode → clamp → +EOS →
      * greedy-проход → при вырожденном выводе ровно один ретрай с
      * no_repeat_ngram → RepetitionTrimmer → postprocess`.
-     * Вызывается из [translate] под [sessionMutex] — по одному разу на чанк
+     * Вызывается из [translate] под мьютексом [engineCache] — по одному разу на чанк
      * (issue #63) или один раз на весь текст, когда план одночанковый.
      */
     private suspend fun translateSingleChunk(
@@ -530,27 +506,11 @@ class IndicTransOnnxRuntime @Inject constructor(
         val dec = bundle.decoderSession
         val decPast = bundle.decoderPastSession
 
-        // Входные тензоры закрываем сразу после run — на любом пути.
-        // Если второй createTensor упадёт — первый закрываем сразу,
-        // иначе его нативная память утечёт мимо внешнего finally.
-        val encInputIds = OnnxTensor.createTensor(
-            ortEnv, LongBuffer.wrap(inputIds), longArrayOf(1L, inputIds.size.toLong())
-        )
-        val encAttnMask = try {
-            OnnxTensor.createTensor(
-                ortEnv, LongBuffer.wrap(attentionMask),
-                longArrayOf(1L, attentionMask.size.toLong())
-            )
-        } catch (e: Exception) {
-            encInputIds.close()
-            throw e
-        }
-        val encOutput = try {
-            enc.run(mapOf("input_ids" to encInputIds, "attention_mask" to encAttnMask))
-        } finally {
-            encInputIds.close()
-            encAttnMask.close()
-        }
+        // Decode-hygiene: входные тензоры закрываются сразу после run —
+        // на любом пути, в т.ч. при падении второго createTensor (первый
+        // закрывается сразу, иначе нативная память утечёт мимо внешнего
+        // finally) — см. [runEncoder].
+        val encOutput = runEncoder(enc, ortEnv, inputIds, attentionMask)
         try {
             val outcome = greedyDecode(
                 ortEnv = ortEnv,
@@ -617,63 +577,17 @@ class IndicTransOnnxRuntime @Inject constructor(
 
     /**
      * Разгрузить ВСЕ удерживаемые движком модели. Ждёт окончания активного
-     * инференса (sessionMutex).
+     * инференса (мьютекс [engineCache]).
      */
-    override suspend fun release() {
-        sessionMutex.withLock { releaseUnlocked() }
-    }
+    override suspend fun release() = engineCache.release()
 
     /**
      * Извлечь и освободить пучок модели [modelId] (удаление модели, issue #40).
-     * Ждёт окончания активного инференса под [sessionMutex]; если пучок был
-     * активным — сбрасывает [activeId] и публикует новый список
-     * [loadedModels]. Отсутствующий в кэше id — no-op.
+     * Ждёт окончания активного инференса под мьютексом [engineCache]; если
+     * пучок был активным — сбрасывается активный id и публикуется новый
+     * список [loadedModels]. Отсутствующий в кэше id — no-op.
      */
-    override suspend fun releaseModel(modelId: String) {
-        sessionMutex.withLock {
-            cache.remove(modelId)?.let { bundle ->
-                bundle.release()
-                Timber.d("IndicTrans: пучок удалённой модели $modelId освобождён")
-            }
-            if (activeId == modelId) {
-                activeId = null
-            }
-            publishLoadedUnlocked()
-        }
-    }
-
-    /**
-     * Непосредственная разгрузка всех пучков. Вызывать только под [sessionMutex],
-     * чтобы не пересекаться с активным инференсом.
-     */
-    private fun releaseUnlocked() {
-        cache.clear().forEach { (_, bundle) -> bundle.release() }
-        activeId = null
-        _loadedModels.value = emptyList()
-    }
-
-    /**
-     * Выгрузить все пучки кэша, кроме [keepId] (unload-режим при попадании
-     * в кэш — движок держит только текущую модель). Вызывать только под
-     * [sessionMutex].
-     */
-    private fun unloadOtherBundlesUnlocked(keepId: String) {
-        cache.keysNotIn(setOf(keepId)).forEach { staleId ->
-            cache.remove(staleId)?.release()
-            Timber.d("IndicTrans: выгружена модель другого направления $staleId")
-        }
-    }
-
-    /**
-     * Опубликовать список загруженных моделей (активная — первой).
-     * Вызывать только под [sessionMutex].
-     */
-    private fun publishLoadedUnlocked() {
-        val active = activeId
-        _loadedModels.value = cache.all()
-            .sortedByDescending { (id, _) -> id == active }
-            .map { (_, bundle) -> bundle.info }
-    }
+    override suspend fun releaseModel(modelId: String) = engineCache.releaseModel(modelId)
 
     /** Параметры генерации из generation_config.json. */
     private data class GenerationParams(

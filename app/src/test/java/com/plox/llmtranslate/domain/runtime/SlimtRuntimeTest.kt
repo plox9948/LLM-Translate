@@ -96,12 +96,11 @@ class SlimtRuntimeTest {
      */
     @Test
     fun `releaseModel evicts active bundle and resets loaded state`() = runTest {
-        val cacheField = SlimtRuntime::class.java.getDeclaredField("cache")
-        cacheField.isAccessible = true
+        val scaffoldField = SlimtRuntime::class.java.getDeclaredField("engineCache")
+        scaffoldField.isAccessible = true
         @Suppress("UNCHECKED_CAST")
-        val cache = cacheField.get(runtime) as EngineModelCache<Any>
-        val activeField = SlimtRuntime::class.java.getDeclaredField("activeId")
-        activeField.isAccessible = true
+        val scaffold = scaffoldField.get(runtime) as EngineCacheScaffold<Any>
+        val cache = scaffold.cache
 
         val bundleClass = Class.forName(
             "com.plox.llmtranslate.domain.runtime.SlimtRuntime\$ModelBundle"
@@ -116,12 +115,12 @@ class SlimtRuntimeTest {
 
         cache.put("ru-en", bundle("ru-en"))
         cache.put("en-ru", bundle("en-ru"))
-        activeField.set(runtime, "ru-en")
+        scaffold.activeId = "ru-en"
 
         runtime.releaseModel("ru-en")
 
         assertEquals(listOf("en-ru"), cache.all().map { it.first })
-        assertNull("активный id удалённой модели сброшен", activeField.get(runtime))
+        assertNull("активный id удалённой модели сброшен", scaffold.activeId)
         assertEquals(
             listOf("en-ru"),
             runtime.loadedModels.value.map { it.modelId }

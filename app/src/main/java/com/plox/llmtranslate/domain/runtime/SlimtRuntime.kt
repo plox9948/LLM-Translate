@@ -12,9 +12,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -49,30 +47,30 @@ class SlimtRuntime @Inject constructor(
 
     /**
      * Пучок модели slimt: нативный handle и метаданные для UI.
-     * Пучки движка хранятся в LRU-кэше [cache].
+     * Пучки движка хранятся в LRU-кэше [engineCache].
      */
     private class ModelBundle(val handle: Long, val info: LoadedModelInfo)
 
     /**
-     * Нативные сессии защищены мьютексом: запуск, опрос и разгрузка
-     * сериализованы — use-after-free нативного slimt::Model исключён.
-     * Вся работа с [cache] и [activeId] — только под этим мьютексом.
+     * Каркас LRU-кэша пучков: нативные модели защищены внутренним мьютексом —
+     * запуск, опрос и разгрузка сериализованы, use-after-free нативного
+     * slimt::Model исключён (деструктор slimt::Async дожидается воркера,
+     * release() вызывается вне главного потока).
      */
-    private val engineMutex = Mutex()
+    private val engineCache = EngineCacheScaffold<ModelBundle>(
+        capacity = MODEL_CACHE_CAPACITY,
+        retentionProvider = retentionProvider,
+        logLabel = "slimt",
+        releaseBundle = { bundle ->
+            if (bundle.handle != 0L) {
+                SlimtNative.nativeDestroy(bundle.handle)
+            }
+        },
+        infoOf = { it.info },
+    )
 
-    /** LRU-кэш загруженных пучков моделей (issue #36). */
-    private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
-
-    /**
-     * Id пучка, на котором работает [translate]; пишется и читается только
-     * под [engineMutex].
-     */
-    private var activeId: String? = null
-
-    private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
-
-    /** Состояние загруженных моделей; пишется только под [engineMutex]. */
-    override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
+    /** Состояние загруженных моделей; пишется только под мьютексом [engineCache]. */
+    override val loadedModels: StateFlow<List<LoadedModelInfo>> = engineCache.loadedModels
 
     /**
      * Загрузить пачку Firefox-модели (marian .bin + shortlist + словари).
@@ -85,26 +83,16 @@ class SlimtRuntime @Inject constructor(
             val path = modelInfo.filePath
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
-            engineMutex.withLock {
-                val cached = cache.get(modelInfo.id)
-                if (cached != null) {
-                    // Быстрый путь под мьютексом: пучок уже в кэше — делать
-                    // активным без повторной загрузки (смена направления, issue #36).
-                    // Политика применяется и здесь: в unload-режиме движок
-                    // обязан держать только текущую модель.
-                    if (!retentionProvider.keepModelsOnDirectionChange()) {
-                        unloadOtherBundlesUnlocked(modelInfo.id)
-                    }
-                    activeId = modelInfo.id
-                    publishLoadedUnlocked()
+            engineCache.sessionMutex.withLock {
+                // Быстрый путь под мьютексом: пучок уже в кэше — делать
+                // активным без повторной загрузки (смена направления, issue #36).
+                if (engineCache.reuseCachedUnlocked(modelInfo.id)) {
                     return@withContext null
                 }
 
                 // Политика выгрузки при смене направления читается на каждую
                 // загрузку — смена настройки применяется сразу.
-                if (!retentionProvider.keepModelsOnDirectionChange()) {
-                    releaseUnlocked()
-                }
+                engineCache.applyRetentionUnlocked()
 
                 val dir = File(path)
                 val files = resolvePackageFiles(dir)
@@ -129,7 +117,7 @@ class SlimtRuntime @Inject constructor(
                             "slimt", "Не удалось создать модель slimt"
                         )
                     }
-                    cache.put(
+                    engineCache.cache.put(
                         modelInfo.id,
                         ModelBundle(
                             handle = newHandle,
@@ -141,12 +129,7 @@ class SlimtRuntime @Inject constructor(
                             )
                         )
                     )
-                    activeId = modelInfo.id
-                    cache.evictOverCapacity().forEach { (evictedId, bundle) ->
-                        Timber.d("slimt: вытеснена из кэша модель $evictedId")
-                        SlimtNative.nativeDestroy(bundle.handle)
-                    }
-                    publishLoadedUnlocked()
+                    engineCache.publishActiveUnlocked(modelInfo.id)
                     Timber.d("slimt: модель ${modelInfo.id} загружена (mmap)")
                     null
                 } catch (e: CancellationException) {
@@ -167,9 +150,8 @@ class SlimtRuntime @Inject constructor(
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(kotlinx.coroutines.Dispatchers.IO) {
-            engineMutex.withLock {
-                val bundle = activeId?.let { cache.get(it) }
-                val handle = bundle?.handle ?: 0L
+            engineCache.sessionMutex.withLock {
+                val handle = engineCache.activeBundle()?.handle ?: 0L
                 if (handle == 0L) {
                     return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
@@ -225,63 +207,15 @@ class SlimtRuntime @Inject constructor(
      * Разгрузить ВСЕ удерживаемые движком модели. Деструктор slimt::Async
      * дожидается воркера — вызов вне главного потока.
      */
-    override suspend fun release() = engineMutex.withLock { releaseUnlocked() }
+    override suspend fun release() = engineCache.release()
 
     /**
      * Извлечь и уничтожить пучок модели [modelId] (удаление модели, issue #40).
-     * Ждёт окончания активного перевода под [engineMutex]; если пучок был
-     * активным — сбрасывает [activeId] и публикует новый список
-     * [loadedModels]. Отсутствующий в кэше id — no-op.
+     * Ждёт окончания активного перевода под мьютексом [engineCache]; если
+     * пучок был активным — сбрасывается активный id и публикуется новый
+     * список [loadedModels]. Отсутствующий в кэше id — no-op.
      */
-    override suspend fun releaseModel(modelId: String) = engineMutex.withLock {
-        cache.remove(modelId)?.let { bundle ->
-            if (bundle.handle != 0L) {
-                SlimtNative.nativeDestroy(bundle.handle)
-            }
-            Timber.d("slimt: пучок удалённой модели $modelId освобождён")
-        }
-        if (activeId == modelId) {
-            activeId = null
-        }
-        publishLoadedUnlocked()
-    }
-
-    private fun releaseUnlocked() {
-        cache.clear().forEach { (_, bundle) ->
-            if (bundle.handle != 0L) {
-                SlimtNative.nativeDestroy(bundle.handle)
-            }
-        }
-        activeId = null
-        _loadedModels.value = emptyList()
-    }
-
-    /**
-     * Выгрузить все пучки кэша, кроме [keepId] (unload-режим при попадании
-     * в кэш — движок держит только текущую модель). Вызывать только под
-     * [engineMutex].
-     */
-    private fun unloadOtherBundlesUnlocked(keepId: String) {
-        cache.keysNotIn(setOf(keepId)).forEach { staleId ->
-            cache.remove(staleId)?.let { bundle ->
-                if (bundle.handle != 0L) {
-                    SlimtNative.nativeDestroy(bundle.handle)
-                }
-            }
-            Timber.d("slimt: выгружена модель другого направления $staleId")
-        }
-    }
-
-    /**
-     * Опубликовать список загруженных моделей (активная — первой).
-     * Вызывать только под [engineMutex].
-     */
-    private fun publishLoadedUnlocked() {
-        val active = activeId
-        _loadedModels.value = cache.all()
-            .sortedByDescending { (id, _) -> id == active }
-            .map { (_, bundle) -> bundle.info }
-    }
+    override suspend fun releaseModel(modelId: String) = engineCache.releaseModel(modelId)
 
     /**
      * Файлы пачки Bergamot: модель, shortlist, словарь; для двух-словарных

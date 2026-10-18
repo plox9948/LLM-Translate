@@ -1,8 +1,10 @@
 package com.plox.llmtranslate.domain.runtime
 
+import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.io.File
+import java.nio.LongBuffer
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import timber.log.Timber
@@ -59,5 +61,40 @@ internal fun closePartiallyCreated(label: String, vararg sessions: OrtSession?) 
         sessions.filterNotNull().forEach { it.close() }
     } catch (e: Exception) {
         Timber.e(e, "Ошибка при освобождении частично созданных $label-сессий")
+    }
+}
+
+/**
+ * Прогнать энкодер переводческой модели на `input_ids`/`attention_mask`
+ * (общий путь Marian и IndicTrans) с гарантией закрытия входных тензоров:
+ * закрываем их сразу после run — на любом пути. Если второй createTensor
+ * упадёт — первый закрываем сразу, иначе его нативная память утечёт мимо
+ * внешнего finally. Результат [OrtSession.Result] закрывает вызывающий.
+ */
+internal fun runEncoder(
+    encoder: OrtSession,
+    ortEnv: OrtEnvironment,
+    inputIds: LongArray,
+    attentionMask: LongArray,
+): OrtSession.Result {
+    val encInputIds = OnnxTensor.createTensor(
+        ortEnv, LongBuffer.wrap(inputIds), longArrayOf(1L, inputIds.size.toLong())
+    )
+    val encAttnMask = try {
+        OnnxTensor.createTensor(
+            ortEnv, LongBuffer.wrap(attentionMask),
+            longArrayOf(1L, attentionMask.size.toLong())
+        )
+    } catch (e: Exception) {
+        encInputIds.close()
+        throw e
+    }
+    try {
+        return encoder.run(
+            mapOf("input_ids" to encInputIds, "attention_mask" to encAttnMask)
+        )
+    } finally {
+        encInputIds.close()
+        encAttnMask.close()
     }
 }
