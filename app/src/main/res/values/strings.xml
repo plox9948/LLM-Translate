@@ -66,6 +66,7 @@
     <string name="history_add_failed">Не удалось сохранить перевод в историю</string>
     <string name="history_delete_failed">Не удалось удалить запись из истории</string>
     <string name="history_clear_failed">Не удалось очистить историю</string>
+    <string name="history_observe_failed">Не удалось загрузить историю</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">Бэкап</string>
@@ -150,4 +151,5 @@
     <string name="favorites_search_empty">Ничего не найдено</string>
     <string name="favorites_search_clear_cd">Очистить поиск</string>
     <string name="favorites_update_failed">Не удалось обновить избранное</string>
+    <string name="favorites_observe_failed">Не удалось загрузить избранное</string>
 </resources>

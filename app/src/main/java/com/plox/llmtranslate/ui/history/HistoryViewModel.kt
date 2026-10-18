@@ -8,6 +8,7 @@ import com.plox.llmtranslate.data.model.TranslationHistoryRepository
 import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
+import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,15 +41,24 @@ class HistoryViewModel @Inject constructor(
     val errorMessageRes: StateFlow<Int?> = _errorMessageRes
 
     init {
-        viewModelScope.launch {
-            repository.observeRecent().collect { _history.value = it }
-        }
-        viewModelScope.launch {
-            favoritesRepository.observeAll().collect { favorites ->
-                _favoriteKeys.value = favorites.map {
-                    FavoriteEntry.key(it.sourceLang, it.targetLang, it.inputText)
-                }.toSet()
-            }
+        // issue #67: Room-flow наблюдателся без обработки исключений — сбой Room
+        // ронял процесс; observeResilient логирует, показывает ошибку в UI и
+        // перезапускает подписку (обоснование выбора — в его KDoc).
+        observeResilient(
+            scope = viewModelScope,
+            source = { repository.observeRecent() },
+            messageRes = R.string.history_observe_failed,
+            errorState = _errorMessageRes,
+        ) { _history.value = it }
+        observeResilient(
+            scope = viewModelScope,
+            source = { favoritesRepository.observeAll() },
+            messageRes = R.string.favorites_observe_failed,
+            errorState = _errorMessageRes,
+        ) { favorites ->
+            _favoriteKeys.value = favorites.map {
+                FavoriteEntry.key(it.sourceLang, it.targetLang, it.inputText)
+            }.toSet()
         }
     }
 

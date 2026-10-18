@@ -13,6 +13,7 @@ import com.plox.llmtranslate.domain.model.userMessage
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import com.plox.llmtranslate.domain.runtime.trackEnginePreference
+import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -68,13 +69,21 @@ class FavoritesViewModel @Inject constructor(
     init {
         // Фильтрация на устройстве: избранных записей мало, сортировка
         // репозитория сохраняется (filter порядок не меняет).
-        viewModelScope.launch {
-            combine(
-                favoritesRepository.observeAll(),
-                _searchQuery
-            ) { entries, query -> filterByQuery(entries, query) }
-                .collect { _favorites.value = it }
-        }
+        // issue #67: combine-цепочка с Room-источником наблюдалась без
+        // обработки исключений — сбой Room ронял процесс; observeResilient
+        // перезапускает всю цепочку combine после сбоя, сохраняя семантику
+        // combine (обоснование выбора — в его KDoc).
+        observeResilient(
+            scope = viewModelScope,
+            source = {
+                combine(
+                    favoritesRepository.observeAll(),
+                    _searchQuery
+                ) { entries, query -> filterByQuery(entries, query) }
+            },
+            messageRes = R.string.favorites_observe_failed,
+            errorState = _errorMessageRes,
+        ) { _favorites.value = it }
         viewModelScope.launch {
             // Инициализация TTS текущим движком (как на экране «Перевод»).
             ttsRuntime.trackEnginePreference(preferences.ttsEngine)

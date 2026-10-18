@@ -66,6 +66,7 @@
     <string name="history_add_failed">अनुवाद इतिहासमा सुरक्षित गर्न सकिएन</string>
     <string name="history_delete_failed">इतिहासबाट अभिलेख मेटाउन सकिएन</string>
     <string name="history_clear_failed">इतिहास खाली गर्न सकिएन</string>
+    <string name="history_observe_failed">इतिहास लोड गर्न सकिएन</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">ब्याकअप</string>
@@ -146,4 +147,5 @@
     <string name="favorites_search_empty">केही भेटिएन</string>
     <string name="favorites_search_clear_cd">खोजी खाली गर्नुहोस्</string>
     <string name="favorites_update_failed">मन परेका अद्यावधिक गर्न सकिएन</string>
+    <string name="favorites_observe_failed">मन परेका लोड गर्न सकिएन</string>
 </resources>

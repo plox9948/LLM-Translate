@@ -66,6 +66,7 @@
     <string name="history_add_failed">Failed to save the translation to history</string>
     <string name="history_delete_failed">Failed to delete the entry from history</string>
     <string name="history_clear_failed">Failed to clear history</string>
+    <string name="history_observe_failed">Failed to load history</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">Backup</string>
@@ -146,4 +147,5 @@
     <string name="favorites_search_empty">Nothing found</string>
     <string name="favorites_search_clear_cd">Clear search</string>
     <string name="favorites_update_failed">Failed to update favorites</string>
+    <string name="favorites_observe_failed">Failed to load favorites</string>
 </resources>
