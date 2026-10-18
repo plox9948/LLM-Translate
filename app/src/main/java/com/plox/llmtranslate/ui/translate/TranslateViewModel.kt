@@ -316,22 +316,17 @@ class TranslateViewModel @Inject constructor(
      * в [TranslateUiState.inputText] для обратного перевода. Сам результат
      * при этом скрывается — остаётся привязан к прежнему направлению
      * (issue #59, см. [TranslateUiState.visibleResult]).
+     * Обмен делегирован [onSourceLangChange]/[onTargetLangChange], чтобы
+     * побочные эффекты смены языка не разносились с выбором чипами.
      */
     fun swapDirections() {
         val state = _uiState.value
         // Подставляем только реально показанный результат текущего направления.
-        val carried = state.visibleResult.isNotEmpty() && state.visibleResult != state.inputText
-        update {
-            it.copy(
-                sourceLang = state.targetLang,
-                targetLang = state.sourceLang,
-                inputText = if (carried) state.visibleResult else it.inputText,
-                error = null
-            )
+        if (state.visibleResult.isNotEmpty() && state.visibleResult != state.inputText) {
+            onInputTextChanged(state.visibleResult)
         }
-        saveLastDirection()
-        refreshTranslationAvailability()
-        refreshResultFavorite()
+        onSourceLangChange(state.targetLang)
+        onTargetLangChange(state.sourceLang)
     }
 
     /**
