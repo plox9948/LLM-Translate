@@ -721,19 +721,25 @@ class TranslateViewModel @Inject constructor(
      * Применить выбранную в истории запись к полям экрана.
      */
     private fun useHistoryEntry(entry: TranslationHistoryEntry) {
+        // Фактически применяемое направление записи (при неизвестном коде языка
+        // в записи — прежнее направление экрана).
+        val state = _uiState.value
         val source = TranslateLanguage.entries.firstOrNull { it.code == entry.sourceLang }
+            ?: state.sourceLang
         val target = TranslateLanguage.entries.firstOrNull { it.code == entry.targetLang }
+            ?: state.targetLang
         update {
             it.copy(
-                sourceLang = source ?: it.sourceLang,
-                targetLang = target ?: it.targetLang,
+                sourceLang = source,
+                targetLang = target,
                 inputText = entry.inputText,
                 resultText = entry.resultText,
-                // Привязка результата к направлению самой записи (issue #59):
-                // если направление применится другое (конкурс с сохранённым
-                // направлением из настроек), результат под ним не показывается.
-                resultSourceLang = source ?: it.sourceLang,
-                resultTargetLang = target ?: it.targetLang,
+                // Привязка результата ровно к применённому направлению самой
+                // записи (issue #59): если направление затем применится другое
+                // (конкурс с сохранённым направлением из настроек), результат
+                // под ним не показывается.
+                resultSourceLang = source,
+                resultTargetLang = target,
                 error = null
             )
         }
