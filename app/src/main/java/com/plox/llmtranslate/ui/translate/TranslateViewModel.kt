@@ -763,6 +763,10 @@ class TranslateViewModel @Inject constructor(
      * и склеиваются разделителями границ исходника: где граница содержала
      * перевод строки — сохраняем «\n», прочие границы — пробел
      * (ревью раунд 9: прежняя склейка пробелом теряла переносы строк ввода).
+     *
+     * Движок с [TranslationEngine.splitsIntoSentences] = false (IndicTrans)
+     * сам чанкует вход по лимиту позиций энкодера — ему передаём весь текст
+     * целиком, разбиение на предложения ломало бы чанкинг (issue #63).
      */
     private suspend fun translateSegments(
         engine: TranslationEngine,
@@ -770,6 +774,7 @@ class TranslateViewModel @Inject constructor(
         from: String,
         to: String
     ): Result<String> {
+        if (!engine.splitsIntoSentences) return engine.translate(text, from, to)
         val (segments, separators) = SentenceSplitter.splitWithSeparators(text)
         if (segments.isEmpty()) return engine.translate(text, from, to)
         if (segments.size == 1) return engine.translate(segments.first(), from, to)

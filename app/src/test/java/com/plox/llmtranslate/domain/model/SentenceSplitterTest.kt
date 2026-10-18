@@ -146,4 +146,64 @@ class SentenceSplitterTest {
             SentenceSplitter.split("Первое предложение.   Второе предложение.  ")
         )
     }
+
+    // ── Данда деванагари (issue #63) ──
+
+    @Test
+    fun `danda splits without following space`() {
+        // । — безусловная граница: после неё не нужен пробел/конец текста.
+        assertEquals(
+            listOf("नमस्ते।", "मस्कोबाट"),
+            SentenceSplitter.split("नमस्ते।मस्कोबाट")
+        )
+    }
+
+    @Test
+    fun `double danda char is a boundary`() {
+        assertEquals(
+            listOf("AB॥", "CD"),
+            SentenceSplitter.split("AB॥CD")
+        )
+    }
+
+    @Test
+    fun `consecutive dandas collapse into one boundary`() {
+        // ।। после закрытия сегмента не создаёт пустой сегмент.
+        assertEquals(
+            listOf("A।", "B"),
+            SentenceSplitter.split("A।।B")
+        )
+        // Смешанная последовательность ।॥ — одна граница, без пустых сегментов.
+        assertEquals(
+            listOf("A।", "B"),
+            SentenceSplitter.split("A।॥B")
+        )
+    }
+
+    @Test
+    fun `trailing danda sequence yields no empty tail segment`() {
+        assertEquals(
+            listOf("A।"),
+            SentenceSplitter.split("A।।")
+        )
+        assertEquals(
+            listOf("A॥"),
+            SentenceSplitter.split("A॥॥")
+        )
+    }
+
+    @Test
+    fun `mixed devanagari and latin boundary splits correctly`() {
+        assertEquals(
+            listOf("Привет।", "How are you?"),
+            SentenceSplitter.split("Привет।How are you?")
+        )
+    }
+
+    @Test
+    fun `danda boundary uses space separator without newline`() {
+        val (segments, separators) = SentenceSplitter.splitWithSeparators("नमस्ते।मस्कोबाट")
+        assertEquals(listOf("नमस्ते।", "मस्कोबाट"), segments)
+        assertEquals(listOf(" "), separators)
+    }
 }

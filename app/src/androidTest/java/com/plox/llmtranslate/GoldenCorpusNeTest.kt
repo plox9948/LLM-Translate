@@ -251,6 +251,36 @@ class GoldenCorpusNeTest {
     }
 
     /**
+     * Регрессия падения на лимите позиций (issue #63): длинный ne-абзац
+     * (заведомо > 258 токенов целиком) обязан переводиться — движок сам
+     * режет его чанкерами по границам данды/слов и склеивает результат.
+     * До чанкинра давал InvalidArgument (embed_positions idx=258).
+     */
+    @Test
+    fun longNepaliParagraphChunking() {
+        val dir = modelDir("INDICTRANS_ONNX", "indictrans2-indic-en-int8")
+        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        val model = readyModel(
+            "indictrans2-indic-en-int8", ModelCategory.TRANSLATION,
+            RuntimeType.INDICTRANS_ONNX, dir.absolutePath,
+        )
+        val engine = IndicTransOnnxRuntime(retentionUnload())
+        val loadError = runBlocking { engine.ensureLoaded(model) }
+        assertTrue("Ошибка загрузки: $loadError", loadError == null)
+
+        // Абзац из предложений корпуса, склеенных дандой без пробела после
+        // (плотная непальская запись) — суммарно заведомо за окном эмбеддингов.
+        val corpus = loadCorpus()
+        val paragraph = corpus.ne2en.joinToString("।") { it.src.trimEnd('।') } + "।"
+        val result = runBlocking { engine.translate(paragraph, "ne", "en") }
+        assertTrue("Длинный ne-абзац не переведён: ${result.exceptionOrNull()}", result.isSuccess)
+        val out = result.getOrThrow()
+        assertNoDegeneration(out, 4000)
+        assertTrue("Длинный абзац дал пустой вывод", out.isNotBlank())
+        runBlocking { engine.release() }
+    }
+
+    /**
      * Цепочечная регрессия скриншот-бага «Озеро»: RU→EN (slimt) -> EN→NE
      * (IndicTrans2), два вызова напрямую без ViewModel (цепочка как в
      * TranslateViewModel). Финальный NE-вывод обязан быть коротким однословным

@@ -508,6 +508,9 @@ class TranslateViewModelTest {
         coEvery { engine.translate(any(), any(), any()) } answers {
             Result.success("«${firstArg<String>()}»")
         }
+        // Релакс-мок вернул бы false на проперти-геттер — сегментация обязана
+        // быть включена явно (issue #63).
+        every { engine.splitsIntoSentences } returns true
         every { runtimeRouter.translationEngine(RuntimeType.MARIAN_SLIMT) } returns engine
         return engine
     }
@@ -561,6 +564,7 @@ class TranslateViewModelTest {
         coEvery { engine.translate(any(), any(), any()) } answers {
             Result.success("«${firstArg<String>()}»")
         }
+        every { engine.splitsIntoSentences } returns true
         every { runtimeRouter.translationEngine(RuntimeType.MARIAN_SLIMT) } returns engine
         return engine
     }
@@ -622,5 +626,57 @@ class TranslateViewModelTest {
             "«Первое предложение.» «Второе предложение.»",
             viewModel.uiState.value.resultText
         )
+    }
+
+    // ── Capability-флаг чанкинга движка (issue #63) ──
+
+    /** Готовая IndicTrans-модель en→ne (рантайм INDICTRANS_ONNX). */
+    private fun readyIndicTransEnNe() = InstalledModel(
+        id = "trans-en-ne-indic",
+        category = ModelCategory.TRANSLATION,
+        displayName = "en→ne indic",
+        description = "",
+        runtime = RuntimeType.INDICTRANS_ONNX,
+        sizeBytes = 100,
+        ramRequiredMb = 100,
+        languages = listOf("en", "ne"),
+        quality = 4,
+        speed = 4,
+        url = "",
+        urls = emptyList(),
+        sha256 = null,
+        license = "BSD-3-Clause",
+        minAndroidSdk = 26,
+        recommendedRamMb = 0,
+        status = ModelStatus.READY,
+        progress = 100,
+        filePath = "/models/INDICTRANS_ONNX/trans-en-ne-indic",
+        bytesDone = 100,
+        isBuiltin = true
+    )
+
+    @Test
+    fun `engine that chunks internally receives whole text in one translate call`() {
+        // Движок с splitsIntoSentences=false (схема IndicTrans): UI обязан
+        // передать весь многосоставный вход ОДНИМ вызовом — разбиение на
+        // предложения ломало бы внутренний чанкинг движка (issue #63).
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val engine = mockk<TranslationEngine>(relaxed = true)
+        every { modelManager.installedModels(ModelCategory.TRANSLATION) } returns
+            flowOf(listOf(readyIndicTransEnNe()))
+        every { engine.splitsIntoSentences } returns false
+        coEvery { engine.ensureLoaded(any()) } returns null
+        coEvery { engine.translate(any(), any(), any()) } returns Result.success("whole output")
+        every { runtimeRouter.translationEngine(RuntimeType.INDICTRANS_ONNX) } returns engine
+        createViewModel()
+        viewModel.onSourceLangChange(TranslateLanguage.EN)
+        viewModel.onTargetLangChange(TranslateLanguage.NE)
+        val fullText = "First sentence. Second sentence.\nThird line here."
+        viewModel.onInputTextChanged(fullText)
+
+        viewModel.translate()
+
+        assertEquals("whole output", viewModel.uiState.value.resultText)
+        coVerify(exactly = 1) { engine.translate(fullText, "en", "ne") }
     }
 }

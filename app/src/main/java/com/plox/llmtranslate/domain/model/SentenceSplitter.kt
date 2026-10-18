@@ -9,7 +9,8 @@ package com.plox.llmtranslate.domain.model
  * склейкой результата.
  *
  * Граница предложения — `.`/`!`/`?`/`…` за которыми следует пробел или конец
- * текста, либо перевод строки. Не считаются границами:
+ * текста, либо перевод строки; либо данда `।`/`॥` (U+0964/U+0965) — безусловная
+ * граница без требования пробела (issue #63). Не считаются границами:
  * - точка без пробела после (десятичная «3.14», «Mr.Smith»);
  * - точка после известного сокращения ([ABBREVIATIONS]) или одиночной
  *   заглавной буквы-инициала («А. С. Пушкин», «Mr. Smith») — не резать
@@ -21,6 +22,12 @@ object SentenceSplitter {
 
     /** Символы, заканчивающие предложение. */
     private val terminators = charArrayOf('.', '!', '?', '…')
+
+    /** Данда — завершитель предложения деванагари (U+0964). */
+    private const val DANDA = '\u0964'
+
+    /** Двойная данда (U+0965) — тоже terminator; как одиночный символ. */
+    private const val DOUBLE_DANDA = '\u0965'
 
     /**
      * Сокращения, точка в которых не заканчивает предложение
@@ -87,20 +94,36 @@ object SentenceSplitter {
             val c = text[i]
             if (current.isEmpty()) rawStart = i
             current.append(c)
-            val boundary = c == '\n' ||
+            val boundary = c == '\n' || isDanda(c) ||
                 (
                     c in terminators && (i + 1 == text.length || text[i + 1].isWhitespace()) &&
                         !(c == '.' && isAbbreviation(text, i))
                     )
             if (boundary) {
-                closeRawSegment(i + 1)
+                var rawEnd = i + 1
+                if (isDanda(c)) {
+                    // Последовательности ।/॥ схлопываются в одну границу:
+                    // идущие подряд данда принадлежат закрытому фрагменту
+                    // и не открывают новый сегмент (issue #63).
+                    while (rawEnd < text.length && isDanda(text[rawEnd])) rawEnd++
+                }
+                closeRawSegment(rawEnd)
                 current.setLength(0)
+                i = rawEnd
+            } else {
+                i++
             }
-            i++
         }
         closeRawSegment(text.length)
         return segments to separators
     }
+
+    /**
+     * Данда (।/॥) — безусловная граница предложения: в отличие от `.` не
+     * требует пробела или конца текста после себя и не участвует в проверке
+     * сокращений.
+     */
+    private fun isDanda(c: Char): Boolean = c == DANDA || c == DOUBLE_DANDA
 
     /**
      * Точка в позиции [dotIndex] стоит внутри сокращения: после одиночной

@@ -58,6 +58,21 @@ class IndicTransOnnxRuntime @Inject constructor(
          * берём 256 с запасом.
          */
         private const val MAX_NEW_TOKENS = 256
+        /**
+         * Ширина таблицы позиционных эмбеддингов IndicTrans2
+         * (embed_positions — 258 строк): последовательность входа энкодера
+         * (префикс направления + текст чанка + EOS) не должна превышать
+         * этого числа токенов (issue #63, чанкинг [planChunks]).
+         */
+        private const val EMBED_POSITION_LIMIT = 258
+        /**
+         * Потолок бюджета ТЕКСТА чанка в токенах (без языкового префикса и
+         * входного EOS) — см. [chunkBudget]: запас между бюджетом и лимитом
+         * эмбеддингов покрывает рост числа токенов от punc_norm, который
+         * чанкинг в [planChunks] не учитывает (план считается по сырому
+         * тексту сегментов).
+         */
+        private const val CHUNK_BUDGET_CAP = 250
         /** Размер no_repeat_ngram для ретрайного прохода при вырожденном выводе (issue #62). */
         private const val NO_REPEAT_NGRAM_SIZE = 3
         /** Значение по умолчанию для unk_id из tokenizer_meta.json (в каталоге = 3). */
@@ -276,6 +291,34 @@ class IndicTransOnnxRuntime @Inject constructor(
             }
         }
 
+    /** Указывает UI не резать вход на предложения: чанкинг делает движок (issue #63). */
+    override val splitsIntoSentences: Boolean = false
+
+    /**
+     * Бюджет ТЕКСТА чанка в токенах для [planChunks] (issue #63).
+     *
+     * Полным входом энкодера является `encode(preprocess(чанк)) + EOS`, где
+     * [IndicProcessorLite.preprocess] вставляет flores-префикс `"$srcLang $tgtLang"`.
+     * Из лимита таблицы позиционных эмбеддингов ([EMBED_POSITION_LIMIT] = 258)
+     * вычитаются фактический размер префикса ([TokenizerJson.encode] от пары
+     * кодов — обычно 2 токена) и входной EOS (1 при доступном `eosId`).
+     * Сверху накладывается [CHUNK_BUDGET_CAP] = 250: [planChunks] считает
+     * tokен-длину по СЫРОМУ тексту сегментов ([TokenizerJson.encode] без
+     * preprocessing), а punc_norm внутри preprocess может добавить несколько
+     * токенов — cap оставляет запас; в Typical-случае бюджет = 250.
+     */
+    private fun chunkBudget(srcTok: TokenizerJson, srcLang: String, tgtLang: String): Int {
+        val prefixTokens = srcTok.encode("$srcLang $tgtLang").size
+        val eosTokens = if (srcTok.eosId() != null) 1 else 0
+        val budget = minOf(CHUNK_BUDGET_CAP, EMBED_POSITION_LIMIT - prefixTokens - eosTokens)
+        Timber.d(
+            "IndicTrans: бюджет чанка текста=$budget " +
+                "(prefix=$prefixTokens, eos=$eosTokens, " +
+                "cap=$CHUNK_BUDGET_CAP, лимит=$EMBED_POSITION_LIMIT)"
+        )
+        return budget
+    }
+
     /**
      * Перевести текст (IndicTrans2 encoder-decoder, greedy).
      *
@@ -287,6 +330,12 @@ class IndicTransOnnxRuntime @Inject constructor(
       * Инференс идёт по активному пучку кэша — [ensureLoaded] вызывают перед
      * переводом, поэтому активный пучок соответствует модели направления;
      * при отсутствии активного — [RuntimeError.ModelNotSelected].
+     *
+     * Чанкинг (issue #63):IndicTrans кодирует вход целиком в окно
+     * позиционных эмбеддингов (258), поэтому вход разбивается [planChunks]
+     * на чанки по бюджету текста [chunkBudget]; каждый чанк проходит ту же
+     * цепочку [translateSingleChunk], успешные переводы склеиваются
+     * разделителями границ исходника. Один чанк — поведение как раньше.
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(Dispatchers.IO) {
@@ -319,91 +368,42 @@ class IndicTransOnnxRuntime @Inject constructor(
                         }
                     }
 
-                    // Языковой префикс вставляется в текст до токенизации.
-                    val prompt = IndicProcessorLite.preprocess(text, srcLang, tgtLang)
-
-                    // Порядок: encode → clamp → +EOS. За unk-токеном — симметрия
-                    // с Marian: src-сторона вместо 0 (<pad>, искажает эмбеддинги)
-                    // подменяет вышедшие за словарь id на <unk> из vocab.
-                    val encoded = srcTok.encode(prompt)
-                        .map { clampId(it, bundle.srcDictSize, bundle.unkId).toLong() }
-                        .toMutableList()
-                    if (encoded.isEmpty()) {
-                        return@withContext Result.failure(
-                            RuntimeError.InferenceFailed("indictrans", "Пустой вход")
+                    // План чанков: tokenCount — длина ЭНКОДИРУЕМОГО текста чанка
+                    // без префикса/EOS (они уже вычтены из бюджета в chunkBudget,
+                    // рост от punc_norm покрывает cap бюджета).
+                    val budget = chunkBudget(srcTok, srcLang, tgtLang)
+                    val plan = planChunks(text, { t -> srcTok.encode(t).size }, budget)
+                    if (plan.chunks.size == 1) {
+                        return@withContext translateSingleChunk(
+                            ortEnv, bundle, plan.chunks.first(), srcLang, tgtLang
                         )
                     }
 
-                    // EOS на входе энкодера (симметрия с Marian). attentionMask
-                    // строится ПОСЛЕ добавления EOS — длина маски = длине входа.
-                    val eos = srcTok.eosId()
-                    if (eos != null) {
-                        encoded += eos.toLong()
-                    } else {
-                        Timber.w("IndicTrans: eosId недоступен — вход без EOS")
-                    }
-                    val inputIds = encoded.toLongArray()
-
-                    val attentionMask = LongArray(inputIds.size) { 1L }
-
-                    // Decode-hygiene (issue #62): первый проход — чистый greedy
-                    // без маски; если вывод вырожден (хвостовой цикл / бедный
-                    // словарь / упор в лимит без EOS) — РОВНО ОДИН ретрай с
-                    // жёсткой маской no_repeat_ngram. Детектор — по TRIMMED
-                    // тексту; порядок decode → trim → postprocess фиксирован,
-                    // postprocess — финальному победителю и ровно один раз.
-                    val (firstText, firstOutcome) = translateOnce(
-                        ortEnv, bundle, inputIds, attentionMask, noRepeatNgramSize = 0
-                    )
-                    val firstDegenerate = isDegenerateOutput(
-                        firstText, firstOutcome.eosReached, firstOutcome.hitMaxLength
-                    )
                     Timber.d(
-                        "IndicTrans: проход 1 вырожден=$firstDegenerate " +
-                            "(eosReached=${firstOutcome.eosReached}, " +
-                            "hitMaxLength=${firstOutcome.hitMaxLength})"
+                        "IndicTrans: вход разбит на ${plan.chunks.size} чанков " +
+                            "(budget=$budget, длина входа=${srcTok.encode(text).size} токенов)"
                     )
-                    val winnerText = if (!firstDegenerate) {
-                        firstText
-                    } else {
-                        // encOutput первого прохода закрыт в finally translateOnce;
-                        // отмена между проходами обязана срабатывать.
-                        currentCoroutineContext().ensureActive()
-                        val (retryText, retryOutcome) = translateOnce(
-                            ortEnv, bundle, inputIds, attentionMask,
-                            noRepeatNgramSize = NO_REPEAT_NGRAM_SIZE
+                    val merged = StringBuilder()
+                    for (index in plan.chunks.indices) {
+                        // Граница отмены между чанками: длинный вход — длинный
+                        // инференс, «Отмена» обязана срабатывать между сегментами.
+                        if (index > 0) currentCoroutineContext().ensureActive()
+                        translateSingleChunk(
+                            ortEnv, bundle, plan.chunks[index], srcLang, tgtLang
+                        ).fold(
+                            onSuccess = { chunkText ->
+                                // Разделитель между чанками — граница исходника.
+                                if (index > 0) merged.append(plan.separators[index - 1])
+                                merged.append(chunkText.trim())
+                            },
+                            onFailure = { return@withContext Result.failure(it) }
                         )
-                        val retryDegenerate = isDegenerateOutput(
-                            retryText, retryOutcome.eosReached, retryOutcome.hitMaxLength
-                        )
-                        Timber.d(
-                            "IndicTrans: ретрай (ngram=$NO_REPEAT_NGRAM_SIZE) " +
-                                "вырожден=$retryDegenerate " +
-                                "(eosReached=${retryOutcome.eosReached}, " +
-                                "hitMaxLength=${retryOutcome.hitMaxLength})"
-                        )
-                        if (retryDegenerate) {
-                            return@withContext Result.failure(
-                                RuntimeError.InferenceFailed(
-                                    "indictrans",
-                                    "Декодер не смог построить устойчивый перевод"
-                                )
-                            )
-                        }
-                        retryText
                     }
-
-                    // Детокенизация строго после триммера: правилу 2
-                    // RepetitionTrimmer нужны пробелы как разделители слов.
-                    // Порядок фиксирован: decode, trim, затем postprocess —
-                    // postprocess финальному победителю ровно один раз.
-                    val finalText = IndicProcessorLite.postprocess(winnerText, tgtLang)
-                    Timber.d("IndicTrans: после postprocess: [$finalText]")
-
-                    if (finalText.isBlank()) {
+                    val joined = merged.toString().trim()
+                    if (joined.isBlank()) {
                         Result.failure(RuntimeError.InferenceFailed("indictrans", "Пустой перевод"))
                     } else {
-                        Result.success(finalText)
+                        Result.success(joined)
                     }
                 } catch (e: CancellationException) {
                     // Отмена инференса (кнопка «Отмена»/смена экрана) — не ошибка:
@@ -415,6 +415,111 @@ class IndicTransOnnxRuntime @Inject constructor(
                 }
             }
         }
+
+    /**
+     * Один проход полной цепочки перевода ОДНОГО чанка текста:
+     * `preprocess (префикс + punc_norm) → encode → clamp → +EOS →
+     * greedy-проход → при вырожденном выводе ровно один ретрай с
+     * no_repeat_ngram → RepetitionTrimmer → postprocess`.
+     * Вызывается из [translate] под [sessionMutex] — по одному разу на чанк
+     * (issue #63) или один раз на весь текст, когда план одночанковый.
+     */
+    private suspend fun translateSingleChunk(
+        ortEnv: OrtEnvironment,
+        bundle: ModelBundle,
+        text: String,
+        srcLang: String,
+        tgtLang: String
+    ): Result<String> {
+        val srcTok = bundle.srcTokenizer
+
+        // Языковой префикс вставляется в текст до токенизации.
+        val prompt = IndicProcessorLite.preprocess(text, srcLang, tgtLang)
+
+        // Порядок: encode → clamp → +EOS. За unk-токеном — симметрия
+        // с Marian: src-сторона вместо 0 (<pad>, искажает эмбеддинги)
+        // подменяет вышедшие за словарь id на <unk> из vocab.
+        val encoded = srcTok.encode(prompt)
+            .map { clampId(it, bundle.srcDictSize, bundle.unkId).toLong() }
+            .toMutableList()
+        if (encoded.isEmpty()) {
+            return Result.failure(
+                RuntimeError.InferenceFailed("indictrans", "Пустой вход")
+            )
+        }
+
+        // EOS на входе энкодера (симметрия с Marian). attentionMask
+        // строится ПОСЛЕ добавления EOS — длина маски = длине входа.
+        val eos = srcTok.eosId()
+        if (eos != null) {
+            encoded += eos.toLong()
+        } else {
+            Timber.w("IndicTrans: eosId недоступен — вход без EOS")
+        }
+        val inputIds = encoded.toLongArray()
+
+        val attentionMask = LongArray(inputIds.size) { 1L }
+
+        // Decode-hygiene (issue #62): первый проход — чистый greedy
+        // без маски; если вывод вырожден (хвостовой цикл / бедный
+        // словарь / упор в лимит без EOS) — РОВНО ОДИН ретрай с
+        // жёсткой маской no_repeat_ngram. Детектор — по TRIMMED
+        // тексту; порядок decode → trim → postprocess фиксирован,
+        // postprocess — финальному победителю и ровно один раз.
+        val (firstText, firstOutcome) = translateOnce(
+            ortEnv, bundle, inputIds, attentionMask, noRepeatNgramSize = 0
+        )
+        val firstDegenerate = isDegenerateOutput(
+            firstText, firstOutcome.eosReached, firstOutcome.hitMaxLength
+        )
+        Timber.d(
+            "IndicTrans: проход 1 вырожден=$firstDegenerate " +
+                "(eosReached=${firstOutcome.eosReached}, " +
+                "hitMaxLength=${firstOutcome.hitMaxLength})"
+        )
+        val winnerText = if (!firstDegenerate) {
+            firstText
+        } else {
+            // encOutput первого прохода закрыт в finally translateOnce;
+            // отмена между проходами обязана срабатывать.
+            currentCoroutineContext().ensureActive()
+            val (retryText, retryOutcome) = translateOnce(
+                ortEnv, bundle, inputIds, attentionMask,
+                noRepeatNgramSize = NO_REPEAT_NGRAM_SIZE
+            )
+            val retryDegenerate = isDegenerateOutput(
+                retryText, retryOutcome.eosReached, retryOutcome.hitMaxLength
+            )
+            Timber.d(
+                "IndicTrans: ретрай (ngram=$NO_REPEAT_NGRAM_SIZE) " +
+                    "вырожден=$retryDegenerate " +
+                    "(eosReached=${retryOutcome.eosReached}, " +
+                    "hitMaxLength=${retryOutcome.hitMaxLength})"
+            )
+            if (retryDegenerate) {
+                return Result.failure(
+                    RuntimeError.InferenceFailed(
+                        "indictrans",
+                        "Декодер не смог построить устойчивый перевод"
+                    )
+                )
+            }
+            retryText
+        }
+
+        // Детокенизация строго после триммера: правилу 2
+        // RepetitionTrimmer нужны пробелы как разделители слов.
+        // Порядок фиксирован: decode, trim, затем postprocess —
+        // postprocess финальному победителю ровно один раз.
+        val finalText = IndicProcessorLite.postprocess(winnerText, tgtLang)
+        Timber.d("IndicTrans: после postprocess: [$finalText]")
+
+        return if (finalText.isBlank()) {
+            Result.failure(RuntimeError.InferenceFailed("indictrans", "Пустой перевод"))
+        } else {
+            Result.success(finalText)
+        }
+    }
 
     /**
      * Один проход генерации: encoder.run → greedyDecode → декодирование →
