@@ -52,7 +52,9 @@ offline.
   button is available.
 - "Export" / "Delete" — on the card of an installed model.
 - "Import" — on the card of a not-yet-downloaded model: unpack a model from a
-  ZIP file received from another phone, without downloading.
+  ZIP file received from another phone, without downloading. A ZIP export made
+  by this same app keeps the model whole: its type and languages are restored
+  automatically on import.
 - "Select" — only on TTS engine cards; the translation model is picked
   automatically by direction, and a recognition model is assigned with the
   "Speech recognition language:" chips on the STT model cards.
@@ -70,7 +72,9 @@ How much phone memory you need:
 | Read aloud with local Piper voices | 2 GB or more |
 
 If memory or free storage is not enough, the app shows a warning on the
-"Models" screen. Deleting a model ("Delete") frees space — the model can be
+"Models" screen — the space estimate also accounts for unpacking (installing a
+model needs room for both the downloaded file and its unpacked contents).
+Deleting a model ("Delete") frees space — the model can be
 downloaded again or imported. The "Loaded into memory" card on the "Models"
 screen lists the models currently held in RAM (including loaded Piper voice
 models) together with an estimated memory consumption.
@@ -93,6 +97,8 @@ models) together with an estimated memory consumption.
 - Type text into the field ("Enter text to translate…") and press "Translate".
   During a long translation a "Cancel" button appears. "Clear" empties both
   fields.
+- The result keeps the line breaks of the source text: paragraphs and
+  multi-line formatting stay exactly as in the original.
 - Above the result: "Copy translation" (to the clipboard), "Read aloud"
   (loudspeaker button) and the "Add to favorites" star.
 - The microphone in the input field ("Record audio"): one tap starts recording
@@ -159,7 +165,9 @@ models) together with an estimated memory consumption.
   immediately: no "ghost" of the old voice stays in the "Loaded into memory"
   list, and after a re-download the voice reads from the new files. A
   cancelled read-aloud no longer comes back as a late repeat of a stale
-  phrase.
+  phrase. Engines never overlap: a new phrase replaces the previous one, and
+  when the app automatically switches to a Piper voice the system read-aloud
+  is stopped — two voices never speak at the same time.
 
 ## Moving to another phone
 
@@ -167,6 +175,10 @@ models) together with an estimated memory consumption.
 2. Copy the archive to the new phone (USB, cloud, Bluetooth).
 3. On the new phone: "Models" → "Restore", pick the archive — models and
    settings are restored without downloading.
+
+While restoring, model files are checked against the checksums stored in the
+archive: damaged files are skipped (such a model can be re-downloaded or
+imported separately), everything else is restored.
 
 The settings backup includes: interface language and theme, per-language
 speech recognition and read-aloud assignments, the model unloading timeout,
