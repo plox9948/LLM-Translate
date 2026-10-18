@@ -213,6 +213,19 @@ This is expected: the Nepali model weighs about 320 MB and runs on the phone's
 CPU; for the Russian ⇄ Nepali direction two translation models work at the
 same time (via English).
 
+**Nepali translation sometimes "thinks" longer than usual.**
+If the model is unsure about a short text or falls into a repetition, the app
+automatically makes one second translation pass; very long texts are translated
+in parts (paragraphs are preserved). This is normal and needs no action from
+you.
+
+**Why did "3 hours later" come back as "after 3 hours"?**
+In Nepali one word covers both "later" and "after", so the model picks the
+neutral reading. This is a quality limit of the 320 MB offline model, while
+the meaning of the sentence is preserved. To check the nuance, translate the
+phrase once more into the original direction — the swap arrow changes the
+direction and puts the translation into the input field.
+
 **The microphone does not recognize speech.**
 The message on the screen tells you the cause: "Microphone recording
 permission is not granted…" — allow microphone access in the app settings;
