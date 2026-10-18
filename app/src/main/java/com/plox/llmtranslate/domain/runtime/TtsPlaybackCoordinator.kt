@@ -356,17 +356,7 @@ class TtsPlaybackCoordinator @Inject constructor(
         // не придёт в ERROR — сообщаем о необходимости сети сразу (issue #50).
         if (installed?.status != ModelStatus.DOWNLOADING && !isNetworkAvailable()) {
             val errorId = downloadErrorSeq.incrementAndGet()
-            _status.update {
-                it.copy(
-                    isSpeaking = false,
-                    language = null,
-                    text = null,
-                    downloadModelId = cardId,
-                    downloadStatus = TtsDownloadStatus.ERROR,
-                    downloadProgress = 0,
-                    downloadErrorId = errorId
-                )
-            }
+            showWatchStatus(cardId, TtsDownloadStatus.ERROR, progress = 0, errorId = errorId)
             Timber.w("Автоскачивание Piper-модели $cardId отменено: нет сети")
             return
         }
@@ -377,16 +367,7 @@ class TtsPlaybackCoordinator @Inject constructor(
         // ниже): окно grace ([WATCH_GRACE_MS] от текущего момента)
         // терпит отсутствие строки, за окном — сброс watch-статуса.
         watchGraceUntil = clock.nowMs() + WATCH_GRACE_MS
-        _status.update {
-            it.copy(
-                isSpeaking = false,
-                language = null,
-                text = null,
-                downloadModelId = cardId,
-                downloadStatus = TtsDownloadStatus.DOWNLOADING,
-                downloadProgress = installed?.progress ?: 0
-            )
-        }
+        showWatchStatus(cardId, TtsDownloadStatus.DOWNLOADING, progress = installed?.progress ?: 0)
         when (installed?.status) {
             // Уже качается — только наблюдаем; null/ERROR — ставим на скачивание
             // (startDownload идемпотентен для отсутствующей записи и повторной
@@ -404,6 +385,32 @@ class TtsPlaybackCoordinator @Inject constructor(
             ) {
                 handleWatchedDownload(piperModels)
             }
+        }
+    }
+
+    /**
+     * Статус «озвучивание снято, наблюдаем за автоскачиванием модели [cardId]»:
+     * одним обновлением гасятся флаг и текст активной фразы (как в
+     * [markNotSpeaking]) и выставляется watch-стадия [status] с прогрессом.
+     * Для ERROR передаётся новый экземпляр [errorId]; без него прежнее
+     * значение ошибки в статусе не трогается.
+     */
+    private fun showWatchStatus(
+        cardId: String,
+        status: TtsDownloadStatus,
+        progress: Int,
+        errorId: Long? = null
+    ) {
+        _status.update {
+            it.copy(
+                isSpeaking = false,
+                language = null,
+                text = null,
+                downloadModelId = cardId,
+                downloadStatus = status,
+                downloadProgress = progress,
+                downloadErrorId = errorId ?: it.downloadErrorId
+            )
         }
     }
 

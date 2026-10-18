@@ -11,6 +11,7 @@ import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
 import com.plox.llmtranslate.domain.model.userMessage
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
+import com.plox.llmtranslate.domain.runtime.trackEnginePreference
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -69,12 +70,7 @@ class FavoritesViewModel @Inject constructor(
         }
         viewModelScope.launch {
             // Инициализация TTS текущим движком (как на экране «Перевод»).
-            preferences.ttsEngine.collect { engine ->
-                val error = ttsRuntime.init(engine)
-                if (error != null) {
-                    Timber.w("TTS недоступен: ${error.userMessage()}")
-                }
-            }
+            ttsRuntime.trackEnginePreference(preferences.ttsEngine)
         }
         viewModelScope.launch {
             // Статус общего координатора TTS-плейбека (issue #50): сброс

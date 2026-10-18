@@ -5,9 +5,11 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.TtsEngines
+import com.plox.llmtranslate.domain.model.userMessage
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
@@ -330,5 +332,21 @@ internal class TtsUtteranceRegistry {
             callbacks.remove(id)?.let { taken.add(it) }
         }
         return taken
+    }
+}
+
+/**
+ * Подписка экрана на настройку движка синтеза речи ([Flow] значения
+ * [TtsEngines]): инициализация текущим движком при старте collecting и
+ * переконфигурация при смене значения; ошибка инициализации только
+ * логируется (экран продолжает работать без озвучивания). Вызывать внутри
+ * области видимости экрана; параллельные подписчики экранных ViewModel
+ * сериализуются мьютексом [TtsRuntime.init].
+ */
+internal suspend fun TtsRuntime.trackEnginePreference(engine: Flow<String>) {
+    engine.collect { value ->
+        init(value)?.let { error ->
+            Timber.w("TTS недоступен: ${error.userMessage()}")
+        }
     }
 }

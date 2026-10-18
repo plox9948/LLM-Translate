@@ -27,6 +27,7 @@ import com.plox.llmtranslate.domain.runtime.TtsDownloadStatus
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
+import com.plox.llmtranslate.domain.runtime.trackEnginePreference
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -261,12 +262,7 @@ class TranslateViewModel @Inject constructor(
         }
         viewModelScope.launch {
             // Инициализация TTS текущим движком и переконфигурация при смене настройки.
-            preferences.ttsEngine.collect { engine ->
-                val error = ttsRuntime.init(engine)
-                if (error != null) {
-                    Timber.w("TTS недоступен: ${error.userMessage()}")
-                }
-            }
+            ttsRuntime.trackEnginePreference(preferences.ttsEngine)
         }
         viewModelScope.launch {
             // Статус общего TTS-плейбека (issue #50): флаг озвучивания,
@@ -401,6 +397,20 @@ class TranslateViewModel @Inject constructor(
     }
 
     /**
+     * Завершение перевода/распознавания с ошибкой: сброс рабочих флагов
+     * [translationJob] и текст ошибки в UI.
+     */
+    private fun endTranslationJobWithError(error: String) {
+        update {
+            it.copy(
+                isTranslating = false,
+                canCancelTranslation = false,
+                error = error
+            )
+        }
+    }
+
+    /**
      * Перевести введённый текст.
      * Модель выбирается автоматически по направлению (sourceLang→targetLang);
      * при отсутствии прямой модели используется цепочка через английский.
@@ -438,13 +448,9 @@ class TranslateViewModel @Inject constructor(
                     translationModels.filter { it.isReady }, sourceLang.code, state.targetLang.code
                 )
                 if (chain.isNullOrEmpty()) {
-                    update {
-                        it.copy(
-                            isTranslating = false,
-                            canCancelTranslation = false,
-                            error = "Нет модели для направления ${sourceLang.code.uppercase()}→${state.targetLang.code.uppercase()}. Скачайте её на экране «Модели»."
-                        )
-                    }
+                    endTranslationJobWithError(
+                        "Нет модели для направления ${sourceLang.code.uppercase()}→${state.targetLang.code.uppercase()}. Скачайте её на экране «Модели»."
+                    )
                     return@launch
                 }
 
@@ -480,9 +486,7 @@ class TranslateViewModel @Inject constructor(
                 }
 
                 if (failed != null) {
-                    update {
-                        it.copy(isTranslating = false, canCancelTranslation = false, error = failed)
-                    }
+                    endTranslationJobWithError(failed)
                 } else {
                     update {
                         // Привязка результата к направлению перевода на момент
@@ -558,26 +562,16 @@ class TranslateViewModel @Inject constructor(
                     installed = sttModels
                 )
                 if (model == null) {
-                    update {
-                        it.copy(
-                            isTranslating = false,
-                            canCancelTranslation = false,
-                            error = "Нет подходящей модели распознавания. Скачайте её на экране «Модели»."
-                        )
-                    }
+                    endTranslationJobWithError(
+                        "Нет подходящей модели распознавания. Скачайте её на экране «Модели»."
+                    )
                     return@launch
                 }
 
                 val engine = runtimeRouter.sttEngine()
                 val loadError = engine.ensureLoaded(model)
                 if (loadError != null) {
-                    update {
-                        it.copy(
-                            isTranslating = false,
-                            canCancelTranslation = false,
-                            error = loadError.userMessage()
-                        )
-                    }
+                    endTranslationJobWithError(loadError.userMessage())
                     return@launch
                 }
 
@@ -592,13 +586,9 @@ class TranslateViewModel @Inject constructor(
                         }
                     },
                     onFailure = { e ->
-                        update {
-                            it.copy(
-                                isTranslating = false,
-                                canCancelTranslation = false,
-                                error = (e as? RuntimeError)?.userMessage() ?: "Ошибка распознавания"
-                            )
-                        }
+                        endTranslationJobWithError(
+                            (e as? RuntimeError)?.userMessage() ?: "Ошибка распознавания"
+                        )
                     }
                 )
             } catch (e: CancellationException) {
