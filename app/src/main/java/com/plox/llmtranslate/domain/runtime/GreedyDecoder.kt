@@ -24,7 +24,16 @@ import java.util.Optional
  *   исключении из коллбэков.
  *
  * Остановка — по [maxNewTokens] либо когда [pickToken] вернёт [eosTokenId]
- * (EOS включается в результат, как в HF `generate`).
+ * (EOS включается в результат, как в HF `generate`); флаги остановки —
+ * в [DecodeOutcome].
+ *
+ * Контракт подавления повторов (ревью #64): общий цикл генерирует строго
+ * greedy — без штрафов и блокировок в логитах. Повторы декодера IndicTrans2
+ * подавляет ВЫЗЫВАЮЩИЙ пост-процессингом [RepetitionTrimmer]
+ * (IndicTransOnnxRuntime); штраф в логитах в общий цикл добавлять НЕЛЬЗЯ —
+ * он ухудшает качество IndicTrans2. У [MarianOnnxRuntime] намеренно
+ * сохранён repetition_penalty=1.2 как ЧАСТНОЕ решение против зацикливания
+ * opus-mt_tiny — он реализован в его коллбэке [pickToken], а не здесь.
  *
  * @param ortEnv ONNX-окружение.
  * @param attentionMask маска входа энкодера (единицы) — подаётся как

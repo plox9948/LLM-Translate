@@ -14,7 +14,12 @@ object SlimtNative {
 
     /**
      * Создать сессию модели. Возвращает нативный handle или 0 с выброшенным
-     * [NativeLoadException] при нечитаемых/неполных файлах пака.
+     * [IllegalStateException] при нечитаемых/неполных файлах пака, а также
+     * если в заголовке .bin не распознаны имена тензоров слоёв
+     * (detect_config в slimt_jni.cpp — явная ошибка вместо молчаливого
+     * дефолта пресета, ревью #64). Вызывающий код
+     * ([com.plox.llmtranslate.domain.runtime.SlimtRuntime.ensureLoaded])
+     * перехватывает исключение и мапит его в [com.plox.llmtranslate.domain.model.RuntimeError.LoadFailed].
      *
      * @param targetVocab — trgvocab.*.spm для двух-словарных паков (CJK);
      *        null для одних словарей (ru⇄en).

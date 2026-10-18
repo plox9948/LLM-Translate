@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 #include "slimt/slimt.hh"
@@ -128,6 +129,10 @@ jstring utf8_to_jstr(JNIEnv *env, const std::string &text) {
 // задаёт 2 decoder-слоя — лишние слои молча игнорируются и декодер даёт
 // вырожденный вывод. Имена тензоров идут в начале файла plaintext, поэтому
 // достаточно разобрать первые байты.
+// Если ни одного имени слоя распознать не удалось (чужой/битый заголовок),
+// молчание на дефолте preset::tiny() даёт тихую порчу перевода — бросаем
+// исключение: nativeCreate перехватывает его и прокидывает ошибку загрузки
+// в Kotlin (RuntimeError.LoadFailed) (ревью #64).
 Model::Config detect_config(const std::string &model_path) {
     Model::Config config = preset::tiny();
     std::ifstream file(model_path, std::ios::binary);
@@ -160,12 +165,15 @@ Model::Config detect_config(const std::string &model_path) {
 
     const size_t encoder_layers = max_layer("encoder_l");
     const size_t decoder_layers = max_layer("decoder_l");
-    if (encoder_layers > 0) {
-        config.encoder_layers = encoder_layers;
+    if (encoder_layers == 0 || decoder_layers == 0) {
+        // Имена тензоров слоёв не распознаны: дефолт preset::tiny() молча
+        // подменил бы реальную архитектуру модели — явная ошибка загрузки.
+        throw std::runtime_error(
+            "slimt: не удалось распознать число слоёв по имени тензоров "
+            "в заголовке модели: " + model_path);
     }
-    if (decoder_layers > 0) {
-        config.decoder_layers = decoder_layers;
-    }
+    config.encoder_layers = encoder_layers;
+    config.decoder_layers = decoder_layers;
     return config;
 }
 
