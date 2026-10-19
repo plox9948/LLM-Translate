@@ -26,6 +26,7 @@ import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
+import com.plox.llmtranslate.util.sha256Hex
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -274,21 +275,29 @@ class ModelManagerImpl @Inject constructor(
     }
 
     /**
-     * Есть ли живая unique-загрузка модели в WorkManager (ENQUEUED/RUNNING/
-     * BLOCKED) — см. [startDownload]. Неинициализированный/недоступный
-     * WorkManager считается «живой работы нет» (обычный путь schedule).
-     * Блокирующий [.get] будущего допустим: вызывается только из app-scope
-     * на [Dispatchers.IO], фьючерс WorkManager читает локальную БД.
+     * Сырая проверка живости unique-работы [workName] в WorkManager
+     * (ENQUEUED/RUNNING/BLOCKED). Блокирующий [.get] будущего допустим:
+     * вызывается только с [Dispatchers.IO], фьючерс WorkManager читает
+     * локальную БД. При недоступности WorkManager бросает — вызывающий
+     * сам решает fallback-семантику и логирует её.
      */
-    private suspend fun hasLiveDownloadWork(modelId: String): Boolean = try {
+    private fun isWorkLive(workName: String): Boolean =
         WorkManager.getInstance(context)
-            .getWorkInfosForUniqueWork(ModelDownloadWorker.workName(modelId))
+            .getWorkInfosForUniqueWork(workName)
             .get(WORK_INFO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .any { info ->
                 info.state == WorkInfo.State.ENQUEUED ||
                     info.state == WorkInfo.State.RUNNING ||
                     info.state == WorkInfo.State.BLOCKED
             }
+
+    /**
+     * Есть ли живая unique-загрузка модели в WorkManager (ENQUEUED/RUNNING/
+     * BLOCKED) — см. [startDownload]. Неинициализированный/недоступный
+     * WorkManager считается «живой работы нет» (обычный путь schedule).
+     */
+    private suspend fun hasLiveDownloadWork(modelId: String): Boolean = try {
+        isWorkLive(ModelDownloadWorker.workName(modelId))
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
@@ -398,14 +407,7 @@ class ModelManagerImpl @Inject constructor(
         val deadline = System.currentTimeMillis() + CANCEL_TERMINAL_TIMEOUT_MS
         while (true) {
             val live = try {
-                WorkManager.getInstance(context)
-                    .getWorkInfosForUniqueWork(workName)
-                    .get(WORK_INFO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                    .any { info ->
-                        info.state == WorkInfo.State.ENQUEUED ||
-                            info.state == WorkInfo.State.RUNNING ||
-                            info.state == WorkInfo.State.BLOCKED
-                    }
+                isWorkLive(workName)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -946,20 +948,6 @@ class ModelManagerImpl @Inject constructor(
                 )
             }
         }
-    }
-
-    /** SHA-256 файла в hex (нижний регистр). */
-    private fun sha256Hex(file: File): String {
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-        file.inputStream().buffered().use { input ->
-            val buffer = ByteArray(8192)
-            while (true) {
-                val read = input.read(buffer)
-                if (read <= 0) break
-                digest.update(buffer, 0, read)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     /**

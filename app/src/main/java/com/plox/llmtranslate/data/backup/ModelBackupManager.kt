@@ -11,6 +11,8 @@ import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
+import com.plox.llmtranslate.util.isFileInsideDir
+import com.plox.llmtranslate.util.sha256Hex
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -53,20 +55,6 @@ internal fun backupShaOk(entry: BackupModelEntry, file: File): Boolean {
     if (file.isDirectory) return true
     val actual = runCatching { sha256Hex(file) }.getOrNull() ?: return false
     return actual.equals(expected, ignoreCase = true)
-}
-
-/** SHA-256 файла в hex (нижний регистр). */
-private fun sha256Hex(file: File): String {
-    val digest = java.security.MessageDigest.getInstance("SHA-256")
-    file.inputStream().buffered().use { input ->
-        val buffer = ByteArray(8192)
-        while (true) {
-            val read = input.read(buffer)
-            if (read <= 0) break
-            digest.update(buffer, 0, read)
-        }
-    }
-    return digest.digest().joinToString("") { "%02x".format(it) }
 }
 
 /**
@@ -200,7 +188,7 @@ class ModelBackupManager @Inject constructor(
                                 val outFile = File(tempDir, name)
                                 // Защита от zip-slip: файл не должен выходить
                                 // за пределы временного каталога.
-                                if (!isInsideDir(tempDir, outFile)) {
+                                if (!isFileInsideDir(tempDir, outFile)) {
                                     Timber.w("ZIP-запись вне каталога, пропущена: $name")
                                 } else {
                                     outFile.parentFile?.mkdirs()
@@ -487,22 +475,11 @@ class ModelBackupManager @Inject constructor(
         val relative = entry.relativePath.removePrefix(MODELS_PREFIX)
         val target = File(modelsRoot, relative)
         return try {
-            if (isInsideDir(modelsRoot, target)) target.absolutePath else null
+            if (isFileInsideDir(modelsRoot, target)) target.absolutePath else null
         } catch (e: Exception) {
             Timber.w(e, "Не удалось канонализировать путь: ${target.absolutePath}")
             null
         }
-    }
-
-    /**
-     * Защита от zip-slip: файл лежит внутри каталога [dir]
-     * (сравнение по каноническим путям, сам каталог тоже считается «внутри»).
-     */
-    private fun isInsideDir(dir: File, file: File): Boolean {
-        val dirCanonical = dir.canonicalPath
-        val fileCanonical = file.canonicalPath
-        return fileCanonical == dirCanonical ||
-            fileCanonical.startsWith(dirCanonical + File.separator)
     }
 
     /**

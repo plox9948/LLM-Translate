@@ -89,17 +89,15 @@ class ModelPreferences @Inject constructor(
      * Сериализация значения — JSON-строка в preference `stt_by_language`.
      */
     val sttByLanguage: Flow<Map<String, String>> =
-        context.dataStore.data.map { prefs -> decodeSttByLanguage(prefs[STT_BY_LANGUAGE_KEY]) }
+        context.dataStore.data.map { prefs ->
+            decodeLanguageMap(prefs[STT_BY_LANGUAGE_KEY], STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME)
+        }
 
     /**
      * Назначить STT-модель языку; null — снять назначение.
      */
     suspend fun setSttForLanguage(language: String, modelId: String?) =
         setForLanguage(STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME, language, modelId)
-
-    /** Декод JSON-карты «язык → id» для STT-ключа. */
-    private fun decodeSttByLanguage(raw: String?): Map<String, String> =
-        decodeLanguageMap(raw, STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME)
 
     // --- TTS-модель на каждый язык (issue #50) ---
 

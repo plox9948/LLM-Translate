@@ -176,16 +176,10 @@ class ModelRepository @Inject constructor(
      *
      * @return список filePath удалённых моделей, чтобы удалить файлы с диска.
      */
-    suspend fun cleanObsoleteRuntimes(): List<String> {
-        val all = dao.observeAll().first()
-        val obsolete = all.filter { entity ->
-            RuntimeType.entries.none { it.name == entity.runtime }
-        }
-        if (obsolete.isEmpty()) return emptyList()
-        obsolete.forEach { dao.deleteById(it.id) }
-        Timber.d("Удалено устаревших моделей из БД: ${obsolete.size}")
-        return obsolete.mapNotNull { it.filePath }
-    }
+    suspend fun cleanObsoleteRuntimes(): List<String> = deleteCatalogRecords(
+        matching = { entity -> RuntimeType.entries.none { it.name == entity.runtime } },
+        removedLabel = "устаревших моделей из БД"
+    )
 
     /**
      * Очистка каталожных моделей, которых больше нет в каталоге (например,
@@ -195,13 +189,25 @@ class ModelRepository @Inject constructor(
      * @param knownIds id моделей текущего каталога.
      * @return список filePath удалённых записей для удаления файлов с диска.
      */
-    suspend fun cleanRemovedCatalogModels(knownIds: Set<String>): List<String> {
-        val all = dao.observeAll().first()
-        val removed = all.filter { it.isBuiltin && it.id !in knownIds }
+    suspend fun cleanRemovedCatalogModels(knownIds: Set<String>): List<String> = deleteCatalogRecords(
+        matching = { it.isBuiltin && it.id !in knownIds },
+        removedLabel = "отсутствующих в каталоге моделей из БД"
+    ).distinct()
+
+    /**
+     * Общий обход каталога чисток: удалить из БД записи, помеченные [matching],
+     * с логом «Удалено <removedLabel>: N».
+     * @return filePath удалённых записей (пропускают null-пути).
+     */
+    private suspend fun deleteCatalogRecords(
+        matching: (ModelEntity) -> Boolean,
+        removedLabel: String
+    ): List<String> {
+        val removed = dao.observeAll().first().filter(matching)
         if (removed.isEmpty()) return emptyList()
         removed.forEach { dao.deleteById(it.id) }
-        Timber.d("Удалено отсутствующих в каталоге моделей из БД: ${removed.size}")
-        return removed.mapNotNull { it.filePath }.distinct()
+        Timber.d("Удалено $removedLabel: ${removed.size}")
+        return removed.mapNotNull { it.filePath }
     }
 }
 

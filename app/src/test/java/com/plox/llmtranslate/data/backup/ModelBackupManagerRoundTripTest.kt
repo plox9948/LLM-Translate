@@ -11,6 +11,7 @@ import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
+import com.plox.llmtranslate.testutil.sha256HexOf
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.coVerifyOrder
@@ -213,40 +214,18 @@ class ModelBackupManagerRoundTripTest {
         val upserted = mutableListOf<InstalledModel>()
         coEvery { repository.upsert(capture(upserted)) } returns Unit
 
-        val manifest = BackupManifest(
-            version = 1,
-            exportedAt = 0L,
-            models = listOf(
-                BackupModelEntry(
-                    id = "legacy1",
-                    category = ModelCategory.TRANSLATION.name,
-                    displayName = "Legacy",
-                    description = "d",
-                    runtime = RuntimeType.MARIAN_ONNX.name,
-                    sizeBytes = 5,
-                    ramRequiredMb = 100,
-                    languages = listOf("ru"),
-                    quality = 1,
-                    speed = 1,
-                    url = "",
-                    urls = emptyList(),
-                    sha256 = null,
-                    license = "MIT",
-                    minAndroidSdk = 26,
-                    recommendedRamMb = 0,
-                    relativePath = "legacy1.gguf",
-                    isBuiltin = false
-                )
-            )
+        val manifestOnly = manifestEntry(
+            id = "legacy1",
+            category = ModelCategory.TRANSLATION,
+            runtime = RuntimeType.MARIAN_ONNX,
+            // Compat-формат: relativePath без "models/".
+            relativePath = "legacy1.gguf"
         )
-        ZipOutputStream(FileOutputStream(zipFile)).use { zip ->
-            zip.putNextEntry(ZipEntry(ModelBackupManager.MANIFEST_NAME))
-            zip.write(json.encodeToString(BackupManifest.serializer(), manifest).toByteArray())
-            zip.closeEntry()
-            zip.putNextEntry(ZipEntry(ModelBackupManager.MODELS_PREFIX + "legacy1.gguf"))
-            zip.write("legacy-bytes".toByteArray())
-            zip.closeEntry()
-        }
+        writeZipWithModel(
+            manifestOnly,
+            "legacy-bytes",
+            modelEntryPath = MODELS_PREFIX + "legacy1.gguf"
+        )
 
         runBlocking {
             val result = backupManager().importFromUri(mockk<Uri>())
@@ -257,29 +236,56 @@ class ModelBackupManagerRoundTripTest {
         }
     }
 
-    /** Entry манифеста одиночного файла с указанным sha256. */
-    private fun shaEntry(filePathRel: String, sha: String?) = BackupModelEntry(
-        id = "shamod",
-        category = ModelCategory.TRANSLATION.name,
-        displayName = "Sha",
+    /**
+     * Запись манифеста с полями-заглушками (displayName/description/качество),
+     * не значимыми для сценариев импорта.
+     */
+    private fun manifestEntry(
+        id: String,
+        category: ModelCategory,
+        runtime: RuntimeType,
+        relativePath: String,
+        sha256: String? = null,
+        isBuiltin: Boolean = false,
+        sizeBytes: Int = 5,
+        ramRequiredMb: Int = 100
+    ) = BackupModelEntry(
+        id = id,
+        category = category.name,
+        displayName = id,
         description = "d",
-        runtime = RuntimeType.MARIAN_ONNX.name,
-        sizeBytes = 5,
-        ramRequiredMb = 100,
+        runtime = runtime.name,
+        sizeBytes = sizeBytes.toLong(),
+        ramRequiredMb = ramRequiredMb,
         languages = listOf("ru"),
         quality = 1,
         speed = 1,
         url = "",
         urls = emptyList(),
-        sha256 = sha,
+        sha256 = sha256,
         license = "MIT",
         minAndroidSdk = 26,
         recommendedRamMb = 0,
-        relativePath = "$MODELS_PREFIX$filePathRel",
-        isBuiltin = false
+        relativePath = relativePath,
+        isBuiltin = isBuiltin
     )
 
-    private fun writeZipWithModel(entry: BackupModelEntry, fileBytes: String) {
+    /** Entry манифеста одиночного файла с указанным sha256. */
+    private fun shaEntry(filePathRel: String, sha: String?) = manifestEntry(
+        id = "shamod",
+        category = ModelCategory.TRANSLATION,
+        runtime = RuntimeType.MARIAN_ONNX,
+        relativePath = MODELS_PREFIX + filePathRel,
+        sha256 = sha
+    )
+
+    /** ZIP с манифестом (одна entry), опциональными settings и файлом модели. */
+    private fun writeZipWithModel(
+        entry: BackupModelEntry,
+        fileBytes: String,
+        settings: BackupSettings? = null,
+        modelEntryPath: String = entry.relativePath
+    ) {
         ZipOutputStream(FileOutputStream(zipFile)).use { zip ->
             zip.putNextEntry(ZipEntry(ModelBackupManager.MANIFEST_NAME))
             zip.write(
@@ -289,7 +295,12 @@ class ModelBackupManagerRoundTripTest {
                 ).toByteArray()
             )
             zip.closeEntry()
-            zip.putNextEntry(ZipEntry(entry.relativePath))
+            settings?.let {
+                zip.putNextEntry(ZipEntry(ModelBackupManager.SETTINGS_NAME))
+                zip.write(json.encodeToString(BackupSettings.serializer(), it).toByteArray())
+                zip.closeEntry()
+            }
+            zip.putNextEntry(ZipEntry(modelEntryPath))
             zip.write(fileBytes.toByteArray())
             zip.closeEntry()
         }
@@ -337,24 +348,13 @@ class ModelBackupManagerRoundTripTest {
         // Настройки ссылаются на id из архива (s1 — восстанавливается) и на
         // отсутствующий ghost — висячие id не должны попадать в настройки;
         // сентинель системного TTS назначается без модели.
-        val entry = BackupModelEntry(
+        val entry = manifestEntry(
             id = "s1",
-            category = ModelCategory.STT.name,
-            displayName = "S1",
-            description = "d",
-            runtime = RuntimeType.SHERPA.name,
+            category = ModelCategory.STT,
+            runtime = RuntimeType.SHERPA,
+            relativePath = MODELS_PREFIX + "stt1.onnx",
             sizeBytes = 4,
             ramRequiredMb = 10,
-            languages = listOf("ru"),
-            quality = 1,
-            speed = 1,
-            url = "",
-            urls = emptyList(),
-            sha256 = null,
-            license = "MIT",
-            minAndroidSdk = 26,
-            recommendedRamMb = 0,
-            relativePath = MODELS_PREFIX + "stt1.onnx",
             isBuiltin = true
         )
         val settings = BackupSettings(
@@ -363,22 +363,7 @@ class ModelBackupManagerRoundTripTest {
             sttByLanguage = mapOf("ru" to "s1", "ne" to "ghost"),
             ttsByLanguage = mapOf("ru" to TtsModelSelector.SYSTEM_SENTINEL)
         )
-        ZipOutputStream(FileOutputStream(zipFile)).use { zip ->
-            zip.putNextEntry(ZipEntry(ModelBackupManager.MANIFEST_NAME))
-            zip.write(
-                json.encodeToString(
-                    BackupManifest.serializer(),
-                    BackupManifest(version = 1, exportedAt = 0L, models = listOf(entry))
-                ).toByteArray()
-            )
-            zip.closeEntry()
-            zip.putNextEntry(ZipEntry(ModelBackupManager.SETTINGS_NAME))
-            zip.write(json.encodeToString(BackupSettings.serializer(), settings).toByteArray())
-            zip.closeEntry()
-            zip.putNextEntry(ZipEntry(MODELS_PREFIX + "stt1.onnx"))
-            zip.write("stt-bytes".toByteArray())
-            zip.closeEntry()
-        }
+        writeZipWithModel(entry, "stt-bytes", settings = settings)
 
         runBlocking {
             val result = backupManager().importFromUri(mockk<Uri>())
@@ -407,12 +392,9 @@ class ModelBackupManagerRoundTripTest {
         // Без хэша (импортированная модель) — сверки нет, ok.
         assertTrue(backupShaOk(entry.copy(sha256 = null), bad))
         // Каталог: хэш манифеста относится к архиву, не к содержимому — сверка пропускается.
-        assertTrue(backupShaOk(entry, good.parentFile))
+        assertTrue(backupShaOk(entry, checkNotNull(good.parentFile)))
     }
 
-    /** SHA-256 файла в hex — независимая реализация для теста. */
-    private fun sha256HexOf(file: File): String {
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-        return file.readBytes().let(digest::digest).joinToString("") { "%02x".format(it) }
-    }
+    // Independent SHA-256 for the test is provided by
+    // com.plox.llmtranslate.testutil.sha256HexOf.
 }

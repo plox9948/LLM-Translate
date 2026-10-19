@@ -16,6 +16,9 @@ import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
+import com.plox.llmtranslate.testutil.gzip
+import com.plox.llmtranslate.testutil.sha256HexOf
+import com.plox.llmtranslate.testutil.zipOf
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -377,13 +380,7 @@ class ModelManagerTest {
         }
 
         val newContent = byteArrayOf(9, 9)
-        val zip = java.io.ByteArrayOutputStream().apply {
-            java.util.zip.ZipOutputStream(this).use { z ->
-                z.putNextEntry(java.util.zip.ZipEntry("model.bin"))
-                z.write(newContent)
-                z.closeEntry()
-            }
-        }.toByteArray()
+        val zip = zipOf(mapOf("model.bin" to newContent))
         every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
             ByteArrayInputStream(zip),
             ByteArrayInputStream(zip)
@@ -416,13 +413,7 @@ class ModelManagerTest {
         coEvery { repository.getById("zip-model") } returns previous
 
         val newContent = byteArrayOf(9, 9)
-        val zip = java.io.ByteArrayOutputStream().apply {
-            java.util.zip.ZipOutputStream(this).use { z ->
-                z.putNextEntry(java.util.zip.ZipEntry("model.bin"))
-                z.write(newContent)
-                z.closeEntry()
-            }
-        }.toByteArray()
+        val zip = zipOf(mapOf("model.bin" to newContent))
         every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
             ByteArrayInputStream(zip),
             ByteArrayInputStream(zip)
@@ -441,17 +432,6 @@ class ModelManagerTest {
         coVerify(exactly = 1) { runtimeRouter.releaseModel(previous) }
         modelsDir.deleteRecursively()
     }
-
-    private fun zipOf(entries: Map<String, ByteArray>): ByteArray =
-        java.io.ByteArrayOutputStream().apply {
-            java.util.zip.ZipOutputStream(this).use { z ->
-                entries.forEach { (name, bytes) ->
-                    z.putNextEntry(java.util.zip.ZipEntry(name))
-                    z.write(bytes)
-                    z.closeEntry()
-                }
-            }
-        }.toByteArray()
 
     @Test
     fun `repeated zip import replaces catalog without leftover old files`() = runTest {
@@ -622,13 +602,7 @@ class ModelManagerTest {
         coEvery { repository.getById("zip-model") } returns previous
 
         val newContent = byteArrayOf(7, 7)
-        val zip = java.io.ByteArrayOutputStream().apply {
-            java.util.zip.ZipOutputStream(this).use { z ->
-                z.putNextEntry(java.util.zip.ZipEntry("model.bin"))
-                z.write(newContent)
-                z.closeEntry()
-            }
-        }.toByteArray()
+        val zip = zipOf(mapOf("model.bin" to newContent))
         every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
             ByteArrayInputStream(zip),
             ByteArrayInputStream(zip)
@@ -664,15 +638,6 @@ class ModelManagerTest {
             """"displayName":"Zip model","urls":[$urlsField]""" +
             """$shaField,"isBuiltin":$isBuiltin}"""
     }
-
-    private fun sha256HexOf(bytes: ByteArray): String =
-        java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
-            .joinToString("") { "%02x".format(it) }
-
-    private fun gzip(bytes: ByteArray): ByteArray =
-        java.io.ByteArrayOutputStream().apply {
-            java.util.zip.GZIPOutputStream(this).use { it.write(bytes) }
-        }.toByteArray()
 
     @Test
     fun `zip import with meta registers model as not builtin`() = runTest {

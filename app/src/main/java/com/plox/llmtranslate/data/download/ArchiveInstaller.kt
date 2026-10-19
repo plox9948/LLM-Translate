@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.data.download
 
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.util.isFileInsideDir
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -57,86 +58,112 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             // одиночный файл — в персональный каталог модели без префикса.
             val isArchive = DownloadLayout.isArchive(DownloadLayout.sanitizedBasename(url, index))
             val fileName = DownloadLayout.targetFileName(modelId, url, index, !isArchive)
-
-            if (isArchive) {
-                when (val outcome = downloadFile(url, targetDir, fileName, hashes[index]) { fileProgress ->
-                    onProgress(scaleFileProgress(index, urls.size, fileProgress))
-                }) {
-                    is DownloadOutcome.Success -> {
-                        val archiveFile = outcome.file
-                        val extracted = try {
-                            extractArchive(archiveFile, modelDir, fileName)
-                        } catch (e: CancellationException) {
-                            // Отмена распаковки: скачанный архив лежит в КОРНЕ
-                            // каталога рантайма — без удаления он остался бы
-                            // сиротой навсегда; освобождаем место сразу
-                            // (deleteOrphanParts — страховка для старых установок).
-                            if (!archiveFile.delete()) {
-                                Timber.w("Не удалось удалить архив после отмены: ${archiveFile.name}")
-                            }
-                            throw e
-                        } catch (e: SecurityException) {
-                            // zip-slip: содержимое архива того же источника не
-                            // изменится — повтор бессмысленен, permanent=true
-                            // (маппинг toInstallFailure этот случай не покрывает).
-                            Timber.e(e, "Небезопасный путь в архиве: $fileName")
-                            if (!archiveFile.delete()) {
-                                Timber.w("Не удалось удалить архив после zip-slip: ${archiveFile.name}")
-                            }
-                            return InstallResult.Failure(
-                                "Небезопасный путь в архиве: $fileName",
-                                permanent = true
-                            )
-                        } catch (e: Exception) {
-                            if (isOutOfSpaceError(e)) {
-                                // ENOSPC при распаковке (rethrow из extractTar/extractZip):
-                                // повтор без освобождения места бессилен — permanent
-                                // (контрольный аудит, п.5: без 5 перекачек),
-                                // осколки распаковки extract* уже убраны.
-                                Timber.e(e, "Место на диске закончилось при распаковке: $fileName")
-                                if (!archiveFile.delete()) {
-                                    Timber.w("Не удалось удалить архив после ENOSPC: ${archiveFile.name}")
-                                }
-                                return InstallResult.Failure(
-                                    "Недостаточно места на диске при распаковке: $fileName",
-                                    permanent = true
-                                )
-                            }
-                            // Прочие сбои распаковки — обычно повторные.
-                            Timber.e(e, "Сбой распаковки: $fileName")
-                            return InstallResult.Failure("Ошибка распаковки: $fileName")
-                        }
-                        archiveFile.delete()
-                        if (!extracted) {
-                            return InstallResult.Failure("Ошибка распаковки: $fileName")
-                        }
-                        // Архивы sherpa содержат единственный подкаталог — подтягиваем его наверх.
-                        flattenModelDir(modelDir)
-                    }
-                    is DownloadOutcome.NetworkError ->
-                        return InstallResult.Failure("Не удалось скачать архив: $fileName")
-                    is DownloadOutcome.Mismatch ->
-                        return outcome.toInstallFailure()
-                    is DownloadOutcome.InsufficientStorage ->
-                        return outcome.toInstallFailure()
-                }
-            } else {
-                when (val outcome = downloadFile(url, modelDir, fileName, hashes[index]) { fileProgress ->
-                    onProgress(scaleFileProgress(index, urls.size, fileProgress))
-                }) {
-                    is DownloadOutcome.Success -> Unit
-                    is DownloadOutcome.NetworkError ->
-                        return InstallResult.Failure("Не удалось скачать: $fileName")
-                    is DownloadOutcome.Mismatch ->
-                        return outcome.toInstallFailure()
-                    is DownloadOutcome.InsufficientStorage ->
-                        return outcome.toInstallFailure()
-                }
+            // Прогресс одного файла масштабируется в общий прогресс пачки.
+            val onFileProgress: suspend (Int) -> Unit = { p ->
+                onProgress(scaleFileProgress(index, urls.size, p))
             }
+            val failure = if (isArchive) {
+                installArchiveEntry(url, targetDir, modelDir, fileName, hashes[index], onFileProgress)
+            } else {
+                installPlainEntry(url, modelDir, fileName, hashes[index], onFileProgress)
+            }
+            if (failure != null) return failure
         }
 
         onProgress(100)
         return InstallResult.Success(modelDir.absolutePath)
+    }
+
+    /**
+     * Скачать один URL-архив (в корень [targetDir]) и распаковать в [modelDir].
+     * @return null при успехе, терминальный [InstallResult.Failure] при отказе.
+     */
+    private suspend fun installArchiveEntry(
+        url: String,
+        targetDir: File,
+        modelDir: File,
+        fileName: String,
+        expectedSha: String?,
+        onFileProgress: suspend (Int) -> Unit
+    ): InstallResult? = when (
+        val outcome = downloadFile(url, targetDir, fileName, expectedSha, onProgress = onFileProgress)
+    ) {
+        is DownloadOutcome.Success -> run {
+            val archiveFile = outcome.file
+            val extracted = try {
+                extractArchive(archiveFile, modelDir, fileName)
+            } catch (e: CancellationException) {
+                // Отмена распаковки: скачанный архив лежит в КОРНЕ
+                // каталога рантайма — без удаления он остался бы
+                // сиротой навсегда; освобождаем место сразу
+                // (deleteOrphanParts — страховка для старых установок).
+                if (!archiveFile.delete()) {
+                    Timber.w("Не удалось удалить архив после отмены: ${archiveFile.name}")
+                }
+                throw e
+            } catch (e: SecurityException) {
+                // zip-slip: содержимое архива того же источника не
+                // изменится — повтор бессмысленен, permanent=true
+                // (маппинг toInstallFailure этот случай не покрывает).
+                Timber.e(e, "Небезопасный путь в архиве: $fileName")
+                if (!archiveFile.delete()) {
+                    Timber.w("Не удалось удалить архив после zip-slip: ${archiveFile.name}")
+                }
+                return@run InstallResult.Failure(
+                    "Небезопасный путь в архиве: $fileName",
+                    permanent = true
+                )
+            } catch (e: Exception) {
+                if (isOutOfSpaceError(e)) {
+                    // ENOSPC при распаковке (rethrow из extractTar/extractZip):
+                    // повтор без освобождения места бессилен — permanent
+                    // (контрольный аудит, п.5: без 5 перекачек),
+                    // осколки распаковки extract* уже убраны.
+                    Timber.e(e, "Место на диске закончилось при распаковке: $fileName")
+                    if (!archiveFile.delete()) {
+                        Timber.w("Не удалось удалить архив после ENOSPC: ${archiveFile.name}")
+                    }
+                    return@run InstallResult.Failure(
+                        "Недостаточно места на диске при распаковке: $fileName",
+                        permanent = true
+                    )
+                }
+                // Прочие сбои распаковки — обычно повторные.
+                Timber.e(e, "Сбой распаковки: $fileName")
+                return@run InstallResult.Failure("Ошибка распаковки: $fileName")
+            }
+            archiveFile.delete()
+            if (!extracted) {
+                return@run InstallResult.Failure("Ошибка распаковки: $fileName")
+            }
+            // Архивы sherpa содержат единственный подкаталог — подтягиваем его наверх.
+            flattenModelDir(modelDir)
+            null
+        }
+        is DownloadOutcome.NetworkError ->
+            InstallResult.Failure("Не удалось скачать архив: $fileName")
+        is DownloadOutcome.Mismatch -> outcome.toInstallFailure()
+        is DownloadOutcome.InsufficientStorage -> outcome.toInstallFailure()
+    }
+
+    /**
+     * Скачать одиночный (не архив) файл в персональный каталог модели.
+     * @return null при успехе, терминальный [InstallResult.Failure] при отказе.
+     */
+    private suspend fun installPlainEntry(
+        url: String,
+        modelDir: File,
+        fileName: String,
+        expectedSha: String?,
+        onFileProgress: suspend (Int) -> Unit
+    ): InstallResult? = when (
+        val outcome = downloadFile(url, modelDir, fileName, expectedSha, onProgress = onFileProgress)
+    ) {
+        is DownloadOutcome.Success -> null
+        is DownloadOutcome.NetworkError ->
+            InstallResult.Failure("Не удалось скачать: $fileName")
+        is DownloadOutcome.Mismatch -> outcome.toInstallFailure()
+        is DownloadOutcome.InsufficientStorage -> outcome.toInstallFailure()
     }
 
     private suspend fun extractArchive(archiveFile: File, destDir: File, fileName: String): Boolean =
@@ -164,6 +191,43 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
     // discardPartial (очистка полу-распакованных файлов) — общий в BaseDownloader.
 
     /**
+     * Общий каркас распаковки tar и zip: [walk] обходит записи (открытый поток
+     * архива — внутри), осколки складываются в создаваемый [walk] список и
+     * обрабатываются единообразно: отмена и zip-slip чистят осколки и
+     * всплывают выше, ENOSPC всплывает после чистки (install() переведёт в
+     * permanent-отказ), прочий сбой — чистка и false.
+     */
+    private suspend fun extractWithCleanup(
+        archiveFile: File,
+        label: String,
+        walk: suspend (createdFiles: MutableList<File>) -> Unit
+    ): Boolean {
+        val createdFiles = mutableListOf<File>()
+        return try {
+            walk(createdFiles)
+            true
+        } catch (e: CancellationException) {
+            // Отмена воркера: убираем полу-распакованные файлы и всплываем выше.
+            discardPartial(createdFiles)
+            throw e
+        } catch (e: SecurityException) {
+            // zip-slip тоже чистит осколки и всплывает — install() переведёт
+            // его в permanent-отказ.
+            discardPartial(createdFiles)
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка распаковки $label: ${archiveFile.name}")
+            // Обычный сбой распаковки без очистки оставил бы полу-распакованные
+            // файлы, которые смешиваются со следующим распакованным деревом.
+            discardPartial(createdFiles)
+            // ENOSPC — различимый фатальный сбой: всплываем выше, install()
+            // переведёт в permanent-отказ (контрольный аудит, п.5).
+            if (isOutOfSpaceError(e)) throw e
+            false
+        }
+    }
+
+    /**
      * Записать одну запись архива в [destDir]: проверка отмены, защита от
      * zip-slip, каталоги — mkdirs, файлы — копирование с учётом в
      * [createdFiles] (для очистки при отмене). Общий для tar и zip.
@@ -177,7 +241,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
     ) {
         currentCoroutineContext().ensureActive()
         val outFile = File(destDir, entryName)
-        if (!isSecurePath(destDir, outFile)) {
+        if (!isFileInsideDir(destDir, outFile)) {
             throw SecurityException("Небезопасный путь в архиве: $entryName")
         }
         if (isDirectory) {
@@ -192,9 +256,8 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
     /**
      * Распаковать tar(.gz/.bz2). internal — покрыто unit-тестом без сети.
      */
-    internal suspend fun extractTar(archiveFile: File, destDir: File, bzip2: Boolean): Boolean {
-        val createdFiles = mutableListOf<File>()
-        return try {
+    internal suspend fun extractTar(archiveFile: File, destDir: File, bzip2: Boolean): Boolean =
+        extractWithCleanup(archiveFile, "tar") { createdFiles ->
             archiveFile.inputStream().buffered().use { fileInput ->
                 val tarInput = if (bzip2) {
                     TarArchiveInputStream(BZip2CompressorInputStream(fileInput))
@@ -209,34 +272,13 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                     }
                 }
             }
-            true
-        } catch (e: CancellationException) {
-            // Отмена воркера: убираем полу-распакованные файлы и всплываем выше.
-            discardPartial(createdFiles)
-            throw e
-        } catch (e: SecurityException) {
-            // zip-slip тоже чистит осколки и всплывает — install() переведёт
-            // его в permanent-отказ.
-            discardPartial(createdFiles)
-            throw e
-        } catch (e: Exception) {
-            Timber.e(e, "Ошибка распаковки tar: ${archiveFile.name}")
-            // Обычный сбой распаковки без очистки оставил бы полу-распакованные
-            // файлы, которые смешиваются со следующим распакованным деревом.
-            discardPartial(createdFiles)
-            // ENOSPC — различимый фатальный сбой: всплываем выше, install()
-            // переведёт в permanent-отказ (контрольный аудит, п.5).
-            if (isOutOfSpaceError(e)) throw e
-            false
         }
-    }
 
     /**
      * Распаковать zip. internal — покрыто unit-тестом без сети.
      */
-    internal suspend fun extractZip(archiveFile: File, destDir: File): Boolean {
-        val createdFiles = mutableListOf<File>()
-        return try {
+    internal suspend fun extractZip(archiveFile: File, destDir: File): Boolean =
+        extractWithCleanup(archiveFile, "zip") { createdFiles ->
             ZipInputStream(archiveFile.inputStream().buffered()).use { zip ->
                 var entry = zip.nextEntry
                 while (entry != null) {
@@ -245,27 +287,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                     entry = zip.nextEntry
                 }
             }
-            true
-        } catch (e: CancellationException) {
-            // Отмена воркера: убираем полу-распакованные файлы и всплываем выше.
-            discardPartial(createdFiles)
-            throw e
-        } catch (e: SecurityException) {
-            // zip-slip тоже чистит осколки и всплывает — install() переведёт
-            // его в permanent-отказ.
-            discardPartial(createdFiles)
-            throw e
-        } catch (e: Exception) {
-            Timber.e(e, "Ошибка распаковки zip: ${archiveFile.name}")
-            // Обычный сбой распаковки без очистки оставил бы полу-распакованные
-            // файлы, которые смешиваются со следующим распакованным деревом.
-            discardPartial(createdFiles)
-            // ENOSPC — различимый фатальный сбой: всплываем выше, install()
-            // переведёт в permanent-отказ (контрольный аудит, п.5).
-            if (isOutOfSpaceError(e)) throw e
-            false
         }
-    }
 
     /**
      * Если файлы модели (tokens.txt) оказались в подкаталоге — переносим их наверх.
@@ -284,15 +306,5 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             subdir.deleteRecursively()
             return
         }
-    }
-
-    /**
-     * Защита от zip-slip: путь внутри архива не должен выходить за destDir.
-     */
-    private fun isSecurePath(destDir: File, outFile: File): Boolean {
-        val destCanonical = destDir.canonicalPath
-        val outCanonical = outFile.canonicalPath
-        return outCanonical == destCanonical ||
-            outCanonical.startsWith(destCanonical + File.separator)
     }
 }
