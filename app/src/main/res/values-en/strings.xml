@@ -68,6 +68,7 @@
     <string name="history_delete_failed">Failed to delete the entry from history</string>
     <string name="history_clear_failed">Failed to clear history</string>
     <string name="history_observe_failed">Failed to load history</string>
+    <string name="models_observe_failed">Failed to load the model list</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">Backup</string>

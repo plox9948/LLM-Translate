@@ -59,6 +59,7 @@ import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.ui.ErrorDialog
 import com.plox.llmtranslate.ui.FavoriteStarIcon
 import com.plox.llmtranslate.ui.models.formatBytes
+import java.util.Locale
 
 /**
  * Экран «Перевод»: текст или аудио → перевод → озвучивание.
@@ -176,11 +177,14 @@ fun TranslateScreen(
                 }
                 // Поле растёт по содержимому (issue #79): без maxLines-капса
                 // весь исходный текст доступен прокруткой экрана.
+                // Во время перевода поле не редактируется — иначе правка
+                // рассогласует ввод с уже считаемым результатом.
                 OutlinedTextField(
                     value = state.inputText,
                     onValueChange = viewModel::onInputTextChanged,
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3,
+                    readOnly = state.isTranslating,
                     placeholder = { Text(stringResource(R.string.translate_input_placeholder)) }
                 )
             }
@@ -332,7 +336,7 @@ fun TranslateScreen(
             val totalSec = (state.recordingElapsedMs / 1000L).toInt()
             Text(
                 text = stringResource(R.string.translate_recording_hint) +
-                    " " + "%d:%02d".format(totalSec / 60, totalSec % 60),
+                    " " + String.format(Locale.US, "%d:%02d", totalSec / 60, totalSec % 60),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.error
             )

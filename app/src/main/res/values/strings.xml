@@ -68,6 +68,7 @@
     <string name="history_delete_failed">Не удалось удалить запись из истории</string>
     <string name="history_clear_failed">Не удалось очистить историю</string>
     <string name="history_observe_failed">Не удалось загрузить историю</string>
+    <string name="models_observe_failed">Не удалось загрузить список моделей</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">Бэкап</string>

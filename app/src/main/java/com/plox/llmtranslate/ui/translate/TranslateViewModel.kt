@@ -28,6 +28,7 @@ import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import com.plox.llmtranslate.domain.runtime.trackEnginePreference
+import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -84,6 +85,13 @@ data class TranslateUiState(
      */
     val resultSourceLang: TranslateLanguage? = null,
     val resultTargetLang: TranslateLanguage? = null,
+    /**
+     * Снапшот [inputText] на момент, когда получен [resultText] (перевод
+     * или подстановка записи из истории): пара «направление|исходный текст»
+     * избранного строится по нему, а не по текущему полю ввода — правка
+     * поля после перевода не рассогласовывает звезду с результатом.
+     */
+    val resultInputText: String = "",
     /** Текущий перевод добавлен в избранное (звёздочка результата, issue #38). */
     val resultFavorite: Boolean = false,
     val isTranslating: Boolean = false,
@@ -174,39 +182,66 @@ class TranslateViewModel @Inject constructor(
     private var shownTtsErrorId = -1L
     private var shownTtsDownloadErrorId = -1L
 
+    // Ресурс сообщения сбоя наблюдения Room-потоков (issue #67): observeResilient
+    // пишет сюда id текста, коллектор ниже переводит его в человекочитаемую
+    // ошибку uiState.error — семантика поля error не меняется.
+    private val _observeErrorRes = MutableStateFlow<Int?>(null)
+
     init {
+        // Мост: id текста сбоя наблюдения → ошибка UI (без изменения семантики).
         viewModelScope.launch {
-            modelManager.installedModels(ModelCategory.TRANSLATION)
-                .collect { models ->
-                    translationModels = models
-                    refreshTranslationAvailability()
+            _observeErrorRes.collect { res ->
+                if (res != null) {
+                    update { it.copy(error = appContext.getString(res)) }
                 }
-        }
-        viewModelScope.launch {
-            modelManager.catalog.collect { cards ->
-                catalogCards = cards
-                refreshTranslationAvailability()
             }
         }
-        viewModelScope.launch {
-            modelManager.installedModels(ModelCategory.STT)
-                .collect { models ->
-                    sttModels = models
-                    // Доступность распознавания — любая готовая STT-модель:
-                    // глобальной активной больше нет, выбор по языкам (issue #29).
-                    _uiState.value = _uiState.value.copy(
-                        hasSttModel = models.any { it.isReady }
-                    )
-                    // Пересчёт STT-подсказки памятки при установке/скачивании (issue #56).
-                    refreshTranslationAvailability()
-                }
+        // issue #67: подписки на Room-потоки (каталог, установленные модели,
+        // избранное) наблюдаются через observeResilient — сбой Room ронял
+        // процесс; observeResilient логирует, показывает ошибку и перезапускает
+        // подписку (обоснование выбора — в его KDoc).
+        observeResilient(
+            scope = viewModelScope,
+            source = { modelManager.installedModels(ModelCategory.TRANSLATION) },
+            messageRes = R.string.models_observe_failed,
+            errorState = _observeErrorRes,
+        ) { models ->
+            translationModels = models
+            refreshTranslationAvailability()
         }
-        viewModelScope.launch {
-            modelManager.sttByLanguage.collect { assignments ->
-                sttAssignments = assignments
-                // Назначения «язык → модель» влияют на подбор STT-подсказки (issue #56).
-                refreshTranslationAvailability()
-            }
+        observeResilient(
+            scope = viewModelScope,
+            source = { modelManager.catalog },
+            messageRes = R.string.models_observe_failed,
+            errorState = _observeErrorRes,
+        ) { cards ->
+            catalogCards = cards
+            refreshTranslationAvailability()
+        }
+        observeResilient(
+            scope = viewModelScope,
+            source = { modelManager.installedModels(ModelCategory.STT) },
+            messageRes = R.string.models_observe_failed,
+            errorState = _observeErrorRes,
+        ) { models ->
+            sttModels = models
+            // Доступность распознавания — любая готовая STT-модель:
+            // глобальной активной больше нет, выбор по языкам (issue #29).
+            _uiState.value = _uiState.value.copy(
+                hasSttModel = models.any { it.isReady }
+            )
+            // Пересчёт STT-подсказки памятки при установке/скачивании (issue #56).
+            refreshTranslationAvailability()
+        }
+        observeResilient(
+            scope = viewModelScope,
+            source = { modelManager.sttByLanguage },
+            messageRes = R.string.models_observe_failed,
+            errorState = _observeErrorRes,
+        ) { assignments ->
+            sttAssignments = assignments
+            // Назначения «язык → модель» влияют на подбор STT-подсказки (issue #56).
+            refreshTranslationAvailability()
         }
         viewModelScope.launch {
             // Сохранённое направление перевода (issue #33):ru→en и т.п.;
@@ -245,15 +280,19 @@ class TranslateViewModel @Inject constructor(
                 }
             }
         }
-        viewModelScope.launch {
-            // Избранное (issue #38): актуальный набор ключей для звёздочки
-            // результата; пересчёт флага при любых изменениях избранного.
-            favoritesRepository.observeAll().collect { favorites ->
-                favoriteKeys = favorites.map {
-                    FavoriteEntry.key(it.sourceLang, it.targetLang, it.inputText)
-                }.toSet()
-                refreshResultFavorite()
-            }
+        // Избранное (issue #38): актуальный набор ключей для звёздочки
+        // результата; пересчёт флага при любых изменениях избранного.
+        // Room-источник — устойчивая подписка (issue #67).
+        observeResilient(
+            scope = viewModelScope,
+            source = { favoritesRepository.observeAll() },
+            messageRes = R.string.favorites_observe_failed,
+            errorState = _observeErrorRes,
+        ) { favorites ->
+            favoriteKeys = favorites.map {
+                FavoriteEntry.key(it.sourceLang, it.targetLang, it.inputText)
+            }.toSet()
+            refreshResultFavorite()
         }
         viewModelScope.launch {
             // Состояние записи из рекордера — потоком (ревью раунд 2): внешний
@@ -345,15 +384,17 @@ class TranslateViewModel @Inject constructor(
 
     /**
      * Пересчитать флаг избранности текущего результата (issue #38).
-     * Ключ строится по текущему явному направлению; для AUTO-источника
-     * фактический язык результата неизвестен UI — звезда неактивна (false).
+     * Ключ строится по текущему явному направлению и снапшоту ввода
+     * [TranslateUiState.resultInputText] — правка поля ввода не гасит
+     * звезду уже показанной пары. Для AUTO-источника фактический язык
+     * результата неизвестен UI — звезда неактивна (false).
      */
     private fun refreshResultFavorite() {
         val st = _uiState.value
         val favorite = st.sourceLang != TranslateLanguage.AUTO &&
             st.resultText.isNotEmpty() &&
             favoriteKeys.contains(
-                FavoriteEntry.key(st.sourceLang.code, st.targetLang.code, st.inputText)
+                FavoriteEntry.key(st.sourceLang.code, st.targetLang.code, st.resultInputText)
             )
         if (_uiState.value.resultFavorite != favorite) {
             update { it.copy(resultFavorite = favorite) }
@@ -362,7 +403,9 @@ class TranslateViewModel @Inject constructor(
 
     /**
      * Переключить избрание текущего перевода (звезда в карточке результата).
-     * Для AUTO-источника недоступно: направление результата не определено.
+     * Пара строится по снапшоту ввода результата ([TranslateUiState.resultInputText]),
+     * не по текущему полю. Для AUTO-источника недоступно: направление
+     * результата не определено.
      */
     fun toggleResultFavorite() {
         val st = _uiState.value
@@ -370,7 +413,7 @@ class TranslateViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val added = favoritesRepository.toggle(
-                    st.sourceLang.code, st.targetLang.code, st.inputText, st.resultText
+                    st.sourceLang.code, st.targetLang.code, st.resultInputText, st.resultText
                 )
                 update { it.copy(resultFavorite = added) }
             } catch (e: Exception) {
@@ -559,7 +602,10 @@ class TranslateViewModel @Inject constructor(
                             canCancelTranslation = false,
                             resultText = text,
                             resultSourceLang = state.sourceLang,
-                            resultTargetLang = state.targetLang
+                            resultTargetLang = state.targetLang,
+                            // Снапшот ввода на момент перевода (пара избранного
+                            // не рассогласовывается с правкой поля).
+                            resultInputText = state.inputText
                         )
                     }
                     refreshResultFavorite()
@@ -822,6 +868,9 @@ class TranslateViewModel @Inject constructor(
                 // под ним не показывается.
                 resultSourceLang = source,
                 resultTargetLang = target,
+                // Снапшот ввода записи для пары избранного (не заимствуются
+                // правки текущего поля).
+                resultInputText = entry.inputText,
                 error = null
             )
         }

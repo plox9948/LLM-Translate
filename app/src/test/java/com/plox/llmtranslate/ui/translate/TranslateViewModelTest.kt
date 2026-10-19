@@ -255,6 +255,73 @@ class TranslateViewModelTest {
         io.mockk.verify(exactly = 0) { ttsCoordinator.speak(any(), any()) }
     }
 
+    // ── Пара избранного по снапшоту ввода, не по текущему полю ──
+
+    @Test
+    fun `favorite pair matches input snapshot not current field after translate`() {
+        // В избранном — пара ru→en на ввод момента перевода.
+        every { favoritesRepository.observeAll() } returns flowOf(
+            listOf(
+                FavoriteEntry(
+                    id = 9L,
+                    sourceLang = "ru",
+                    targetLang = "en",
+                    inputText = "snapshot text",
+                    resultText = "irrelevant",
+                    createdAt = 10L
+                )
+            )
+        )
+        stubEchoEngine()
+        createViewModel()
+        viewModel.onInputTextChanged("snapshot text")
+        viewModel.translate()
+        assertTrue(viewModel.uiState.value.resultFavorite)
+
+        // Правка поля ввода после перевода — звезда избранной пары не гаснет…
+        viewModel.onInputTextChanged("edited after translation")
+        assertTrue(viewModel.uiState.value.resultFavorite)
+        // …и снятие избранного обращается к паре со снапшотом ввода.
+        coEvery {
+            favoritesRepository.toggle("ru", "en", "snapshot text", any())
+        } returns false
+        viewModel.toggleResultFavorite()
+        coVerify(exactly = 1) {
+            favoritesRepository.toggle("ru", "en", "snapshot text", any())
+        }
+        assertFalse(viewModel.uiState.value.resultFavorite)
+    }
+
+    @Test
+    fun `favorite pair from history entry snapshot survives input field edit`() {
+        every { favoritesRepository.observeAll() } returns flowOf(
+            listOf(
+                FavoriteEntry(
+                    id = 8L,
+                    sourceLang = "ru",
+                    targetLang = "en",
+                    inputText = "privet",
+                    resultText = "hello",
+                    createdAt = 10L
+                )
+            )
+        )
+        createViewModel()
+        applyPendingEntry() // ввод «privet», результат «hello»
+        assertTrue(viewModel.uiState.value.resultFavorite)
+
+        // Поле ввода отредактировано — пара избранного остаётся по снапшоту
+        // ввода применённой записи.
+        viewModel.onInputTextChanged("privet how are you")
+        assertTrue(viewModel.uiState.value.resultFavorite)
+        coEvery {
+            favoritesRepository.toggle("ru", "en", "privet", "hello")
+        } returns false
+        viewModel.toggleResultFavorite()
+        coVerify(exactly = 1) { favoritesRepository.toggle("ru", "en", "privet", "hello") }
+        assertFalse(viewModel.uiState.value.resultFavorite)
+    }
+
     // ── Памятка недостающих STT-моделей исходного языка (issue #56) ──
 
     /** Готовая модель перевода ru→en (закрывает цепочку направления по умолчанию). */
