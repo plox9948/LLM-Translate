@@ -502,7 +502,10 @@ class TranslateViewModel @Inject constructor(
                 }
 
                 // Последовательно прогоняем текст через каждую модель цепочки.
-                var text = state.inputText
+                // В движок идет копия с гарантированным terminator в конце
+                // (issue #78): ввод без пунктуации искажает короткие фразы;
+                // в историю ниже сохраняется исходный state.inputText.
+                var text = SentenceSplitter.ensureTrailingTerminator(state.inputText)
                 var from = sourceLang.code
                 var failed: String? = null
                 for (model in chain) {

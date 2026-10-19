@@ -582,7 +582,8 @@ class TranslateViewModelTest {
 
         viewModel.translate()
 
-        assertEquals("«hello world»\n«second line»", viewModel.uiState.value.resultText)
+        // issue #78: в конце вводной строки без пунктуации движок получает точку.
+        assertEquals("«hello world»\n«second line.»", viewModel.uiState.value.resultText)
         coVerify(exactly = 2) { engine.translate(any(), "en", "ru") }
     }
 
@@ -603,8 +604,10 @@ class TranslateViewModelTest {
 
         viewModel.translate()
 
+        // issue #78: точка дописана к концу вводного текста до разбиения,
+        // перенос строки по-прежнему переживает оба звена.
         assertEquals(
-            "««первая строка»»\n««вторая строка»»",
+            "««первая строка»»\n««вторая строка.»»",
             viewModel.uiState.value.resultText
         )
         // 2 сегмента × 2 звена цепочки.

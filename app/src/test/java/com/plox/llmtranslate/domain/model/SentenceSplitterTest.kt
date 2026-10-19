@@ -206,4 +206,46 @@ class SentenceSplitterTest {
         assertEquals(listOf("नमस्ते।", "मस्कोबाट"), segments)
         assertEquals(listOf(" "), separators)
     }
+
+    @Test
+    fun `bare word gets period appended`() {
+        assertEquals("Озеро.", SentenceSplitter.ensureTrailingTerminator("Озеро"))
+        assertEquals("Hello.", SentenceSplitter.ensureTrailingTerminator("Hello"))
+        assertEquals("ताल.", SentenceSplitter.ensureTrailingTerminator("ताल"))
+    }
+
+    @Test
+    fun `already terminated text unchanged`() {
+        assertEquals("Озеро.", SentenceSplitter.ensureTrailingTerminator("Озеро."))
+        assertEquals("Стой!", SentenceSplitter.ensureTrailingTerminator("Стой!"))
+        assertEquals("Куда?", SentenceSplitter.ensureTrailingTerminator("Куда?"))
+        assertEquals("Дойдём…", SentenceSplitter.ensureTrailingTerminator("Дойдём…"))
+        assertEquals("काठमाडौं।", SentenceSplitter.ensureTrailingTerminator("काठमाडौं।"))
+        assertEquals("ताल॥", SentenceSplitter.ensureTrailingTerminator("ताल॥"))
+    }
+
+    @Test
+    fun `trailing whitespace normalized with terminator`() {
+        assertEquals("Озеро.", SentenceSplitter.ensureTrailingTerminator("Озеро  "))
+        assertEquals("Озеро.", SentenceSplitter.ensureTrailingTerminator("Озеро\n"))
+    }
+
+    @Test
+    fun `closing quotes brackets and mid-punctuation not extended`() {
+        assertEquals("«Озеро»", SentenceSplitter.ensureTrailingTerminator("«Озеро»"))
+        assertEquals("озеро)", SentenceSplitter.ensureTrailingTerminator("озеро)"))
+        assertEquals("озеро,", SentenceSplitter.ensureTrailingTerminator("озеро,"))
+        assertEquals("озеро -", SentenceSplitter.ensureTrailingTerminator("озеро -"))
+    }
+
+    @Test
+    fun `blank input returned unchanged`() {
+        assertEquals("", SentenceSplitter.ensureTrailingTerminator(""))
+        assertEquals("   ", SentenceSplitter.ensureTrailingTerminator("   "))
+    }
+
+    @Test
+    fun `digits at end get terminator too`() {
+        assertEquals("2026.", SentenceSplitter.ensureTrailingTerminator("2026"))
+    }
 }
