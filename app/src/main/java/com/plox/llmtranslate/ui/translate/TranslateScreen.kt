@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
@@ -100,6 +102,9 @@ fun TranslateScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // Прокрутка всего экрана (issue #79): при длинном вводе или
+            // переводе карточки не обрезаются за нижней границей экрана.
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -169,12 +174,13 @@ fun TranslateScreen(
                         )
                     }
                 }
+                // Поле растёт по содержимому (issue #79): без maxLines-капса
+                // весь исходный текст доступен прокруткой экрана.
                 OutlinedTextField(
                     value = state.inputText,
                     onValueChange = viewModel::onInputTextChanged,
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3,
-                    maxLines = 6,
                     placeholder = { Text(stringResource(R.string.translate_input_placeholder)) }
                 )
             }
