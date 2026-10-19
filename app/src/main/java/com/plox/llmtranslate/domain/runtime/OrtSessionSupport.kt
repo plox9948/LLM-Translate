@@ -56,13 +56,18 @@ internal suspend fun createEncoderDecoderSessions(
 
 /**
  * Закрыть сессии незавершённой загрузки (отмена/ошибка) — пучок в кэш
- * ещё не положен, другие пучки кэша не затрагиваются.
+ * ещё не положен, другие пучки кэша не затрагиваются. Закрытие ПОШТУЧНОЕ
+ * (ревью #83): исключение от close() одной сессии не должно терять
+ * остальные — каждая утечёт в native-память ORT. Параметр — [AutoCloseable]
+ * (OrtSession реализует его), чтобы путь тестировался фейками без ORT.
  */
-internal fun closePartiallyCreated(label: String, vararg sessions: OrtSession?) {
-    try {
-        sessions.filterNotNull().forEach { it.close() }
-    } catch (e: Exception) {
-        Timber.e(e, "Ошибка при освобождении частично созданных $label-сессий")
+internal fun closePartiallyCreated(label: String, vararg sessions: AutoCloseable?) {
+    sessions.filterNotNull().forEach { session ->
+        try {
+            session.close()
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка при освобождении частично созданных $label-сессий")
+        }
     }
 }
 
@@ -93,12 +98,17 @@ internal fun numLayersFromDecoderOutputs(decoder: OrtSession): Int {
 /**
  * Закрыть сессии активного пучка модельного движка при его разгрузке
  * (ошибки — только в лог); общий release() пучков Marian и IndicTrans.
+ * Закрытие ПОШТУЧНОЕ (ревью #83): бой одной сессии не обрывает закрытие
+ * остальных (утечка нативной памяти ORT). Параметр — [AutoCloseable]
+ * (OrtSession реализует его), чтобы путь тестировался фейками без ORT.
  */
-internal fun closeBundleSessions(label: String, vararg sessions: OrtSession) {
-    try {
-        sessions.forEach { it.close() }
-    } catch (e: Exception) {
-        Timber.e(e, "Ошибка при разгрузке $label")
+internal fun closeBundleSessions(label: String, vararg sessions: AutoCloseable) {
+    sessions.forEach { session ->
+        try {
+            session.close()
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка при разгрузке $label")
+        }
     }
 }
 
@@ -108,7 +118,9 @@ internal fun closeBundleSessions(label: String, vararg sessions: OrtSession) {
  * ресурсов нет): отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
  * уже созданные ресурсы этого пучка ([closePartial]; пучки других направлений
  * остаются в кэше) и всплываем выше, не конвертируя отмену в LoadFailed;
- * прочие исключения — явный [RuntimeError.LoadFailed]. Тексты логов
+ * прочие исключения и ошибки нативного слоя ([Error]: UnsatisfiedLinkError
+ * из статик-инициализации OrtEnvironment) — явный [RuntimeError.LoadFailed]
+ * (ревью #83). Тексты логов
  * строятся из [label]/[engineTag] байт-в-байт как в прежних ensureLoaded
  * движков. [block] возвращает null при успехе или RuntimeError раннего
  * возврата (проверки файлов/токенизаторов — остаются внутри block).
@@ -129,6 +141,15 @@ internal inline fun guardModelLoad(
     Timber.e(e, "Не удалось загрузить $label-модель $path")
     closePartial()
     RuntimeError.LoadFailed(engineTag, e.message ?: "Неизвестная ошибка")
+} catch (e: Error) {
+    // UnsatisfiedLinkError / NoClassDefFoundError / ExceptionInInitializerError
+    // из статик-инициализации нативного слоя ORT (OrtEnvironment) — это Error,
+    // а не Exception: без этой ветки они роняли процесс вместо явной
+    // LoadFailed (ревью #83, по образцу SlimtRuntime, ревью #79).
+    // CancellationException (Exception) перехвачен выше и не глотается.
+    Timber.e(e, "Критическая ошибка нативного слоя $label при загрузке $path")
+    closePartial()
+    RuntimeError.LoadFailed(engineTag, e.message ?: "Ошибка нативной библиотеки")
 }
 
 /**
@@ -164,4 +185,48 @@ internal fun runEncoder(
         encInputIds.close()
         encAttnMask.close()
     }
+}
+
+/**
+ * Собрать past-входы декодера `past_key_values.<layer>.<suffix>` из
+ * past-выходов `present.<layer>.<suffix>` с fail-fast (ревью #83):
+ * отсутствующий вход — рассинхрон имён графа, его молчаливый пропуск
+ * маскировал рассинхрон: инференс падал невнязой ORT-ошибкой посреди генерации вместо явного
+ * [IllegalStateException] у источника. [tensorOf] — извлечение тензора по
+ * имени (в рантаймах — [ortTensor], в тестах — фейковый коллбэк); тип
+ * значения обобщён, чтобы функция тестировалась без ONNX.
+ */
+internal fun <V> collectPastInputs(
+    numLayers: Int,
+    suffixes: List<String>,
+    tensorOf: (name: String) -> V?,
+): Map<String, V> {
+    val inputs = LinkedHashMap<String, V>(numLayers * suffixes.size)
+    for (layer in 0 until numLayers) {
+        for (suffix in suffixes) {
+            val outName = "present.$layer.$suffix"
+            inputs["past_key_values.$layer.$suffix"] =
+                tensorOf(outName) ?: error("Нет входа $outName")
+        }
+    }
+    return inputs
+}
+
+/**
+ * Оценка native resident-объёма ONNX-пучка: размеры файлов графов плюс
+ * внешние файлы весов (`<graph-base>.*`, включая `<graph>.onnx.data`,
+ * которые ORT подгружает рядом с моделью). Только учёт в байтовом бюджете
+ * кэша движков (ревью #83) — верхняя оценка, точный профиль ОЗУ не нужен.
+ */
+internal fun estimateGraphBytes(graphs: List<File>): Long {
+    val siblings = graphs.firstNotNullOfOrNull { it.parentFile }?.listFiles()
+        ?: emptyArray()
+    var total = 0L
+    for (graph in graphs) {
+        total += graph.length()
+        val base = graph.name.removeSuffix(".onnx")
+        total += siblings.filter { it.isFile && it != graph && it.name.startsWith("$base.") }
+            .sumOf { it.length() }
+    }
+    return total
 }

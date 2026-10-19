@@ -156,4 +156,79 @@ class EngineModelCacheTest {
         assertSame(value, cache.get("a"))
         assertSame(value, cache.clear().single().second)
     }
+
+    // ---- байтовый бюджет (ревью #83) ----
+
+    @Test
+    fun `byte budget evicts eldest until within budget`() {
+        val cache = EngineModelCache<String>(
+            capacity = 5, byteBudget = 10, sizeOf = { it.length.toLong() }
+        )
+        cache.put("a", "AAAAAA")
+        cache.put("b", "BBBBBB")
+        assertEquals(12, cache.currentBytes)
+
+        val evicted = cache.evictOverByteBudget()
+
+        assertEquals(listOf("a" to "AAAAAA"), evicted)
+        assertEquals(6, cache.currentBytes)
+        assertEquals(listOf("b"), cache.all().map { it.first })
+    }
+
+    @Test
+    fun `byte budget never evicts protected active bundle`() {
+        val cache = EngineModelCache<String>(
+            capacity = 5, byteBudget = 8, sizeOf = { it.length.toLong() }
+        )
+        cache.put("a", "AAAA")
+        cache.put("b", "BBBB")
+        cache.put("c", "CCCC")
+
+        val evicted = cache.evictOverByteBudget(protect = setOf("b", "c"))
+
+        assertEquals(listOf("a" to "AAAA"), evicted)
+        assertEquals(listOf("b", "c"), cache.all().map { it.first })
+        assertEquals(8, cache.currentBytes)
+    }
+
+    @Test
+    fun `single oversized protected bundle stays in cache`() {
+        // Единственный массивный пучок активен — выгружать нечего,
+        // кэш остаётся сверх бюджета, но работоспособен.
+        val cache = EngineModelCache<String>(
+            capacity = 3, byteBudget = 4, sizeOf = { it.length.toLong() }
+        )
+        cache.put("big", "BBBBBBBBBB")
+
+        assertTrue(cache.evictOverByteBudget(protect = setOf("big")).isEmpty())
+        assertEquals(10, cache.currentBytes)
+    }
+
+    @Test
+    fun `put replacement, remove and count eviction keep byte accounting`() {
+        val cache = EngineModelCache<String>(
+            capacity = 2, byteBudget = 100, sizeOf = { it.length.toLong() }
+        )
+        cache.put("a", "AAA")
+        cache.put("a", "AA")
+        assertEquals(2, cache.currentBytes)
+        cache.remove("a")
+        assertEquals(0, cache.currentBytes)
+
+        cache.put("x", "XXXX")
+        cache.put("y", "YYYY")
+        cache.put("z", "ZZZZ")
+        assertEquals(listOf("x" to "XXXX"), cache.evictOverCapacity())
+        assertEquals(8, cache.currentBytes)
+        cache.clear()
+        assertEquals(0, cache.currentBytes)
+    }
+
+    @Test
+    fun `default cache has no byte gate`() {
+        val cache = EngineModelCache<String>(capacity = 2)
+        cache.put("a", "AAAA")
+        assertEquals(0, cache.currentBytes)
+        assertTrue(cache.evictOverByteBudget().isEmpty())
+    }
 }

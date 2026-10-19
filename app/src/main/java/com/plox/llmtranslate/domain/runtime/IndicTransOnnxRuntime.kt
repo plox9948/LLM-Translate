@@ -95,7 +95,9 @@ class IndicTransOnnxRuntime @Inject constructor(
         val srcDictSize: Int,
         val tgtDictSize: Int,
         val unkId: Int,
-        val info: LoadedModelInfo
+        val info: LoadedModelInfo,
+        /** Оценка native resident-объёма весов для байтового бюджета кэша (ревью #83). */
+        val weightBytes: Long
     ) {
         /** Закрыть нативные сессии пучка (ошибки — только в лог). */
         fun release() =
@@ -115,6 +117,10 @@ class IndicTransOnnxRuntime @Inject constructor(
         logLabel = "IndicTrans",
         releaseBundle = ModelBundle::release,
         infoOf = { it.info },
+        // Байтовый бюджет ОЗУ (ревью #83): пучок IndicTrans стоит сотни МБ
+        // resident, три пучка сверх бюджета выгружают eldest направление.
+        byteBudget = EngineCacheScaffold.ORT_CACHE_BYTE_BUDGET,
+        sizeOfBundle = { it.weightBytes },
     )
 
     /** Состояние загруженных моделей; пишется только под мьютексом [engineCache]. */
@@ -222,7 +228,10 @@ class IndicTransOnnxRuntime @Inject constructor(
                             srcDictSize = dict.srcDictSize,
                             tgtDictSize = dict.tgtDictSize,
                             unkId = dict.unkId,
-                            info = translationLoadedInfo(modelInfo)
+                            info = translationLoadedInfo(modelInfo),
+                            weightBytes = estimateGraphBytes(
+                                listOf(encoderFile, decoderFile, decoderPastFile)
+                            )
                         )
                     )
                     engineCache.publishActiveUnlocked(modelInfo.id)
@@ -426,6 +435,15 @@ class IndicTransOnnxRuntime @Inject constructor(
         }
         val inputIds = encoded.toLongArray()
 
+        // Guard лимита позиционных эмбеддингов до энкодера (ревью #83, по
+        // образцу Marian.inputLengthError): [planChunks] режет вход по
+        // бюджету, но слово длиннее бюджета уходит в чанк всегда —
+        // сверхлимитный вход иначе рушил ORT внутренним исключением
+        // внутри run вместо явной ошибки.
+        inputLengthError(inputIds.size)?.let {
+            return Result.failure(it)
+        }
+
         val attentionMask = LongArray(inputIds.size) { 1L }
 
         // Decode-hygiene (issue #62): первый проход — чистый greedy
@@ -497,6 +515,22 @@ class IndicTransOnnxRuntime @Inject constructor(
     }
 
     /**
+     * Проверка длины входа энкодера: вход длиннее таблицы позиционных
+     * эмбеддингов IndicTrans2 ([EMBED_POSITION_LIMIT]) привёл бы к
+     * внутреннему исключению ORT внутри run — возвращаем явную
+     * [RuntimeError] с русским сообщением (ревью #83, по образцу
+     * Marian.inputLengthError). Внутренняя функция — покрыта unit-тестом.
+     */
+    internal fun inputLengthError(inputTokens: Int): RuntimeError? =
+        if (inputTokens > EMBED_POSITION_LIMIT) {
+            RuntimeError.InferenceFailed(
+                "indictrans",
+                "Фраза слишком длинная: $inputTokens токенов, " +
+                    "максимум $EMBED_POSITION_LIMIT"
+            )
+        } else null
+
+    /**
      * Один проход генерации: encoder.run → greedyDecode → декодирование →
      * trim. Возвращает TRIMMED текст и флаги остановки цикла
      * ([DecodeOutcome]). Нативные ресурсы прохода (входы энкодера и
@@ -555,13 +589,16 @@ class IndicTransOnnxRuntime @Inject constructor(
                     val inputs = HashMap<String, OnnxTensorLike>()
                     inputs["input_ids"] = decInputIds
                     inputs["encoder_attention_mask"] = decAttnMask
-                    for (i in 0 until bundle.numLayers) {
-                        for (suffix in PAST_SUFFIXES) {
-                            ortTensor(past, "present.$i.$suffix")?.let {
-                                inputs["past_key_values.$i.$suffix"] = it
-                            }
+                    // Fail-fast отсутствующих past-входов (ревью #83): их
+                    // молчаливый пропуск маскировал рассинхрон имён графа
+                    // невнятной ORT-ошибкой посреди инференса. Источник
+                    // past не меняется — prev (encoder-past неизменен между
+                    // шагами, поведение с поставляемыми моделями корректно).
+                    inputs.putAll(
+                        collectPastInputs(bundle.numLayers, PAST_SUFFIXES) {
+                            ortTensor(past, it)
                         }
-                    }
+                    )
                     decPast.run(inputs)
                 }
             }

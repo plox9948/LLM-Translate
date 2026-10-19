@@ -69,6 +69,13 @@ class MarianOnnxRuntime @Inject constructor(
          * вход длиннее даёт падение ORT внутри run (ревью #79).
          */
         private const val MAX_INPUT_TOKENS = 512
+
+        /**
+         * Past-входы декодера Optimum-экспорта: encoder-пара берётся из
+         * первого шага (не меняется), decoder-пара — из предыдущего.
+         */
+        private val ENCODER_PAST_SUFFIXES = listOf("encoder.key", "encoder.value")
+        private val DECODER_PAST_SUFFIXES = listOf("decoder.key", "decoder.value")
     }
 
     /**
@@ -99,7 +106,9 @@ class MarianOnnxRuntime @Inject constructor(
         val decoderStartTokenId: Int,
         val eosTokenId: Int,
         val badTokenIds: Set<Int>,
-        val info: LoadedModelInfo
+        val info: LoadedModelInfo,
+        /** Оценка native resident-объёма весов для байтового бюджета кэша (ревью #83). */
+        val weightBytes: Long
     ) {
         /** Закрыть нативные сессии пучка (ошибки — только в лог). */
         fun release() =
@@ -119,6 +128,10 @@ class MarianOnnxRuntime @Inject constructor(
         logLabel = "Marian",
         releaseBundle = ModelBundle::release,
         infoOf = { it.info },
+        // Байтовый бюджет ОЗУ (ревью #83): импортируемые ONNX-модели Marian
+        // крупнее opus-mt_tiny; бюджет симметричен IndicTrans.
+        byteBudget = EngineCacheScaffold.ORT_CACHE_BYTE_BUDGET,
+        sizeOfBundle = { it.weightBytes },
     )
 
     /** Состояние загруженных моделей; пишется только под мьютексом [engineCache]. */
@@ -214,7 +227,10 @@ class MarianOnnxRuntime @Inject constructor(
                             decoderStartTokenId = gen.decoderStartTokenId,
                             eosTokenId = gen.eosTokenId,
                             badTokenIds = gen.badTokenIds,
-                            info = translationLoadedInfo(modelInfo)
+                            info = translationLoadedInfo(modelInfo),
+                            weightBytes = estimateGraphBytes(
+                                listOf(encoderFile, decoderFile, decoderPastFile)
+                            )
                         )
                     )
                     engineCache.publishActiveUnlocked(modelInfo.id)
@@ -307,22 +323,22 @@ class MarianOnnxRuntime @Inject constructor(
                                 // внутреннюю ошибку драйвера.
                                 val s0 = first ?: error("Нет past_key_values")
                                 val p = prev ?: error("Нет past_key_values")
-                                for (i in 0 until bundle.numLayers) {
-                                    // Encoder-past: из первого шага (не меняется).
-                                    ortTensor(s0, "present.$i.encoder.key")?.let {
-                                        inputs["past_key_values.$i.encoder.key"] = it
-                                    }
-                                    ortTensor(s0, "present.$i.encoder.value")?.let {
-                                        inputs["past_key_values.$i.encoder.value"] = it
-                                    }
-                                    // Decoder-past: из предыдущего шага.
-                                    ortTensor(p, "present.$i.decoder.key")?.let {
-                                        inputs["past_key_values.$i.decoder.key"] = it
-                                    }
-                                    ortTensor(p, "present.$i.decoder.value")?.let {
-                                        inputs["past_key_values.$i.decoder.value"] = it
-                                    }
-                                }
+                                // Fail-fast отсутствующих past-входов (ревью #83):
+                                // молчаливый пропуск маскировал рассинхрон имён
+                                // графа невнятной ORT-ошибкой посреди инференса.
+                                // Источники past не меняются: encoder-пара — из
+                                // первого шага (не меняется), decoder-пара — из
+                                // предыдущего.
+                                inputs.putAll(
+                                    collectPastInputs(
+                                        bundle.numLayers, ENCODER_PAST_SUFFIXES
+                                    ) { ortTensor(s0, it) }
+                                )
+                                inputs.putAll(
+                                    collectPastInputs(
+                                        bundle.numLayers, DECODER_PAST_SUFFIXES
+                                    ) { ortTensor(p, it) }
+                                )
                                 decPast.run(inputs)
                             }
                         }

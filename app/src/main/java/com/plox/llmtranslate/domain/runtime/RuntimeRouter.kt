@@ -139,7 +139,16 @@ class RuntimeRouter @Inject constructor(
         releaseSafely("sherpa") { sherpaSttEngine.release() }?.let { deferredCancellation = it }
         // Piper release() не suspend: останавливает озвучку и асинхронно
         // освобождает нативный OfflineTts под своим мьютексом (issue #52).
-        piperTtsRuntime.release()
+        // Ревью #83: исключение из него не должно обрывать уже выполненный
+        // обход движков и терять сохранённую отмену — тот же контур, что
+        // [releaseSafely] для suspend-движков.
+        try {
+            piperTtsRuntime.release()
+        } catch (e: CancellationException) {
+            deferredCancellation = deferredCancellation ?: e
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка разгрузки Piper TTS")
+        }
         deferredCancellation?.let { throw it }
     }
 

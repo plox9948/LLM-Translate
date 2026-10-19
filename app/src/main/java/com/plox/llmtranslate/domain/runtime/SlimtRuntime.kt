@@ -88,8 +88,14 @@ class SlimtRuntime @Inject constructor(
         retentionProvider = retentionProvider,
         logLabel = "slimt",
         releaseBundle = { bundle ->
+            // nativeDestroy джойнит нативный воркер slimt и может не
+            // вернуться: освобождение ЛЮБОГО пучка движка (release,
+            // releaseModel, эвикция LRU и retention) всегда уходит в
+            // detached-очередь вне sessionMutex — под мьютексом пучок
+            // только изымается из кэша (ревью #83, унификация с
+            // cancel-путём detachAllUnlocked/scheduleDetachedRelease).
             if (bundle.handle != 0L) {
-                SlimtNative.nativeDestroy(bundle.handle)
+                scheduleDetachedRelease(listOf(bundle))
             }
         },
         infoOf = { it.info },
@@ -306,7 +312,10 @@ class SlimtRuntime @Inject constructor(
 
     /**
      * Разгрузить ВСЕ удерживаемые движком модели. Деструктор slimt::Async
-     * дожидается воркера — вызов вне главного потока.
+     * дожидается воркера — вызов вне главного потока. Под [engineCache]
+     * пучки только изымаются из кэша, [SlimtNative.nativeDestroy] — всегда
+     * через detached-очередь вне мьютекса (ревью #83): зависший деструктор
+     * не замораживает sessionMutex навсегда.
      */
     override suspend fun release() = engineCache.release()
 
@@ -368,7 +377,9 @@ class SlimtRuntime @Inject constructor(
      * Извлечь и уничтожить пучок модели [modelId] (удаление модели, issue #40).
      * Ждёт окончания активного перевода под мьютексом [engineCache]; если
      * пучок был активным — сбрасывается активный id и публикуется новый
-     * список [loadedModels]. Отсутствующий в кэше id — no-op.
+     * список [loadedModels]. Отсутствующий в кэше id — no-op. Как и
+     * [release], nativeDestroy выполняется вне мьютекса через
+     * detached-очередь (ревью #83).
      */
     override suspend fun releaseModel(modelId: String) = engineCache.releaseModel(modelId)
 

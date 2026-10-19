@@ -13,23 +13,37 @@ package com.plox.llmtranslate.domain.runtime
  * Освобождение ресурсов вытесненных значений — за самим вызывающим:
  * методы возвращают вытеснённые/удалённые значения наружу.
  *
- * Осознанный долг (контрольный аудит, п.6): ёмкость кэша считается по
- * ЧИСЛУ пучков ([capacity]), байтовый лимит ОЗУ не учитывается — при
- * крупных моделях суммарное resident-потребление кэша может превысить
- * разумный бюджет до срабатывания LRU. Митигация сейчас: RAM-предупреждения
- * [InstallCheck.Warning] при установке (InstallCheckLogic) и баннер о
- * нехватке ОЗУ в UI; полный байтовый лимит кэша — не реализован.
+ * Байтовый бюджет (ревью #83): помимо count-LRU ([evictOverCapacity]) кэш
+ * может учитывать суммарный размер пучков ([sizeOf] при [byteBudget]) —
+ * [evictOverByteBudget] выгружает наименее давно использованные до возврата
+ * в бюджет. Без байтового бюджета ([Long.MAX_VALUE]) учёт нулевой: так
+ * работают slimt (модели mmap — страницы изымаются ОС под давлением) и
+ * STT/TTS-движки.
  *
  * @param T тип пучка модели (сессии/токенизаторы/нативный handle + метаданные).
  * @param capacity максимальное число хранимых пучков.
+ * @param byteBudget бюджет суммарного размера пучков ([currentBytes]);
+ *   [Long.MAX_VALUE] — байтовый учёт не применяется.
+ * @param sizeOf размер одного пучка для бюджета (0 — вес не учитывается).
  */
-class EngineModelCache<T>(private val capacity: Int) {
+class EngineModelCache<T>(
+    private val capacity: Int,
+    private val byteBudget: Long = Long.MAX_VALUE,
+    private val sizeOf: (T) -> Long = { 0L },
+) {
 
     init {
         require(capacity > 0) { "capacity должен быть положительным" }
     }
 
     private val map = LinkedHashMap<String, T>(capacity, 0.75f, true)
+
+    /** Суммарный учитываемый размер хранимых пучков (по [sizeOf]). */
+    private var storedBytes = 0L
+
+    /** Суммарный учитываемый размер хранимых пучков (по [sizeOf]). */
+    val currentBytes: Long
+        get() = storedBytes
 
     /** Пучок по id с отметкой использования (fast path ensureLoaded). */
     fun get(id: String): T? = map[id]
@@ -40,10 +54,15 @@ class EngineModelCache<T>(private val capacity: Int) {
      * не было) — вызывающий обязан освободить его ресурсы, иначе прежнее
      * нативное значение теряется без закрытия (ревью #79).
      */
-    fun put(id: String, value: T): T? = map.put(id, value)
+    fun put(id: String, value: T): T? {
+        val previous = map.put(id, value)
+        storedBytes += sizeOf(value)
+        if (previous != null) storedBytes -= sizeOf(previous)
+        return previous
+    }
 
     /** Извлечь и удалить пучок по id. */
-    fun remove(id: String): T? = map.remove(id)
+    fun remove(id: String): T? = map.remove(id)?.also { storedBytes -= sizeOf(it) }
 
     /**
      * Вытеснить записи сверх [capacity] (наименее давно использованные — первыми).
@@ -59,6 +78,30 @@ class EngineModelCache<T>(private val capacity: Int) {
             val eldest = iterator.next()
             evicted += eldest.key to eldest.value
             iterator.remove()
+            storedBytes -= sizeOf(eldest.value)
+        }
+        return evicted
+    }
+
+    /**
+     * Вытеснять наименее давно использованные записи, пока суммарный
+     * размер не вернётся в [byteBudget] (ревью #83 — ORT-пучки стоят
+     * сотни МБ, одного count-LRU мало). Ключи из [protect] (активный
+     * пучок) не вытесняются; если после обхода бюджет всё ещё превышен —
+     * остались только защищённые/единственный массивный пучок, это
+     * допустимо (иначе кэш было бы нельзя использовать вовсе).
+     * @return вытесненные пары (id, значение) в порядке вытеснения.
+     */
+    fun evictOverByteBudget(protect: Set<String> = emptySet()): List<Pair<String, T>> {
+        if (storedBytes <= byteBudget) return emptyList()
+        val evicted = ArrayList<Pair<String, T>>()
+        val iterator = map.entries.iterator()
+        while (storedBytes > byteBudget && iterator.hasNext()) {
+            val entry = iterator.next()
+            if (entry.key in protect) continue
+            evicted += entry.key to entry.value
+            iterator.remove()
+            storedBytes -= sizeOf(entry.value)
         }
         return evicted
     }
@@ -73,6 +116,7 @@ class EngineModelCache<T>(private val capacity: Int) {
     fun clear(): List<Pair<String, T>> {
         val snapshot = all()
         map.clear()
+        storedBytes = 0
         return snapshot
     }
 

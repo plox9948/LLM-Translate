@@ -27,6 +27,9 @@ import timber.log.Timber
  * @param logLabel метка движка в логах ("Marian", "IndicTrans", "slimt").
  * @param releaseBundle освободить нативные ресурсы одного пучка.
  * @param infoOf метаданные пучка для публикации в [loadedModels].
+ * @param byteBudget байтовый бюджет resident-памяти кэша;
+ *   [Long.MAX_VALUE] — только count-LRU (без байтового гейта).
+ * @param sizeOfBundle размер пучка для байтового бюджета.
  */
 internal class EngineCacheScaffold<T>(
     capacity: Int,
@@ -34,18 +37,30 @@ internal class EngineCacheScaffold<T>(
     private val logLabel: String,
     private val releaseBundle: (T) -> Unit,
     private val infoOf: (T) -> LoadedModelInfo,
+    byteBudget: Long = Long.MAX_VALUE,
+    sizeOfBundle: (T) -> Long = { 0L },
 ) {
 
     companion object {
         /**
          * Общая ёмкость LRU-кэша пучков для всех движков (ревью — была
          * дублирована в четырёх): два направления перевода + активная модель
-         * (аналогично несколько STT-моделей + активная).
-         *
-         * TODO(осознанный долг): ёмкость считается по ЧИСЛУ пучков, байтовый
-         * лимит ОЗУ не учитывается (см. долговой абзац [EngineModelCache]).
+         * (аналогично несколько STT-моделей + активная). Байтовый бюджет
+         * resident-памяти дополняет count-LRU у ORT-движков
+         * ([ORT_CACHE_BYTE_BUDGET], ревью #83).
          */
         const val DEFAULT_MODEL_CACHE_CAPACITY = 3
+
+        /**
+         * Байтовый бюджет resident-памяти ORT-кэшей переводческих движков
+         * (ревью #83): пучок IndicTrans стоит сотни МБ, и три пучка по
+         * count-LRU могли суммарно превысить разумный бюджет ОЗУ до
+         * первой эвикции (риск ОЗМ). При превышении вытесняется eldest,
+         * новый активный пучок защищён. slimt не ограничивается осознанно:
+         * его модели отображены mmap, чистые страницы изымаются ОС под
+         * давлением без выгрузки пучка.
+         */
+        const val ORT_CACHE_BYTE_BUDGET = 1_024L * 1024 * 1024
     }
 
     /**
@@ -63,7 +78,7 @@ internal class EngineCacheScaffold<T>(
      * internal — для юнит-тестов каркаса и специфичных путей движков
      * (снятие неконсистентного пучка без освобождения в SherpaSttEngine).
      */
-    internal val cache = EngineModelCache<T>(capacity)
+    internal val cache = EngineModelCache<T>(capacity, byteBudget, sizeOfBundle)
 
     /**
      * Id пучка, на котором работает translate движка; пишется и читается
@@ -132,6 +147,13 @@ internal class EngineCacheScaffold<T>(
         // (вытесненный) пучок.
         cache.evictOverCapacity().forEach { (evictedId, bundle) ->
             Timber.d("$logLabel: вытеснена из кэша модель $evictedId")
+            releaseBundle(bundle)
+        }
+        // Байтовый бюджет (ревью #83): после размещения нового пучка
+        // выгружаем eldest до возврата в бюджет; сам новый активный
+        // пучок [modelId] от вытеснения защищён.
+        cache.evictOverByteBudget(protect = setOf(modelId)).forEach { (evictedId, bundle) ->
+            Timber.d("$logLabel: вытеснена по байтовому бюджету модель $evictedId")
             releaseBundle(bundle)
         }
         activeId = modelId
