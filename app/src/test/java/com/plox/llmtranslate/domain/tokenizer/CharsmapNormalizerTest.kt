@@ -169,6 +169,35 @@ class CharsmapNormalizerTest {
         assertEquals("ab", normalizer.normalize("ab"))
     }
 
+    @Test
+    fun `internal unit with bit 31 in offset keeps label matching`() {
+        // Ревью #83: прежняя маска unitLabel (0x800000FF) сравнивала и бит 31,
+        // который у внутренних юнитов принадлежит полю node_offset — сравнение
+        // метки падало и обход три молча обрывался (матч терялся). С маской
+        // только поля label (0xFF) обход продолжается и Ё нормализуется в ё.
+        // Юнит построен с валидным offset-полем, развёрнутым битом 31
+        // (смещение 0x200081), поэтому позиция листа уходит за 2 МБ три.
+        val size = 0x200200
+        val trie = IntArray(size)
+        trie[0] = 1 shl 10
+        // Внутренний юнит первого байта Ё (D0 81): метка D0, offset 0x81 + бит 31.
+        trie[0xD1] = (1 shl 31) or (0x81 shl 10) or 0xD0
+        // 0xD1 xor 0x200081 = 0x200050 — база следующего шага; обход применяет байт
+        // 0x81 до чтения: лист — в 0x200050 xor 0x81 = 0x2000D1 (метка 0x81,
+        // offset 1 → value-юнит 0x2000D0 со смещением записи 0).
+        trie[0x2000D1] = 0x81 or 0x100 or (1 shl 10)
+        trie[0x2000D0] = 0
+        val normalized = smallYo.toByteArray(StandardCharsets.UTF_8) + 0
+        val buf = ByteBuffer.allocate(4 + trie.size * 4 + normalized.size)
+            .order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(trie.size * 4)
+        trie.forEach { buf.putInt(it) }
+        buf.put(normalized)
+
+        val normalizer = TokenizerJson.CharsmapNormalizer(buf.array())
+        assertEquals(smallYo, normalizer.normalize(capitalYo))
+    }
+
     // --- Валидность blob ---
 
     @Test

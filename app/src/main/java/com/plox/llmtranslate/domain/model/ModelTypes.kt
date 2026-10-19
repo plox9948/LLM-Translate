@@ -113,7 +113,8 @@ data class ModelCard(
      * Язык, для которого эта карточка — TTS-карточка по умолчанию в каталоге
      * (поле каталога default_for_language, ревью); null — в каталоге не
      * задана (тогда применяется резервная константа
-     * [TtsModelSelector.DEFAULT_LANGUAGE_CARDS]).
+     * [TtsModelSelector.DEFAULT_LANGUAGE_CARDS] — только при наличии
+     * карточки с резервным id в каталоге, ревью #83).
      */
     val defaultForLanguage: String? = null
 ) {

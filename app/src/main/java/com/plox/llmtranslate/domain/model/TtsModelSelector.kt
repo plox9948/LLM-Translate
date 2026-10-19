@@ -30,7 +30,9 @@ object TtsModelSelector {
     /**
      * Резервная карта «язык → карточка Piper по умолчанию» (для пресета
      * настроек): применяется, только если в каталоге для языка нет поля
-     * default_for_language (ревью).
+     * default_for_language (ревью) И карточка с таким id присутствует среди
+     * карточек каталога — иначе резерв мог ссылаться на несуществующую
+     * модель (ревью #83).
      */
     val DEFAULT_LANGUAGE_CARDS = mapOf(
         "ru" to "tts-ru-piper-ruslan",
@@ -74,15 +76,23 @@ object TtsModelSelector {
      * карточка, назначенная языку в каталоге; константа
      * [DEFAULT_LANGUAGE_CARDS] — только резерв, когда в переданном
      * каталоге default для языка отсутствует (пустой каталог, удалённый
-     * каталог без поля — ревью). Из поиска исключены скрытые карточки
+     * каталог без поля — ревью), и карточка с резервным id присутствует в
+     * переданном каталоге (ревью #83): каталог без такой карточки — null,
+     * а не битый id. Из поиска исключены скрытые карточки
      * (hidden) и карточки не-piper рантаймов (ревью) — предложить нельзя
      * то, что недоступно для скачивания.
      */
-    fun defaultCardId(language: String, catalogCards: List<ModelCard> = emptyList()): String? =
+    fun defaultCardId(language: String, catalogCards: List<ModelCard> = emptyList()): String? {
         catalogCards.firstOrNull {
             it.defaultForLanguage == language &&
                 it.runtime == RuntimeType.PIPER_ONNX &&
                 !it.hidden
-        }?.id
-            ?: DEFAULT_LANGUAGE_CARDS[language]
+        }?.let { return it.id }
+        // Константный резерв — только если карточка с этим id есть среди
+        // карточек каталога (ревью #83).
+        val fallbackId = DEFAULT_LANGUAGE_CARDS[language] ?: return null
+        return fallbackId.takeIf { id ->
+            catalogCards.any { it.id == id && it.runtime == RuntimeType.PIPER_ONNX && !it.hidden }
+        }
+    }
 }

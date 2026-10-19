@@ -209,6 +209,77 @@ class TokenizerJsonTest {
         assertEquals("zz", tokenizer.decode(listOf(6)))
     }
 
+    // ── ревью #83: симметрия Metaspace и fail-fast несовместимым конфигам ──
+
+    @Test
+    fun `decode restores spaces when decoder section missing`() {
+        // Отсутствие секции decoder — Metaspace по умолчанию (симметрия с
+        // энкодером): без явного decoder ▁ обязан восстанавливаться в пробел,
+        // иначе decode отдаёт литеральный «▁hello».
+        val json = bpeJson.replace(
+            ",\n          \"decoder\": {\"type\": \"Metaspace\", \"replacement\": \"▁\"}",
+            ""
+        )
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(json))
+        assertEquals(true, tokenizer.isLoaded)
+        assertEquals("hello", tokenizer.decode(listOf(0, 1, 2)))
+    }
+
+    @Test
+    fun `metaspace with add_prefix_space false fails load`() {
+        // encode всегда добавляет префикс replacement (схема always);
+        // add_prefix_space=false — иная схема, encode/decode разошлись бы
+        // молча: явная ошибка загрузки (ревью #83).
+        val json = bpeJson.replace(
+            "\"pre_tokenizer\": {\"type\": \"Metaspace\", \"replacement\": \"▁\", \"prepend_scheme\": \"always\"}",
+            "\"pre_tokenizer\": {\"type\": \"Metaspace\", \"replacement\": \"▁\", \"add_prefix_space\": false}"
+        )
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(json))
+        assertEquals(false, tokenizer.isLoaded)
+    }
+
+    @Test
+    fun `metaspace with empty replacement fails load`() {
+        // Пустой replacement теряет маркер границы слова — тот же fail-fast,
+        // что и для неподдерживаемого типа pre_tokenizer (ревью #83).
+        val json = bpeJson.replace(
+            "\"pre_tokenizer\": {\"type\": \"Metaspace\", \"replacement\": \"▁\", \"prepend_scheme\": \"always\"}",
+            "\"pre_tokenizer\": {\"type\": \"Metaspace\", \"replacement\": \"\"}"
+        )
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(json))
+        assertEquals(false, tokenizer.isLoaded)
+    }
+
+    @Test
+    fun `non-metaspace decoder fails load`() {
+        // Непустой decoder не-Metaspace (Sequence/Strip/…) при Metaspace-энкодере
+        // оставил бы в выводе литеральные ▁ — отклонение загрузки вместо
+        // тихой подмены (политика ревью #79/#83).
+        val json = bpeJson.replace(
+            "\"decoder\": {\"type\": \"Metaspace\", \"replacement\": \"▁\"}",
+            "\"decoder\": {\"type\": \"Strip\", \"skip_special_tokens\": true}"
+        )
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(json))
+        assertEquals(false, tokenizer.isLoaded)
+    }
+
+    @Test
+    fun `explicit metaspace decoder replacement is honoured`() {
+        // Корректный конфиг с явным Metaspace-decoder — поведение не меняется.
+        val json = bpeJson.replace(
+            "\"decoder\": {\"type\": \"Metaspace\", \"replacement\": \"▁\"}",
+            "\"decoder\": {\"type\": \"Metaspace\", \"replacement\": \"▁\", \"lstrip\": false}"
+        )
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(json))
+        assertEquals(true, tokenizer.isLoaded)
+        assertEquals("hello", tokenizer.decode(listOf(0, 1, 2)))
+    }
+
     private fun writeTempTokenizer(content: String): String {
         val file = Files.createTempFile("tokenizer", ".json")
         file.toFile().deleteOnExit()

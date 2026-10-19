@@ -161,6 +161,9 @@ class TtsPlaybackCoordinatorTest {
     @Test
     fun `language not supported with ready default card auto-assigns and speaks piper`() {
         stubLanguageNotSupported("ru")
+        // Ревью #83: резервная константа действует только при наличии
+        // карточки в каталоге — каталог обязан содержать резервную карту.
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
         installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
 
         coordinator.speak("привет", "ru")
@@ -269,6 +272,8 @@ class TtsPlaybackCoordinatorTest {
         coEvery {
             ttsRuntime.speak(any(), any(), any())
         } returns RuntimeError.LoadFailed("tts", "TTS не инициализирован")
+        // Ревью #83: резерв константы только при карточке в каталоге.
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
         installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
 
         coordinator.speak("озвучь", "ru")

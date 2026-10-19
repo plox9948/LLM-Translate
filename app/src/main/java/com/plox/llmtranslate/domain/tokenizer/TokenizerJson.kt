@@ -29,7 +29,10 @@ import java.util.Base64
  * типы Whitespace, ByteLevel, Split и прочие в [parsePreTokenizer] дают
  * явную ошибку загрузки (молчаливая подмена молча ломала бы id, ревью #79).
  * Отсутствие секции pre_tokenizer трактуется как Metaspace-поведение
- * (значения по умолчанию).
+ * (значения по умолчанию). Декодер симметричен энкодеру: отсутствующая
+ * секция decoder трактуется как Metaspace, прочие непустые типы
+ * (Sequence, Strip, …) — явная ошибка загрузки, иначе на выходе остаются
+ * литеральные ▁ (ревью #83).
  * Нормализация: null, NFC/NFD, Sequence (вкл. Precompiled charsmap).
  *
  * Ленивая загрузка, encode/decode/eosId.
@@ -237,15 +240,48 @@ class TokenizerJson {
                     "реализован только Metaspace"
             )
         }
-        metaspaceReplacement = (pt["replacement"] as? JsonPrimitive)?.contentOrNull ?: "▁"
+        // add_prefix_space (дефолт HF — true): encode безусловно добавляет
+        // префикс replacement (схема "always"), false — несовместимая
+        // схема, encode/decode разошлись бы молча — отклоняем загрузку
+        // явной ошибкой (политика fail-fast, ревью #79/#83).
+        val addPrefixSpace = (pt["add_prefix_space"] as? JsonPrimitive)?.booleanOrNull ?: true
+        if (!addPrefixSpace) {
+            throw IllegalStateException(
+                "Metaspace с add_prefix_space=false не поддерживается: " +
+                    "encode добавляет префикс replacement всегда"
+            )
+        }
+        // Пустой replacement терял маркер границы слова — тоже явная ошибка.
+        val replacement = (pt["replacement"] as? JsonPrimitive)?.contentOrNull ?: "▁"
+        if (replacement.isEmpty()) {
+            throw IllegalStateException(
+                "Пустой replacement Metaspace не поддерживается: " +
+                    "маркер границы слова отсутствует"
+            )
+        }
+        metaspaceReplacement = replacement
     }
 
     private fun parseDecoder(root: JsonObject) {
-        val dec = root["decoder"] as? JsonObject ?: return
-        decoderType = (dec["type"] as? JsonPrimitive)?.contentOrNull ?: ""
-        if (decoderType == "Metaspace") {
-            decoderReplacement = (dec["replacement"] as? JsonPrimitive)?.contentOrNull ?: "▁"
+        val dec = root["decoder"] as? JsonObject ?: run {
+            // Нет секции decoder — Metaspace по умолчанию: decode обязан
+            // восстанавливать пробелы, которые энкодер добавляет всегда
+            // (симметрия с pre_tokenizer, ревью #83).
+            decoderType = "Metaspace"
+            return
         }
+        decoderType = (dec["type"] as? JsonPrimitive)?.contentOrNull ?: "Metaspace"
+        if (decoderType.isEmpty()) decoderType = "Metaspace"
+        if (decoderType != "Metaspace") {
+            // decode реализует только Metaspace: Sequence/Strip/ByteLevel
+            // оставили бы в выводе литеральные ▁ — явная ошибка загрузки
+            // вместо тихой подмены (политика ревью #79/#83).
+            throw IllegalStateException(
+                "Декодер типа \"$decoderType\" не поддерживается: " +
+                    "реализован только Metaspace"
+            )
+        }
+        decoderReplacement = (dec["replacement"] as? JsonPrimitive)?.contentOrNull ?: "▁"
     }
 
     private fun parseModel(root: JsonObject) {
@@ -510,7 +546,11 @@ class TokenizerJson {
 
         private fun unitHasLeaf(unit: Int): Boolean = (unit ushr 8) and 1 == 1
         private fun unitValue(unit: Int): Int = unit and 0x7FFFFFFF
-        private fun unitLabel(unit: Int): Int = unit and 0x800000FF.toInt()
+        // Маска строго по полю label (8 бит): прежняя маска 0x800000FF
+        // включала бит 31, который у внутренних юнитов принадлежит
+        // node_offset — сравнение метки падало на таких юнитах (ревью #83);
+        // leaf-юниты отличает unitHasLeaf.
+        private fun unitLabel(unit: Int): Int = unit and 0xFF
 
         // Смещение юнита darts-lite: сдвиг 0 или ×2 в зависимости от флага
         // (бит 9). Логический сдвиг и маска поля offset (22 бита, 0x3FFFFF):

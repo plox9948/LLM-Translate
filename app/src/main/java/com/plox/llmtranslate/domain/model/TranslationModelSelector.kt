@@ -63,14 +63,18 @@ object TranslationModelSelector {
         // Сверка по токенам (ревью): прежняя подстрока «indic-en» ловилась
         // внутри произвольных идентификаторов.
         val tokens = id.split('-', '_')
+        // Нехабовые языки модели: направление через токен "indic" определено
+        // только при ОДНОМ таком языке. При нескольких firstOrNull давал
+        // нестабильное направление (по порядку languages) и собирал ложные
+        // цепочки — возвращаем неопределённость (ревью #83).
+        val nonHubLanguages = languages.distinct().filter { it != HUB_LANG }
         for (i in 0 until tokens.size - 1) {
-            if (tokens[i] == "indic" && tokens[i + 1] == HUB_LANG) {
-                val src = languages.firstOrNull { it != HUB_LANG } ?: return null
-                return src to HUB_LANG
-            }
-            if (tokens[i] == HUB_LANG && tokens[i + 1] == "indic") {
-                val tgt = languages.firstOrNull { it != HUB_LANG } ?: return null
-                return HUB_LANG to tgt
+            val indicToHub = tokens[i] == "indic" && tokens[i + 1] == HUB_LANG
+            val hubToIndic = tokens[i] == HUB_LANG && tokens[i + 1] == "indic"
+            if (indicToHub || hubToIndic) {
+                if (nonHubLanguages.size != 1) return null
+                val other = nonHubLanguages.first()
+                return if (indicToHub) other to HUB_LANG else HUB_LANG to other
             }
         }
 

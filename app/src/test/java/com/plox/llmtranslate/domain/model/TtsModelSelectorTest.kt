@@ -142,11 +142,24 @@ class TtsModelSelectorTest {
         assertEquals(TtsModelSelector.TtsChoice.SystemEngine, choice)
     }
 
+    /** Карточки поставляемого assets-каталога (проверки резервной константы). */
+    private fun shippingCatalogCards(): List<ModelCard> {
+        val catalogFile = listOf(
+            java.io.File("src/main/assets/models_catalog.json"),
+            java.io.File("app/src/main/assets/models_catalog.json")
+        ).firstOrNull { it.isFile }
+            ?: error("models_catalog.json не найден относительно рабочих каталогов теста")
+        return ModelCatalogParser().parse(catalogFile.readText(Charsets.UTF_8))
+    }
+
     @Test
     fun `default card ids for ru en ne`() {
-        assertEquals("tts-ru-piper-ruslan", TtsModelSelector.defaultCardId("ru"))
-        assertEquals("tts-en-piper-ryan", TtsModelSelector.defaultCardId("en"))
-        assertEquals("tts-ne-piper-google", TtsModelSelector.defaultCardId("ne"))
+        // Резервные id применяются только когда карточка есть в каталоге
+        // (ревью #83) — тест опирается на поставляемый каталог.
+        val cards = shippingCatalogCards()
+        assertEquals("tts-ru-piper-ruslan", TtsModelSelector.defaultCardId("ru", cards))
+        assertEquals("tts-en-piper-ryan", TtsModelSelector.defaultCardId("en", cards))
+        assertEquals("tts-ne-piper-google", TtsModelSelector.defaultCardId("ne", cards))
     }
 
     @Test
@@ -186,11 +199,38 @@ class TtsModelSelectorTest {
 
     @Test
     fun `fallback constant used when catalog has no default for language`() {
-        // В каталоге default только для de — для ru применяется резерв.
-        val cards = listOf(catalogCard("tts-custom-de", "de"))
+        // В каталоге default только для de — для ru применяется резерв,
+        // но только потому, что карточка резервного id в каталоге есть.
+        val cards = listOf(
+            catalogCard("tts-custom-de", "de"),
+            catalogCard("tts-ru-piper-ruslan", null),
+            catalogCard("tts-en-piper-ryan", null),
+            catalogCard("tts-ne-piper-google", null)
+        )
         assertEquals("tts-ru-piper-ruslan", TtsModelSelector.defaultCardId("ru", cards))
         assertEquals("tts-custom-de", TtsModelSelector.defaultCardId("de", cards))
         assertNull(TtsModelSelector.defaultCardId("fr", cards))
+    }
+
+    @Test
+    fun `fallback ignored when reserve card absent from catalog`() {
+        // Ревью #83: резерв не должен ссылаться на id, которого нет среди
+        // карточек переданного каталога (урезанный/пустой каталог — null).
+        val cards = listOf(catalogCard("tts-custom-de", "de"))
+        assertNull(TtsModelSelector.defaultCardId("ru", cards))
+        assertNull(TtsModelSelector.defaultCardId("ru", emptyList()))
+    }
+
+    @Test
+    fun `fallback ignores hidden or non-piper card with reserve id`() {
+        // Карточка-резерв должна проходить те же фильтры доступности, что и
+        // поиск по default_for_language (hidden и не-piper рантаймы — мимо).
+        val hidden = listOf(catalogCard("tts-ru-piper-ruslan", null).copy(hidden = true))
+        assertNull(TtsModelSelector.defaultCardId("ru", hidden))
+        val wrongRuntime = listOf(
+            catalogCard("tts-ru-piper-ruslan", null).copy(runtime = RuntimeType.SYSTEM_TTS)
+        )
+        assertNull(TtsModelSelector.defaultCardId("ru", wrongRuntime))
     }
 
     @Test
@@ -198,13 +238,7 @@ class TtsModelSelectorTest {
         // Резервная карта DEFAULT_LANGUAGE_CARDS обязана ссылаться на реальные
         // Piper-карточки поставляемого каталога assets: иначе фолбэк
         // TtsPlaybackCoordinator предложит несуществующую модель.
-        val catalogFile = listOf(
-            java.io.File("src/main/assets/models_catalog.json"),
-            java.io.File("app/src/main/assets/models_catalog.json")
-        ).firstOrNull { it.isFile }
-            ?: error("models_catalog.json не найден относительно рабочих каталогов теста")
-
-        val cards = ModelCatalogParser().parse(catalogFile.readText(Charsets.UTF_8))
+        val cards = shippingCatalogCards()
         val piperIds = cards
             .filter { it.category == ModelCategory.TTS && it.runtime == RuntimeType.PIPER_ONNX }
             .map { it.id }

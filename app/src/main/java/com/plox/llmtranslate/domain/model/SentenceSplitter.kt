@@ -89,7 +89,6 @@ object SentenceSplitter {
     private fun endsWithDecimalNumber(text: String): Boolean {
         if (text.length < 3) return false
         if (!text.last().isDigit()) return false
-        val dot = text.length - 2
         // Пропускаем цифры дробной части назад до разделительной точки.
         var i = text.length - 1
         while (i >= 0 && text[i].isDigit()) i--

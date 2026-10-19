@@ -38,6 +38,24 @@ class TranslationModelSelectorTest {
     }
 
     @Test
+    fun `direction null when indic model has several non-hub languages`() {
+        // Ревью #83: при нескольких нехабовых языках firstOrNull давал
+        // нестабильное направление — возвращаем неопределённость (null),
+        // а не ложную пару.
+        val indicMulti = model("generic-multi-indic-en", "Generic Indic pack", listOf("hi", "ne", "en"))
+        assertNull(TranslationModelSelector.directionOf(indicMulti))
+        val hubMulti = model("generic-multi-en-indic", "Generic Indic pack", listOf("hi", "ne", "en"))
+        assertNull(TranslationModelSelector.directionOf(hubMulti))
+    }
+
+    @Test
+    fun `single non-hub language still resolves direction`() {
+        // Один нехабовый язык — направление по-прежнему определёно.
+        val single = model("generic-multi-indic-en", "Generic Indic pack", listOf("ne", "en"))
+        assertEquals("ne" to "en", TranslationModelSelector.directionOf(single))
+    }
+
+    @Test
     fun `direct chain for supported direction`() {
         assertEquals(listOf(ruEn), TranslationModelSelector.selectChain(all, "ru", "en"))
         assertEquals(listOf(enRu), TranslationModelSelector.selectChain(all, "en", "ru"))

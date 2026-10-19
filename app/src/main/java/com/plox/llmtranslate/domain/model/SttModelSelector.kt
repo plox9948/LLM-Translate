@@ -20,8 +20,11 @@ object SttModelSelector {
     /** Язык, для которого применяется дефолтный фолбэк на IndicConformer. */
     const val INDIC_DEFAULT_LANGUAGE = "ne"
 
-    /** Маркеры id IndicConformer-моделей (sherpa-onnx). */
-    private val INDIC_ID_MARKERS = listOf("indicconformer", "indic")
+    /**
+     * Маркеры id IndicConformer-моделей (sherpa-onnx). Подстрока «indic»
+     * поглощает и «indicconformer» — отдельный маркер избыточен (ревью #83).
+     */
+    private val INDIC_ID_MARKERS = listOf("indic")
 
     /** Маркер id мультаязычных Whisper-моделей — приоритет для AUTO. */
     private const val WHISPER_ID_MARKER = "whisper"
@@ -73,9 +76,11 @@ object SttModelSelector {
      * языку, затем для «ne» карточка IndicConformer (дефолт), затем первая
      * видимая карточка, поддерживающая язык.
      *
-     * @return карточка для скачивания; null — для AUTO, если готовая STT-модель
-     *         для языка уже есть, или каталог не покрывает язык видимой
-     *         карточкой.
+     * @return карточка для скачивания либо null в одном из трёх независимых
+     *         случаев: язык не задан (AUTO); для языка уже подобрана готовая
+     *         модель ([select] вернул не-null); в каталоге нет видимой
+     *         карточки, подходящей языку (ревью #83 — формулировка
+     *         разведена по случаям).
      */
     fun missingCard(
         catalog: List<ModelCard>,

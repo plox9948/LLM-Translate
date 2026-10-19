@@ -54,6 +54,12 @@ object IndicProcessorLite {
     /** Хвостовые пунктуационные символы, отсекаемые от URL-токена («example.com.»). */
     private val trailingUrlPunct = setOf('.', ',', ';', ':', '!', '?')
 
+    /** Схлопывание пробелов. Компилируется один раз (ревью): Regex на каждый вызов. */
+    private val whitespaceRegex = Regex("\\s+")
+
+    /** 3+ точек → «…». Компилируется один раз (ревью): Regex на каждый вызов. */
+    private val ellipsisRegex = Regex("\\.{3,}")
+
     /**
      * Препроцессинг текста перед переводом.
      * @param text исходный текст
@@ -101,7 +107,7 @@ object IndicProcessorLite {
     private fun normalize(text: String): String {
         val nfc = Normalizer.normalize(text, Normalizer.Form.NFC)
         // Схлопываем множественные пробелы и убираем краевые.
-        return nfc.replace(Regex("\\s+"), " ").trim()
+        return nfc.replace(whitespaceRegex, " ").trim()
     }
 
     /**
@@ -131,7 +137,7 @@ object IndicProcessorLite {
      * 4) финальное схлопывание пробелов + trim.
      */
     private fun punctuateEnglish(text: String): String {
-        val collapsed = text.replace(Regex("\\.{3,}"), "…")
+        val collapsed = text.replace(ellipsisRegex, "…")
         val protectedPos = BooleanArray(collapsed.length)
         markProtectedRanges(collapsed, urlLikeRegex, protectedPos)
         markProtectedRanges(collapsed, emailRegex, protectedPos)
@@ -147,7 +153,7 @@ object IndicProcessorLite {
                 sb.append(ch)
             }
         }
-        return sb.toString().replace(Regex("\\s+"), " ").trim()
+        return sb.toString().replace(whitespaceRegex, " ").trim()
     }
 
     /**
