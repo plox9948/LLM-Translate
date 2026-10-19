@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.ui.translate
 
 import android.content.Context
+import androidx.lifecycle.SavedStateHandle
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.model.FavoritesRepository
 import com.plox.llmtranslate.data.model.TranslationHistoryRepository
@@ -68,7 +69,7 @@ class TranslateViewModelTest {
     }
 
     /** Создать ViewModel (коллекторы init стартуют здесь — стабы должны быть готовы). */
-    private fun createViewModel() {
+    private fun createViewModel(savedStateHandle: SavedStateHandle = SavedStateHandle()) {
         every { appContext.getString(R.string.translate_mic_permission_denied) } returns "MIC_PERM"
         every { appContext.getString(R.string.translate_mic_missing_stt_model) } returns "MIC_STT"
         viewModel = TranslateViewModel(
@@ -81,7 +82,8 @@ class TranslateViewModelTest {
             historyRepository,
             pendingHolder,
             favoritesRepository,
-            appContext
+            appContext,
+            savedStateHandle
         )
     }
 
@@ -748,5 +750,46 @@ class TranslateViewModelTest {
 
         assertEquals("whole output", viewModel.uiState.value.resultText)
         coVerify(exactly = 1) { engine.translate(fullText, "en", "ne") }
+    }
+
+    // ── Сохранение/восстановление текстов ввода и результата (гибель процесса) ──
+
+    @Test
+    fun `recreated view model restores input and result from saved state handle`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        stubEchoEngine()
+        val handle = SavedStateHandle()
+        createViewModel(handle)
+        viewModel.onInputTextChanged("restorable text")
+        // Завершение перевода — latest-пись пары «ввод/результат» в handle.
+        viewModel.translate()
+        val result = viewModel.uiState.value.resultText
+        assertTrue(result.isNotEmpty())
+
+        // «Гибель процесса»: ViewModel пересоздан с тем же SavedStateHandle.
+        createViewModel(handle)
+        assertEquals("restorable text", viewModel.uiState.value.inputText)
+        assertEquals(result, viewModel.uiState.value.resultText)
+        // Результат привязан к направлению по умолчанию ru→en — снова виден.
+        assertEquals(result, viewModel.uiState.value.visibleResult)
+    }
+
+    @Test
+    fun `restored texts are empty when handle has nothing saved`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        createViewModel()
+        assertEquals("", viewModel.uiState.value.inputText)
+        assertEquals("", viewModel.uiState.value.resultText)
+    }
+
+    @Test
+    fun `saved texts are trimmed to max restored chars`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val handle = SavedStateHandle()
+        createViewModel(handle)
+        viewModel.onInputTextChanged("a".repeat(TranslateViewModel.MAX_RESTORED_TEXT_CHARS + 2000))
+
+        val saved = handle.get<String>(TranslateViewModel.KEY_INPUT_TEXT)
+        assertEquals(TranslateViewModel.MAX_RESTORED_TEXT_CHARS, saved?.length)
     }
 }

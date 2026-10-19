@@ -67,6 +67,8 @@
     <string name="history_add_failed">अनुवाद इतिहासमा सुरक्षित गर्न सकिएन</string>
     <string name="history_delete_failed">इतिहासबाट अभिलेख मेटाउन सकिएन</string>
     <string name="history_clear_failed">इतिहास खाली गर्न सकिएन</string>
+    <string name="history_clear_confirm_title">इतिहास मेटाउने?</string>
+    <string name="history_clear_confirm_text">इतिहासका सबै अभिलेखहरू स्थायी रूपमा मेटिनेछन्।</string>
     <string name="history_observe_failed">इतिहास लोड गर्न सकिएन</string>
     <string name="models_observe_failed">मोडेलहरूको सूची लोड गर्न सकिएन</string>
 

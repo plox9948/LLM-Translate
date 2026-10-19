@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.ui.favorites
 
 import android.content.Context
+import androidx.lifecycle.SavedStateHandle
 import com.plox.llmtranslate.data.model.FavoritesRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.ModelManager
@@ -79,7 +80,8 @@ class FavoritesViewModelTest {
             null
         }
         viewModel = FavoritesViewModel(
-            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder
+            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder,
+            SavedStateHandle()
         )
     }
 
@@ -139,7 +141,8 @@ class FavoritesViewModelTest {
     private fun newViewModelWith(entries: List<FavoriteEntry>): FavoritesViewModel {
         every { favoritesRepository.observeAll() } returns flowOf(entries)
         return FavoritesViewModel(
-            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder
+            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder,
+            SavedStateHandle()
         )
     }
 
@@ -210,5 +213,24 @@ class FavoritesViewModelTest {
 
         vm.onQueryChange("")
         assertEquals(searchEntries, vm.favorites.value)
+    }
+
+    @Test
+    fun `search query survives view model recreation via saved state handle`() {
+        // Поиск хранится в SavedStateHandle: пересозданный ViewModel (гибель
+        // процесса, смена конфигурации) восстанавливает и запрос, и фильтр.
+        val handle = SavedStateHandle()
+        every { favoritesRepository.observeAll() } returns flowOf(searchEntries)
+        val first = FavoritesViewModel(
+            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder, handle
+        )
+        first.onQueryChange("мир")
+        assertEquals(listOf(searchEntries[0]), first.favorites.value)
+
+        val recreated = FavoritesViewModel(
+            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder, handle
+        )
+        assertEquals("мир", recreated.searchQuery.value)
+        assertEquals(listOf(searchEntries[0]), recreated.favorites.value)
     }
 }

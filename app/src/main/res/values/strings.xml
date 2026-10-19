@@ -67,6 +67,8 @@
     <string name="history_add_failed">Не удалось сохранить перевод в историю</string>
     <string name="history_delete_failed">Не удалось удалить запись из истории</string>
     <string name="history_clear_failed">Не удалось очистить историю</string>
+    <string name="history_clear_confirm_title">Очистить историю?</string>
+    <string name="history_clear_confirm_text">Все записи истории будут удалены без возможности восстановления.</string>
     <string name="history_observe_failed">Не удалось загрузить историю</string>
     <string name="models_observe_failed">Не удалось загрузить список моделей</string>
 

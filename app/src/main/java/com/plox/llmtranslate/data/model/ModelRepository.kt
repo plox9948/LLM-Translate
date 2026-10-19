@@ -291,6 +291,8 @@ private fun InstalledModel.toEntity(createdAt: Long, updatedAt: Long): ModelEnti
         languages = joinDelimitedList(languages),
         quality = quality,
         speed = speed,
+        // url — основная ссылка (первая), urls — все зеркала/файлы; списки
+        // склеиваются разделителем '\n' (см. joinDelimitedList).
         url = url,
         urls = joinDelimitedList(urls),
         sha256 = sha256,

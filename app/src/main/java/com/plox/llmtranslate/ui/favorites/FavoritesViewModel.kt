@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.ui.favorites
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.R
@@ -43,11 +44,14 @@ class FavoritesViewModel @Inject constructor(
     private val ttsRuntime: TtsRuntime,
     private val ttsCoordinator: TtsPlaybackCoordinator,
     private val preferences: ModelPreferences,
-    private val pendingHolder: PendingTranslationHolder
+    private val pendingHolder: PendingTranslationHolder,
+    private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
-    // Текущий поисковый запрос вкладки.
-    private val _searchQuery = MutableStateFlow("")
+    // Текущий поисковый запрос вкладки; хранится в SavedStateHandle —
+    // переживает уничтожение ViewModel (смена конфигурации, гибель процесса).
+    private val _searchQuery =
+        MutableStateFlow(savedStateHandle[KEY_SEARCH_QUERY] ?: "")
     val searchQuery: StateFlow<String> = _searchQuery
 
     // Список с учётом поиска: пустой/blank запрос — все записи.
@@ -112,9 +116,13 @@ class FavoritesViewModel @Inject constructor(
     /** Обновить поисковый запрос (поиск над списком избранного). */
     fun onQueryChange(query: String) {
         _searchQuery.value = query
+        savedStateHandle[KEY_SEARCH_QUERY] = query
     }
 
     companion object {
+        /** Ключ поискового запроса в SavedStateHandle. */
+        const val KEY_SEARCH_QUERY = "favorites_search_query"
+
         /**
          * Оставить записи, у которых оригинал ИЛИ перевод содержит [query]
          * без учёта регистра. Пустой/blank запрос — весь список [entries].

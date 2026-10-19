@@ -67,6 +67,8 @@
     <string name="history_add_failed">Failed to save the translation to history</string>
     <string name="history_delete_failed">Failed to delete the entry from history</string>
     <string name="history_clear_failed">Failed to clear history</string>
+    <string name="history_clear_confirm_title">Clear history?</string>
+    <string name="history_clear_confirm_text">All history entries will be permanently deleted.</string>
     <string name="history_observe_failed">Failed to load history</string>
     <string name="models_observe_failed">Failed to load the model list</string>
 

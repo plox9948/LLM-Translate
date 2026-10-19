@@ -36,9 +36,17 @@ object InstallCheckLogic {
                 "Мало места на диске: нужно ${formatSize(requiredBytes)} (с запасом на распаковку)"
             )
         }
-        if (device.totalRamMb > 0 &&
-            card.ramRequiredMb > 0 &&
-            card.ramRequiredMb * 100 > device.totalRamMb * 60
+        // Порог ОЗУ перед скачиванием — 60% от ОБЪЁМА устройства (total):
+        // НЕ унифицировать с 70% из DeviceInfo.isNearRamLimit ([ramWarning]) —
+        // тот порог про суммарные ОЗУ уже АКТИВНЫХ моделей в UI («близко к
+        // лимиту» в рантайме), а этот предупреждает до установки про запас
+        // под саму модель. Дополнительно — 80% от фактически ДОСТУПНОЙ ОЗУ
+        // (availableRam, если известна >0): модель может не запуститься,
+        // даже если от общего объёма места хватает.
+        if (card.ramRequiredMb > 0 &&
+            ((device.totalRamMb > 0 && card.ramRequiredMb * 100 > device.totalRamMb * 60) ||
+                (device.availableRamMb > 0 &&
+                    card.ramRequiredMb * 100 > device.availableRamMb * 80))
         ) {
             warnings.add("Мало ОЗУ: модель требует ~${card.ramRequiredMb} МБ")
         }

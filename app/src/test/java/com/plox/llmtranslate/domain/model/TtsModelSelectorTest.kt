@@ -1,7 +1,9 @@
 package com.plox.llmtranslate.domain.model
 
+import com.plox.llmtranslate.data.catalog.ModelCatalogParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -189,5 +191,29 @@ class TtsModelSelectorTest {
         assertEquals("tts-ru-piper-ruslan", TtsModelSelector.defaultCardId("ru", cards))
         assertEquals("tts-custom-de", TtsModelSelector.defaultCardId("de", cards))
         assertNull(TtsModelSelector.defaultCardId("fr", cards))
+    }
+
+    @Test
+    fun `default language cards exist in shipping assets catalog as piper models`() {
+        // Резервная карта DEFAULT_LANGUAGE_CARDS обязана ссылаться на реальные
+        // Piper-карточки поставляемого каталога assets: иначе фолбэк
+        // TtsPlaybackCoordinator предложит несуществующую модель.
+        val catalogFile = listOf(
+            java.io.File("src/main/assets/models_catalog.json"),
+            java.io.File("app/src/main/assets/models_catalog.json")
+        ).firstOrNull { it.isFile }
+            ?: error("models_catalog.json не найден относительно рабочих каталогов теста")
+
+        val cards = ModelCatalogParser().parse(catalogFile.readText(Charsets.UTF_8))
+        val piperIds = cards
+            .filter { it.category == ModelCategory.TTS && it.runtime == RuntimeType.PIPER_ONNX }
+            .map { it.id }
+            .toSet()
+        for ((language, id) in TtsModelSelector.DEFAULT_LANGUAGE_CARDS) {
+            assertTrue(
+                "Карточка $id (default для «$language») отсутствует среди Piper-карточек каталога",
+                piperIds.contains(id)
+            )
+        }
     }
 }

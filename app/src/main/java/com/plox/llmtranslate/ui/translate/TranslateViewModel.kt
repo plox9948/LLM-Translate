@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.ui.translate
 
 import android.content.Context
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.R
@@ -153,10 +154,42 @@ class TranslateViewModel @Inject constructor(
     private val favoritesRepository: FavoritesRepository,
     // Контекст — человекочитаемые тексты ошибок из ресурсов (issue #57).
     @dagger.hilt.android.qualifiers.ApplicationContext
-    private val appContext: Context
+    private val appContext: Context,
+    // Тексты ввода/результата переживают гибель процесса (восстановление
+    // экрана «Перевод»; направление — как и раньше, из настроек issue #33).
+    private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(TranslateUiState())
+    companion object {
+        /** Ключ восстанавливаемого текста ввода в SavedStateHandle. */
+        internal const val KEY_INPUT_TEXT = "translate_input_text"
+
+        /** Ключ восстанавливаемого текста результата в SavedStateHandle. */
+        internal const val KEY_RESULT_TEXT = "translate_result_text"
+
+        /**
+         * Потолок сохраняемого текста: бюджет SavedStateHandle/safeBundle на
+         * Binder-транзакцию мал (~50 КБ лимит SAF-документов), рабочие переводы
+         * заведомо короче — обрезка только защита от аномально длинного ввода.
+         */
+        internal const val MAX_RESTORED_TEXT_CHARS = 10_000
+    }
+
+    private val _uiState = MutableStateFlow(
+        TranslateUiState(
+            inputText = savedStateHandle[KEY_INPUT_TEXT] ?: "",
+            resultText = savedStateHandle[KEY_RESULT_TEXT] ?: "",
+            // Восстановленный результат привязывается к направлению по
+            // умолчанию (ru→en): сохранённое из настроек направление при
+            // несовпадении его скроет (семантика issue #59).
+            resultSourceLang = TranslateLanguage.RU,
+            resultTargetLang = TranslateLanguage.EN,
+            // Снимок ввода для пары избранного: восстановленный ввод и есть
+            // снимок на момент перевода (latest-пись); при правке поля после
+            // перевода звезда просто не подсветится — ключ не совпадёт.
+            resultInputText = savedStateHandle[KEY_INPUT_TEXT] ?: ""
+        )
+    )
     val uiState: StateFlow<TranslateUiState> = _uiState
 
     // Установленные модели перевода для автовыбора по направлению.
@@ -465,7 +498,20 @@ class TranslateViewModel @Inject constructor(
 
     fun onInputTextChanged(text: String) {
         update { it.copy(inputText = text, error = null) }
+        persistRestorableTexts()
         refreshResultFavorite()
+    }
+
+    /**
+     * Сохранить актуальные тексты ввода и результата в SavedStateHandle
+     * (latest без debounce — значения небольшие) для восстановления после
+     * гибели процесса; сверх [MAX_RESTORED_TEXT_CHARS] обрезается, полный
+     * текст перевода и так остаётся в истории.
+     */
+    private fun persistRestorableTexts() {
+        val state = _uiState.value
+        savedStateHandle[KEY_INPUT_TEXT] = state.inputText.take(MAX_RESTORED_TEXT_CHARS)
+        savedStateHandle[KEY_RESULT_TEXT] = state.resultText.take(MAX_RESTORED_TEXT_CHARS)
     }
 
     // Job текущей длительной операции (перевод ИЛИ распознавание) —
@@ -608,6 +654,7 @@ class TranslateViewModel @Inject constructor(
                             resultInputText = state.inputText
                         )
                     }
+                    persistRestorableTexts()
                     refreshResultFavorite()
                     // Сбой сохранения в историю (Room) не должен терять уже
                     // успешный перевод и ронять приложение: ошибка только
@@ -842,6 +889,9 @@ class TranslateViewModel @Inject constructor(
      */
     fun clearInput() {
         update { it.copy(inputText = "", resultText = "", error = null) }
+        // Пустые поля тоже должны пережить гибель процесса — иначе после
+        // «Очистить» и рестарта старые тексты воскреснут из SavedStateHandle.
+        persistRestorableTexts()
         refreshResultFavorite()
     }
 
@@ -874,6 +924,7 @@ class TranslateViewModel @Inject constructor(
                 error = null
             )
         }
+        persistRestorableTexts()
         refreshResultFavorite()
     }
 

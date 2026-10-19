@@ -89,6 +89,32 @@ class InstallCheckLogicTest {
     }
 
     @Test
+    fun `warning when model exceeds available ram though total is enough`() {
+        // Порог 80% от фактически доступной ОЗУ: от общего объёма место есть,
+        // но свободной памяти под модель не хватает.
+        val device = goodDevice.copy(totalRamMb = 65536, availableRamMb = 1500)
+        val result = InstallCheckLogic.evaluate(card(ramRequiredMb = 1300), device)
+        assertTrue(result is InstallCheck.Warning)
+        assertTrue((result as InstallCheck.Warning).message.contains("ОЗУ"))
+    }
+
+    @Test
+    fun `available ram threshold skipped when unavailable value is zero`() {
+        // availableRam == 0 (неизвестна) — порог по доступной ОЗУ не применяется;
+        // от общего объёма 8192 МБ модель 4000 МБ укладывается (ниже 60%).
+        val device = goodDevice.copy(availableRamMb = 0)
+        val result = InstallCheckLogic.evaluate(card(ramRequiredMb = 4000), device)
+        assertEquals(InstallCheck.Ready, result)
+    }
+
+    @Test
+    fun `no ram warning when model fits both total and available thresholds`() {
+        // 3000 МБ: ниже 60% от 8192 общего и ниже 80% от 6000 доступной.
+        val result = InstallCheckLogic.evaluate(card(ramRequiredMb = 3000), goodDevice)
+        assertEquals(InstallCheck.Ready, result)
+    }
+
+    @Test
     fun `ram warning when combined models near limit`() {
         val warning = InstallCheckLogic.ramWarning(
             llmMb = 4000,
