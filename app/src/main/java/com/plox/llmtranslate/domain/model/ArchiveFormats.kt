@@ -18,4 +18,15 @@ object ArchiveFormats {
         val lower = fileName.lowercase()
         return ARCHIVE_SUFFIXES.any { lower.endsWith(it) }
     }
+
+    /**
+     * Сжатый gzip-артефакт URL (slimt-пачки `*.bin.gz`/`*.spm.gz` с CDN):
+     * инсталлятор gunzip-ит их при установке, в каталоге модели лежат
+     * РАСПАКОВАННЫЕ имена, а SHA-256 в каталоге/метаданных относится к
+     * сжатым байтам. Сверять хеш распакованного файла с хешем артефакта
+     * нельзя — round-trip собственного slimt-экспорта отклонялся бы
+     * формальным несовпадением (контрольный аудит, п.1).
+     */
+    fun isCompressedArtifact(fileName: String): Boolean =
+        fileName.lowercase().endsWith(".gz")
 }

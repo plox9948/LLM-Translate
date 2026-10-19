@@ -5,6 +5,8 @@ import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.decodeDelimitedList
+import com.plox.llmtranslate.domain.model.encodeDelimitedList
 import com.plox.llmtranslate.domain.model.joinDelimitedList
 import com.plox.llmtranslate.domain.model.sha256sFromCsv
 import com.plox.llmtranslate.domain.model.sha256sToCsv
@@ -223,10 +225,11 @@ internal fun ModelEntity.toDomainOrNull(): InstalledModel? {
         )
         return null
     }
-    // Разделитель списков — «\n», legacy-строки с ',' разбираются fallback'ом
-    // (см. splitDelimitedList).
+    // Список languages — legacy-разделители ('\n' / ','): языковые коды
+    // заведомо без разделителей. urls — однозначно с префиксом «v1:»
+    // (decodeDelimitedList), без префикса — legacy-строки (см. helpers).
     val languagesValue = splitDelimitedList(languages).filter { it.isNotBlank() }
-    val urlsValue = splitDelimitedList(urls).filter { it.isNotBlank() }
+    val urlsValue = decodeDelimitedList(urls).filter { it.isNotBlank() }
     return InstalledModel(
         id = id,
         category = categoryValue,
@@ -291,10 +294,11 @@ private fun InstalledModel.toEntity(createdAt: Long, updatedAt: Long): ModelEnti
         languages = joinDelimitedList(languages),
         quality = quality,
         speed = speed,
-        // url — основная ссылка (первая), urls — все зеркала/файлы; списки
-        // склеиваются разделителем '\n' (см. joinDelimitedList).
+        // url — основная ссылка (первая), urls — все зеркала/файлы; список
+        // urls пишется однозначно с префиксом «v1:» (encodeDelimitedList),
+        // languages — plain-склейка «\n» (коды без разделителей).
         url = url,
-        urls = joinDelimitedList(urls),
+        urls = encodeDelimitedList(urls),
         sha256 = sha256,
         sha256s = sha256sToCsv(sha256s),
         license = license,

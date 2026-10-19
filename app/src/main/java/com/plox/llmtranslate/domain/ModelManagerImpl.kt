@@ -12,6 +12,7 @@ import com.plox.llmtranslate.data.download.ModelDownloadWorker
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.data.storage.ModelStorage
+import com.plox.llmtranslate.domain.model.ArchiveFormats
 import com.plox.llmtranslate.domain.model.DeviceInfo
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import com.plox.llmtranslate.domain.model.InstallCheck
@@ -29,6 +30,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
@@ -68,6 +70,12 @@ class ModelManagerImpl @Inject constructor(
 
         /** Таймаут ожидания WorkManager-фьючерса при проверке живой загрузки. */
         const val WORK_INFO_TIMEOUT_SECONDS = 5L
+
+        /** Интервал опроса статуса воркера после отмены перед файловыми операциями. */
+        const val CANCEL_POLL_INTERVAL_MS = 250L
+
+        /** Предельное время ожидания терминального статуса отменённого воркера. */
+        const val CANCEL_TERMINAL_TIMEOUT_MS = 10_000L
 
         /** Имя записи с метаданными в ZIP-экспорте мультифайловой модели. */
         const val META_ENTRY_NAME = "model_meta.json"
@@ -344,10 +352,17 @@ class ModelManagerImpl @Inject constructor(
      * [.part/.part.meta]: целевые файлы и каталог модели не трогаем, при
      * ZIP-импорте в них уже лежит промоутенный пучок. Логика раскладки общая
      * с очисткой отменённой загрузки воркера ([DownloadLayout]).
+     *
+     * После [ModelDownloadWorker.cancel] до файловых операций ждём
+     * терминального статуса воркера ([awaitWorkCancellation]): отменённый,
+     * но ещё не прерванный воркер дописывал `.part`/переименовывал цели
+     * уже после очистки частей импортом (границы `ensureActive` в
+     * gunzip/tar — coarse, блоки по 64 КиБ).
      */
     private suspend fun cancelSupersededDownload(modelId: String, previous: InstalledModel?) {
         if (!hasLiveDownloadWork(modelId)) return
         ModelDownloadWorker.cancel(context, modelId)
+        awaitWorkCancellation(modelId)
         val superseded = previous?.takeIf { it.status != ModelStatus.READY } ?: return
         DownloadLayout.deletePendingParts(
             runtimeDir = File(modelsDir, superseded.runtime.name),
@@ -355,6 +370,47 @@ class ModelManagerImpl @Inject constructor(
             modelId = modelId,
             urls = superseded.downloadUrls()
         )
+    }
+
+    /**
+     * Дождаться терминального статуса (SUCCEEDED/FAILED/CANCELED либо
+     * исчезновения unique-работы) после [ModelDownloadWorker.cancel]. Опрос
+     * каждые [CANCEL_POLL_INTERVAL_MS] с общим пределом
+     * [CANCEL_TERMINAL_TIMEOUT_MS] на [Dispatchers.IO]. Превышение предела —
+     * только [Timber.w]: импорт продолжается, остаточная гонка «воркер ещё
+     * не прерван» ограничена грубыми границами отмены в распаковщиках и
+     * закрывается самовосстановлением сверки READY-записей с диском
+     * (checkReadyRecordsAgainstDisk при старте приложения).
+     */
+    private suspend fun awaitWorkCancellation(modelId: String) = withContext(Dispatchers.IO) {
+        val workName = ModelDownloadWorker.workName(modelId)
+        val deadline = System.currentTimeMillis() + CANCEL_TERMINAL_TIMEOUT_MS
+        while (true) {
+            val live = try {
+                WorkManager.getInstance(context)
+                    .getWorkInfosForUniqueWork(workName)
+                    .get(WORK_INFO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    .any { info ->
+                        info.state == WorkInfo.State.ENQUEUED ||
+                            info.state == WorkInfo.State.RUNNING ||
+                            info.state == WorkInfo.State.BLOCKED
+                    }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "Статус отменённой загрузки $modelId недоступен — считаю воркер завершённым")
+                false
+            }
+            if (!live) return@withContext
+            if (System.currentTimeMillis() >= deadline) {
+                Timber.w(
+                    "Воркер загрузки $modelId не достиг терминального статуса " +
+                        "через $CANCEL_TERMINAL_TIMEOUT_MS мс после отмены"
+                )
+                return@withContext
+            }
+            delay(CANCEL_POLL_INTERVAL_MS)
+        }
     }
 
     override suspend fun importFromUri(uri: Uri): String? =
@@ -836,7 +892,10 @@ class ModelManagerImpl @Inject constructor(
      * [DownloadLayout] (новая схема `modelId__basename`, санитизированный
      * basename и legacy-сырой basename — установка, из которой сделан экспорт,
      * могла быть названа по любой из схем); архивные URL пропускаются (их хэш
-     * относится к архиву, а не к распакованному содержимому). Несовпадение или
+     * относится к архиву, а не к распакованному содержимому), как и сжатые
+     * артефакты `.gz` (slimt-пачки: инсталлятор gunzip-ит, в пучке
+     * распакованные имена, ожидаемый хеш — сжатых байт, см.
+     * [ArchiveFormats.isCompressedArtifact]). Несовпадение или
      * отсутствующий файл — [ImportRejectedException] до промоута: прежний
      * пучок нетронут, temp чистится в finally [importZip].
      */
@@ -851,6 +910,12 @@ class ModelManagerImpl @Inject constructor(
             val sha = expected.getOrNull(index)?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
             val fileName = DownloadLayout.sanitizedBasename(url, index)
             if (DownloadLayout.isArchive(fileName)) return@forEachIndexed
+            // Сжатые артефакты (slimt `*.bin.gz`/`*.spm.gz`): инсталлятор
+            // gunzip-ит их при установке, в пучке лежат распакованные имена,
+            // а ожидаемый sha из meta/каталога — хеш сжатых байт. Сверка была
+            // бы формально недостижима — round-trip собственного slimt-экспорта
+            // отваливался (контрольный аудит, п.1).
+            if (ArchiveFormats.isCompressedArtifact(fileName)) return@forEachIndexed
             // Те же кандидаты имён, что у раскладки загрузок (п.15): новая
             // схема с префиксом id, санитизированный basename и legacy-сырое
             // имя URL вместе с query.

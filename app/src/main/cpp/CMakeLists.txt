@@ -2,9 +2,12 @@ cmake_minimum_required(VERSION 3.22.1)
 project(llmslimt_jni CXX C)
 
 # Численное ядро slimt в отладочной сборке APK неприемлемо медленно,
-# поэтому тип сборки по умолчанию — Release. Без FORCE внешний
-# -DCMAKE_BUILD_TYPE=Debug (например при отладке JNI через lldb) имеет
-# приоритет командной строки и не перезатирается этим значением.
+# поэтому тип сборки по умолчанию — Release. Gradle передаёт
+# -DCMAKE_BUILD_TYPE=Release явно для обоих вариантов APK (debug
+# раньше приносил Debug/-O0); это значение — fallback для standalone-
+# конфигураций CMake. Без FORCE явный -DCMAKE_BUILD_TYPE из командной
+# строки (например RelWithDebInfo при отладке JNI через lldb) сохраняет
+# приоритет и не перезатирается этим значением.
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Тип сборки C++ (по умолчанию Release)")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

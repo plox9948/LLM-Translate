@@ -87,6 +87,19 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                                 "Небезопасный путь в архиве: $fileName",
                                 permanent = true
                             )
+                        } catch (e: Exception) {
+                            // ENOSPC при распаковке (rethrow из extractTar/extractZip):
+                            // повтор без освобождения места бессилен — permanent
+                            // (контрольный аудит, п.5: без 5 перекачек),
+                            // осколки распаковки extract* уже убраны.
+                            Timber.e(e, "Место на диске закончилось при распаковке: $fileName")
+                            if (!archiveFile.delete()) {
+                                Timber.w("Не удалось удалить архив после ENOSPC: ${archiveFile.name}")
+                            }
+                            return InstallResult.Failure(
+                                "Недостаточно места на диске при распаковке: $fileName",
+                                permanent = true
+                            )
                         }
                         archiveFile.delete()
                         if (!extracted) {
@@ -206,6 +219,9 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             // Обычный сбой распаковки без очистки оставил бы полу-распакованные
             // файлы, которые смешиваются со следующим распакованным деревом.
             discardPartial(createdFiles)
+            // ENOSPC — различимый фатальный сбой: всплываем выше, install()
+            // переведёт в permanent-отказ (контрольный аудит, п.5).
+            if (isOutOfSpaceError(e)) throw e
             false
         }
     }
@@ -239,6 +255,9 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             // Обычный сбой распаковки без очистки оставил бы полу-распакованные
             // файлы, которые смешиваются со следующим распакованным деревом.
             discardPartial(createdFiles)
+            // ENOSPC — различимый фатальный сбой: всплываем выше, install()
+            // переведёт в permanent-отказ (контрольный аудит, п.5).
+            if (isOutOfSpaceError(e)) throw e
             false
         }
     }

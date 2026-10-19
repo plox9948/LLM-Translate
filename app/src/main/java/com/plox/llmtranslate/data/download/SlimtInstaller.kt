@@ -81,6 +81,15 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
             } catch (e: Exception) {
                 Timber.e(e, "Не удалось распаковать $archiveName")
                 discardPartial(created + downloaded)
+                // ENOSPC при gunzip-распаковке: повтор без освобождения места
+                // бессилен — permanent-отказ (контрольный аудит, п.5),
+                // без циклов перекачки.
+                if (isOutOfSpaceError(e)) {
+                    return InstallResult.Failure(
+                        "Недостаточно места на диске при распаковке: $archiveName",
+                        permanent = true
+                    )
+                }
                 return InstallResult.Failure("Не удалось распаковать $archiveName")
             }
         }

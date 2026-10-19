@@ -1,4 +1,4 @@
-package com.plox.llmtranslate.domain
+﻿package com.plox.llmtranslate.domain
 
 import android.content.Context
 import android.net.Uri
@@ -651,19 +651,28 @@ class ModelManagerTest {
     /** Метаданные ZIP-экспорта: id каталога "zip-model", файл model.bin по URL. */
     private fun metaJson(
         sha256s: List<String?>? = null,
-        isBuiltin: Boolean = true
+        isBuiltin: Boolean = true,
+        urls: List<String> = listOf("http://host/model.bin"),
+        runtime: String = "SHERPA",
+        category: String = "STT"
     ): String {
         val shaField = sha256s?.joinToString(",") { s -> s?.let { "\"$it\"" } ?: "null" }
             ?.let { ",\"sha256s\":[$it]" }
             .orEmpty()
-        return """{"id":"zip-model","category":"STT","runtime":"SHERPA",""" +
-            """"displayName":"Zip model","urls":["http://host/model.bin"]""" +
+        val urlsField = urls.joinToString(",") { url -> "\"$url\"" }
+        return """{"id":"zip-model","category":"$category","runtime":"$runtime",""" +
+            """"displayName":"Zip model","urls":[$urlsField]""" +
             """$shaField,"isBuiltin":$isBuiltin}"""
     }
 
     private fun sha256HexOf(bytes: ByteArray): String =
         java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
             .joinToString("") { "%02x".format(it) }
+
+    private fun gzip(bytes: ByteArray): ByteArray =
+        java.io.ByteArrayOutputStream().apply {
+            java.util.zip.GZIPOutputStream(this).use { it.write(bytes) }
+        }.toByteArray()
 
     @Test
     fun `zip import with meta registers model as not builtin`() = runTest {
@@ -770,6 +779,49 @@ class ModelManagerTest {
     }
 
     @Test
+    fun `zip import with meta accepts slimt gz urls round-trip`() = runTest {
+        // Контрольный аудит, п.1: slimt-пачка скачивается сжатыми артефактами
+        // (*.bin.gz/*.spm.gz), в пучке и в ZIP-экспорте — РАСПАКОВАННЫЕ имена,
+        // ожидаемые sha в meta — хеши сжатых байт. Сверка распакованных файлов
+        // с ими/хешами сжатых URL формально недостижима — проверка для таких
+        // URL пропускается, round-trip собственного slimt-экспорта принимается.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        coEvery { repository.getById("zip-model") } returns null
+        val bin = byteArrayOf(1, 2, 3)
+        val spm = byteArrayOf(4, 5)
+        val zip = zipOf(
+            linkedMapOf(
+                "model_meta.json" to metaJson(
+                    sha256s = listOf(sha256HexOf(gzip(bin)), sha256HexOf(gzip(spm))),
+                    urls = listOf(
+                        "http://host/en-ru.model.bin.gz",
+                        "http://host/en-ru.model.spm.gz"
+                    ),
+                    runtime = "MARIAN_SLIMT",
+                    category = "TRANSLATION"
+                ).toByteArray(),
+                "en-ru.model.bin" to bin,
+                "en-ru.model.spm" to spm
+            )
+        )
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(zip),
+            ByteArrayInputStream(zip)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "exported.zip"
+
+        assertEquals("zip-model", manager.importFromUri(uri))
+
+        val bundled = File(File(modelsDir, "MARIAN_SLIMT"), "zip-model")
+        assertArrayEquals(bin, File(bundled, "en-ru.model.bin").readBytes())
+        assertArrayEquals(spm, File(bundled, "en-ru.model.spm").readBytes())
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
     fun `zip import rejects oversized meta entry`() = runTest {
         // model_meta.json больше лимита 1 МиБ — явная ошибка импорта,
         // а не бесконечное readBytes() в память.
@@ -806,14 +858,20 @@ class ModelManagerTest {
         File(runtimeDir, "other_model__x.onnx.part").writeText("untouched")
         val previous = partialModel("live1", listOf("http://host/opus.onnx"))
         coEvery { repository.getById("live1") } returns previous
-        // Живая unique-загрузка live1 в WorkManager (ENQUEUED).
+        // Живая unique-загрузка live1 в WorkManager: первая проверка — ENQUEUED,
+        // после cancelUniqueWork — терминальный CANCELED (awaitWorkCancellation
+        // не должен ждать реальных таймаутов WorkManager в юнит-тесте).
         val liveInfo = mockk<WorkInfo>()
         every { liveInfo.state } returns WorkInfo.State.ENQUEUED
-        val future = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
-        every { future.get(any(), any()) } returns listOf(liveInfo)
+        val cancelledInfo = mockk<WorkInfo>()
+        every { cancelledInfo.state } returns WorkInfo.State.CANCELLED
+        val liveFuture = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
+        every { liveFuture.get(any(), any()) } returns listOf(liveInfo)
+        val cancelledFuture = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
+        every { cancelledFuture.get(any(), any()) } returns listOf(cancelledInfo)
         every {
             workManager.getWorkInfosForUniqueWork("download_model_live1")
-        } returns future
+        } returnsMany listOf(liveFuture, cancelledFuture)
         val newContent = byteArrayOf(4)
         every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
             ByteArrayInputStream(newContent),
@@ -842,13 +900,19 @@ class ModelManagerTest {
         every { context.getExternalFilesDir("models") } returns modelsDir
         every { context.cacheDir } returns tempModelsDir()
         coEvery { repository.getById("zip-model") } returns null
+        // Первая проверка живой загрузки — ENQUEUED; после cancelUniqueWork
+        // опрос статуса возвращает терминальный CANCELED (без реальных задержек).
         val liveInfo = mockk<WorkInfo>()
         every { liveInfo.state } returns WorkInfo.State.ENQUEUED
-        val future = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
-        every { future.get(any(), any()) } returns listOf(liveInfo)
+        val cancelledInfo = mockk<WorkInfo>()
+        every { cancelledInfo.state } returns WorkInfo.State.CANCELLED
+        val liveFuture = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
+        every { liveFuture.get(any(), any()) } returns listOf(liveInfo)
+        val cancelledFuture = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
+        every { cancelledFuture.get(any(), any()) } returns listOf(cancelledInfo)
         every {
             workManager.getWorkInfosForUniqueWork("download_model_zip-model")
-        } returns future
+        } returnsMany listOf(liveFuture, cancelledFuture)
 
         var step = 0
         var cancelledAt = -1

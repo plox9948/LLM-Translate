@@ -18,10 +18,10 @@ import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
-import com.plox.llmtranslate.domain.model.joinDelimitedList
+import com.plox.llmtranslate.domain.model.decodeDelimitedList
+import com.plox.llmtranslate.domain.model.encodeDelimitedList
 import com.plox.llmtranslate.domain.model.sha256sFromCsv
 import com.plox.llmtranslate.domain.model.sha256sToCsv
-import com.plox.llmtranslate.domain.model.splitDelimitedList
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
@@ -68,9 +68,10 @@ class ModelDownloadWorker @AssistedInject constructor(
 
         val modelsRoot = ModelStorage.modelsRoot(applicationContext)
         val modelsDir = File(modelsRoot, runtime.name)
-        // Единый разделитель списков — «\n» (LIST_DELIMITER), legacy-«,» в
-        // inputData ещё не переварившихся постановок разбирается с фолбэком.
-        val urls = splitDelimitedList(urlsCsv).filter { it.isNotBlank() }
+        // Список URL — с версионным префиксом «v1:» (encodeDelimitedList);
+        // legacy-постановки без префикса («\n» или «,») разбирает фолбэк
+        // decodeDelimitedList.
+        val urls = decodeDelimitedList(urlsCsv).filter { it.isNotBlank() }
 
         // Ревью, п.3: гейт места до начала скачивания — пик установки по той
         // же формуле, что и подсказка в UI (InstallCheckLogic): архивная
@@ -188,9 +189,19 @@ class ModelDownloadWorker @AssistedInject constructor(
      * навсегда без этой страховки.
      *
      * Если запись в БД уже READY (скачивание успело завершиться параллельно
-     * с отменой и не была удалена) — файлы не трогаем. Обычная докачка
-     * (сетевые повторы `Result.retry()`) этот метод не вызывает —
-     * `.part`-файлы для докачки сохраняются.
+     * с отменой, либо под этой id промоутен импорт) — файлы не трогаем.
+     * Обычная докачка (сетевые повторы `Result.retry()`) этот метод не
+     * вызывает — `.part`-файлы для докачки сохраняются.
+     *
+     * Остаточная гонка (контрольный аудит, п.3 — честно): READY-гейт закрывает
+     * только случай «запись уже READY». Если импорт отменил загрузку и уже
+     * промоутнул пучок, а запись ещё не upsert'нута READY, воркер может
+     * прерваться на границе следующей распаковки/переименования (грубые
+     * границы ensureActive в gunzip/tar — блоки по 64 КиБ) и снести часть
+     * файлов уже после deletePendingParts импорта. Окно конечено и
+     * самовосстанавливается: битая READY-запись выявляется сверкой
+     * checkReadyRecordsAgainstDisk при старте приложения (READY→ERROR,
+     * переустановка кнопкой в UI).
      *
      * Тело выполняется на [NonCancellable]: вызывается из перехваченного
      * [CancellationException], где обычная suspend-операция сразу упала бы
@@ -235,9 +246,10 @@ class ModelDownloadWorker @AssistedInject constructor(
                 .setInputData(
                     workDataOf(
                         KEY_MODEL_ID to model.id,
-                        // Разделитель «\n» (LIST_DELIMITER): URL допустимо
-                        // содержать запятые в query — ',' разъедал такие URL.
-                        KEY_URLS to joinDelimitedList(model.downloadUrls()),
+                        // URL-список — с версионным префиксом «v1:»
+                        // (encodeDelimitedList): URL может содержать запятые
+                        // в query — «,» разъедал такие URL (аудит п.4).
+                        KEY_URLS to encodeDelimitedList(model.downloadUrls()),
                         KEY_SHA256 to (model.sha256 ?: ""),
                         KEY_SHA256S to sha256sToCsv(model.sha256s),
                         KEY_RUNTIME to model.runtime.name,

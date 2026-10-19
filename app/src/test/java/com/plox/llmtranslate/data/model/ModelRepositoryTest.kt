@@ -152,6 +152,41 @@ class ModelRepositoryTest {
     }
 
     @Test
+    fun `single URL with comma survives round-trip via entity encoding`() = runTest {
+        // Контрольный аудит, п.4: колонка inputData URL пишется с версионным
+        // префиксом «v1:» — одноэлементный URL с запятой в query больше не
+        // разъедается legacy-фолбэком на ','.
+        val model = requireNotNull(entity().toDomainOrNull())
+        val urlWithComma = "https://host/a.onnx?mirror=1,2"
+        val dao = FakeDao()
+        val repo = ModelRepository(dao)
+        repo.upsert(model.copy(urls = listOf(urlWithComma)))
+
+        assertEquals("v1:$urlWithComma", dao.store.getValue("m1").urls)
+        assertEquals(listOf(urlWithComma), repo.getById("m1")?.urls)
+    }
+
+    @Test
+    fun `v1 prefixed urls column decodes exactly`() {
+        // Чтение «v1:» — split только по «\n», запятые внутри элементов целы;
+        // пустое тело после префикса — пустой список.
+        val model = requireNotNull(
+            entity(urls = "v1:https://a.invalid/x?b=1,2\nhttps://b.invalid/y").toDomainOrNull()
+        )
+        assertEquals(
+            listOf("https://a.invalid/x?b=1,2", "https://b.invalid/y"),
+            model.urls
+        )
+        assertEquals(emptyList<String>(), entity(urls = "v1:").toDomainOrNull()?.urls)
+        assertEquals(
+            listOf("https://a.invalid/x", "https://b.invalid/y"),
+            requireNotNull(
+                entity(urls = "https://a.invalid/x,https://b.invalid/y").toDomainOrNull()
+            ).urls
+        )
+    }
+
+    @Test
     fun `sha256s csv keeps positional nulls and roundtrips via upsert`() = runTest {
         // Позиционные пустые элементы — «хеш неизвестен», не склеиваются.
         val model = entity(sha256s = "aa,,cc").toDomainOrNull()
@@ -163,8 +198,8 @@ class ModelRepositoryTest {
         repo.upsert(model.copy(sha256s = listOf("dd", "ee")))
         val restored = repo.getById("m1")
         assertEquals(listOf("dd", "ee"), restored?.sha256s)
-        // Разделитель колонки — «\n» (URL/хэши не содержат переносов).
-        assertEquals("dd\nee", dao.store.getValue("m1").sha256s)
+        // Колонка хэшей — с версионным префиксом «v1:» и разделителем «\n».
+        assertEquals("v1:dd\nee", dao.store.getValue("m1").sha256s)
 
         // Пустая колонка — пустой список (старые строки после миграции).
         assertEquals(emptyList<String?>(), entity(sha256s = "").toDomainOrNull()?.sha256s)

@@ -156,32 +156,70 @@ private val NON_COMMERCIAL_PHRASE = Regex("NON[-_ ]?COMMERCIAL")
 internal const val LIST_DELIMITER = '\n'
 
 /**
- * Разбор колонки-списка: новый разделитель «\n»; если его нет — legacy-форма
- * с ',' (старые строки БД до смены разделителя; URL без запятых декодируются
- * в один элемент корректно).
+ * Версионный префикс однозначного кодирования списков (контрольный аудит,
+ * п.4): запись всегда с префиксом «v1:», одноэлементный URL с запятой больше
+ * не калечится legacy-фолбэком на ',' при чтении.
+ */
+internal const val LIST_FORMAT_PREFIX = "v1:"
+
+/**
+ * Разбор колонки-списка БЕЗ префикса: новый разделитель «\n»; если его нет —
+ * legacy-форма с ',' (старые строки БД до смены разделителя; URL без запятых
+ * декодируются в один элемент корректно).
  */
 internal fun splitDelimitedList(raw: String): List<String> =
     if (raw.contains(LIST_DELIMITER)) raw.split(LIST_DELIMITER) else raw.split(',')
 
-/** Кодирование списка строк (urls/languages) в колонку БД. */
+/** Кодирование списка строк (languages) в колонку БД. */
 internal fun joinDelimitedList(items: List<String>): String =
     items.joinToString(LIST_DELIMITER.toString())
 
 /**
- * Кодирование списка по-URL SHA-256 в колонку БД: пустой элемент —
- * хеш неизвестен, пустая строка — пустой список. Разделитель — «\n»
- * (единый со списком urls; хеши заведомо не содержат переносов).
+ * Кодирование списка значений, способных содержать разделители (URL) —
+ * всегда с версионным префиксом «v1:» (пустой список — пустое тело после
+ * префикса).
+ */
+internal fun encodeDelimitedList(items: List<String>): String =
+    LIST_FORMAT_PREFIX + items.joinToString(LIST_DELIMITER.toString())
+
+/**
+ * Обратное к [encodeDelimitedList] чтение: с префиксом «v1:» — split по «\n»
+ * (пустое тело — пустой список); без префикса — legacy-разбор
+ * [splitDelimitedList] (строки эпох «\n» без префикса и «,»).
+ */
+internal fun decodeDelimitedList(raw: String): List<String> {
+    if (raw.startsWith(LIST_FORMAT_PREFIX)) {
+        val body = raw.removePrefix(LIST_FORMAT_PREFIX)
+        return if (body.isEmpty()) emptyList() else body.split(LIST_DELIMITER)
+    }
+    return splitDelimitedList(raw)
+}
+
+/**
+ * Кодирование списка по-URL SHA-256 в колонку БД / inputData воркера:
+ * пустой элемент — хеш неизвестен; пустой список — пустая строка
+ * (совпадает с DEFAULT '' колонок). С префиксом «v1:» (единообразно с
+ * [encodeDelimitedList]; хеши заведомо не содержат переносов).
  */
 internal fun sha256sToCsv(sha256s: List<String?>): String =
-    sha256s.joinToString(LIST_DELIMITER.toString()) { it?.takeIf { value -> value.isNotBlank() }.orEmpty() }
+    if (sha256s.isEmpty()) ""
+    else LIST_FORMAT_PREFIX + sha256s.joinToString(LIST_DELIMITER.toString()) {
+        it?.takeIf { value -> value.isNotBlank() }.orEmpty()
+    }
 
 /**
  * Обратное к [sha256sToCsv] декодирование (пустая строка — пустой список);
- * без «\n» в значениях — fallback на legacy-разделитель ',' (старые строки БД).
+ * «v1:» — split по «\n»; без префикса — legacy-разделители «\n»/«,»
+ * (старые строки БД и ещё не переварившиеся постановки воркера).
  */
 internal fun sha256sFromCsv(raw: String): List<String?> {
     if (raw.isEmpty()) return emptyList()
-    val parts = if (raw.contains(LIST_DELIMITER)) raw.split(LIST_DELIMITER) else raw.split(',')
+    val parts = when {
+        raw.startsWith(LIST_FORMAT_PREFIX) ->
+            raw.removePrefix(LIST_FORMAT_PREFIX).split(LIST_DELIMITER)
+        raw.contains(LIST_DELIMITER) -> raw.split(LIST_DELIMITER)
+        else -> raw.split(',')
+    }
     return parts.map { it.takeIf { value -> value.isNotBlank() } }
 }
 

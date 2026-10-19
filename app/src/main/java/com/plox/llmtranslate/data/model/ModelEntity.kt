@@ -22,9 +22,9 @@ data class ModelEntity(
     // url — основная (первая) ссылка загрузки: используется точечно (показ,
     // «последняя» ссылка legacy-записей); urls — полный список зеркал/файлов.
     @ColumnInfo(name = "url") val url: String,
-    // Полный список зеркал/файлов загрузки; в текстовой колонке хранится
-    // списком с разделителем '\n' (legacy-строки через ',' разбираются
-    // fallback'ом splitDelimitedList).
+    // Полный список зеркал/файлов загрузки; в текстовой колонке хранится с
+    // версионным префиксом «v1:» и разделителем '\n' (encodeDelimitedList);
+    // legacy-строки без префикса («\n» или «,») разбирает decodeDelimitedList.
     // defaultValue совпадает с DEFAULT '' в MIGRATION_1_2, иначе identity hash
     // схемы не сойдётся при апгрейде с версии 1.
     @ColumnInfo(name = "urls", defaultValue = "")

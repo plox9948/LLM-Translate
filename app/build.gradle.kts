@@ -68,7 +68,14 @@ android {
             cmake {
                 // c++_static: самодостаточный libslimt_jni.so без libc++_shared.so
                 // (конфликта с AAR-библиотеками нет).
-                arguments += listOf("-DANDROID_STL=c++_static")
+                // CMAKE_BUILD_TYPE=Release — и для debug-варианта APK: AGP передаёт
+                // -DCMAKE_BUILD_TYPE=Debug при debug-сборке, и без явного
+                // аргумента численное ядро slimt возвращалось в -O0 (отладочная
+                // скорость перевода неприемлема). Аргумент командной строки CMake
+                // имеет приоритет над значением по умолчанию в CMakeLists.
+                // Для отладки нативного кода можно временно переопределить на
+                // RelWithDebInfo (например в buildTypes.debug.externalNativeBuild.cmake).
+                arguments += listOf("-DANDROID_STL=c++_static", "-DCMAKE_BUILD_TYPE=Release")
                 cppFlags += "-std=c++20"
             }
         }
