@@ -73,16 +73,18 @@ class ModelBackupManagerRoundTripTest {
         every { contentResolver.openOutputStream(any()) } answers { FileOutputStream(zipFile) }
         every { contentResolver.openInputStream(any()) } answers { FileInputStream(zipFile) }
 
-        every { preferences.ttsEngine } returns flowOf("system")
-        every { preferences.uiLanguage } returns flowOf("system")
-        every { preferences.theme } returns flowOf("system")
+        // buildSettings читает СЫРЫЕ потоки (сбой = ошибка экспорта), не
+        // recover-обёрнутые значения.
+        every { preferences.rawTtsEngine } returns flowOf("system")
+        every { preferences.rawUiLanguage } returns flowOf("system")
+        every { preferences.rawTheme } returns flowOf("system")
         // Настройки, добавленные в бэкап по ревью #53 — потоки для buildSettings.
-        every { preferences.sttByLanguage } returns flowOf(mapOf("ru" to "s1"))
-        every { preferences.ttsByLanguage } returns flowOf(mapOf("ru" to "system"))
-        every { preferences.unloadTimeoutMinutes } returns flowOf(5)
+        every { preferences.rawSttByLanguage } returns flowOf(mapOf("ru" to "s1"))
+        every { preferences.rawTtsByLanguage } returns flowOf(mapOf("ru" to "system"))
+        every { preferences.rawUnloadTimeoutMinutes } returns flowOf(5)
         every { preferences.modelDirectionRetention } returns flowOf("keep")
-        every { preferences.lastSourceLang } returns flowOf("ru")
-        every { preferences.lastTargetLang } returns flowOf("en")
+        every { preferences.rawLastSourceLang } returns flowOf("ru")
+        every { preferences.rawLastTargetLang } returns flowOf("en")
         coEvery { preferences.getActiveModelId(any()) } returns null
     }
 

@@ -18,8 +18,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.MapSerializer
@@ -64,39 +64,71 @@ private const val PREFERENCE_RETRY_DELAY_MS = 2_000L
  * SettingsViewModel, ModelsViewModel, TtsRuntime.trackEnginePreference)
  * безопасна по построению — сбой источника не доходит до коллектора.
  *
- * При сбое чтения эмитится последнее полученное значение (или [fallback],
- * если значение ещё не приходило), затем пауза и переподписка на [source]
- * (shared DataStore flow: после само-восстановления corruptionHandler'а
- * подписка получает актуальные данные). Штатное завершение источника — выход
- * без переподписки; [CancellationException] пробрасывается коллектору.
+ * При сбое чтения эмитится последнее полученное значение; если значение ещё
+ * не приходило — ленивый [fallbackProvider] (обращение в момент сбоя), иначе
+ * константный [fallback]. Затем пауза и переподписка на [source] (shared
+ * DataStore flow: после само-восстановления corruptionHandler'а подписка
+ * получает актуальные данные). Штатное завершение источника — выход без
+ * переподписки; [CancellationException] пробрасывается коллектору.
+ *
+ * Регресс (исправление): [channelFlow] вместо `flow` — защищается ТОЛЬКО
+ * чтение источника; в прежней версии `emit(value)` стоял внутри try и
+ * исключение коллектора (подписчика) попадало в catch как «сбой источника»,
+ * запуская ложные ретраи и повторные переподписки. В channelFlow эмиссия
+ * идёт в канал, а исключение потребитель получает уже снаружи защищаемого
+ * блока.
+ *
+ * Регресс (исправление): [fallbackProvider] — ленивый фолбэк, запрашиваемый
+ * в момент сбоя. uiLanguage не может иметь константный дефолт: при сбое
+ * записи («persist» не дошёл, кэш процесса уже обновлён) обёртка эмитила бы
+ * «system» ≠ применённому значению и MainActivity зацикливался на recreate()
+ * каждые retryDelayMs. Фолбэк uiLanguage — процессный кэш (см. [uiLanguage]).
+ *
+ * Режим без фолбэка (оба — null, [fallback] по умолчанию null): до первого
+ * реального значения ничего не эмитится, только пауза и переподписка —
+ * подписчик не видит правдоподобный дефолт вместо настоящих настроек
+ * (onboardingDone: холодный сбой чтения не должен показывать онбординг;
+ * lastSourceLang/lastTargetLang — не должен сбрасывать выбранное направление).
  *
  * `observeResilient` в ViewModel остаётся второй линией защиты (Room-потоки).
  * Исключения без обёртки — только потоки, читаемые ОДНИМ `first()` с
  * консервативной обработкой сбоя у самого вызывающего (провайдер удержания
  * DomainModule: при ошибке — unload, а не дефолт keep; версия каталога для
  * очистки устаревших моделей; сырое чтение `uiLanguage` для prefetch/await,
- * где фолбэк нельзя прогревать в кэш как настоящее значение). Их подписок
- * в UI нет либо подписки идут через `observeResilient` (SettingsScreen).
+ * где фолбэк нельзя прогревать в кэш как настоящее значение; экспорт бэкапа
+ * читает сырые raw*-потоки — сбой чтения обязан быть ошибкой экспорта, а не
+ * дефолтом в архиве). Их подписок в UI нет либо подписки идут через
+ * `observeResilient` (SettingsScreen).
  */
 internal fun <T> flowWithRecovery(
     name: String,
-    fallback: T,
+    fallback: T? = null,
     retryDelayMs: Long = PREFERENCE_RETRY_DELAY_MS,
+    fallbackProvider: (() -> T)? = null,
     source: () -> Flow<T>
-): Flow<T> = flow {
+): Flow<T> = channelFlow {
     var last: T? = null
+    var received = false
     while (true) {
         try {
             source().collect { value ->
                 last = value
-                emit(value)
+                received = true
+                send(value)
             }
             break
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Timber.w(e, "Сбой чтения настройки $name — фолбэк и переподписка")
-            emit(last ?: fallback)
+            // Фолбэк выбирается в момент сбоя: последнее реально полученное
+            // значение, иначе ленивый provider (процессный кэш), иначе
+            // константа; при отсутствии всех — эмиссии нет (null-режим).
+            val value: T? = if (received) last else (fallbackProvider?.invoke() ?: fallback)
+            if (received || value != null) {
+                @Suppress("UNCHECKED_CAST")
+                send(value as T)
+            }
             delay(retryDelayMs)
         }
     }
@@ -123,7 +155,7 @@ class ModelPreferences @Inject constructor(
 
     val activeModelId: (ModelCategory) -> Flow<String?> = { category ->
         val key = activeModelKeys[category]!!
-        flowWithRecovery("active_model_${category.name}", null) {
+        flowWithRecovery("active_model_${category.name}") {
             context.dataStore.data.map { prefs -> prefs[key] }
         }
     }
@@ -144,12 +176,19 @@ class ModelPreferences @Inject constructor(
      * Карта «код языка → id STT-модели» (языки: "ru"/"en"/"ne").
      * Сериализация значения — JSON-строка в preference `stt_by_language`.
      */
-    val sttByLanguage: Flow<Map<String, String>> =
-        flowWithRecovery(STT_BY_LANGUAGE_NAME, emptyMap()) {
-            context.dataStore.data.map { prefs ->
-                decodeLanguageMap(prefs[STT_BY_LANGUAGE_KEY], STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME)
-            }
+    /**
+     * Сырой поток карты STT-назначений (без recover-обёртки) — только для
+     * экспорта бэкапа: сбой чтения DataStore обязан стать ошибкой экспорта,
+     * а не молча записанным в архив пустым значением (регресс: обёртка
+     * «съедала» сбой и экспорт с дефолтами затем затирал реальные настройки).
+     */
+    internal val rawSttByLanguage: Flow<Map<String, String>> =
+        context.dataStore.data.map { prefs ->
+            decodeLanguageMap(prefs[STT_BY_LANGUAGE_KEY], STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME)
         }
+
+    val sttByLanguage: Flow<Map<String, String>> =
+        flowWithRecovery(STT_BY_LANGUAGE_NAME, emptyMap()) { rawSttByLanguage }
 
     /**
      * Назначить STT-модель языку; null — снять назначение.
@@ -165,10 +204,12 @@ class ModelPreferences @Inject constructor(
      * Значение отсутствует — тоже системный TTS (по умолчанию).
      * Сериализация значения — JSON-строка в preference `tts_by_language`.
      */
+    /** Сырой поток карты TTS-назначений — только для экспорта бэкапа (см. [rawSttByLanguage]). */
+    internal val rawTtsByLanguage: Flow<Map<String, String>> =
+        context.dataStore.data.map { prefs -> decodeTtsByLanguage(prefs[TTS_BY_LANGUAGE_KEY]) }
+
     val ttsByLanguage: Flow<Map<String, String>> =
-        flowWithRecovery(TTS_BY_LANGUAGE_NAME, emptyMap()) {
-            context.dataStore.data.map { prefs -> decodeTtsByLanguage(prefs[TTS_BY_LANGUAGE_KEY]) }
-        }
+        flowWithRecovery(TTS_BY_LANGUAGE_NAME, emptyMap()) { rawTtsByLanguage }
 
     /**
      * Назначить языку Piper TTS-модель по id или Системный Android TTS
@@ -268,15 +309,21 @@ class ModelPreferences @Inject constructor(
      * Сохранённые коды языков последнего направления перевода ("ru"/"en"/"ne");
      * null — направление ещё не выбиралось (AUTO не сохраняется).
      */
+    /** Сырые потоки последнего направления — только для экспорта бэкапа (см. [rawSttByLanguage]). */
+    internal val rawLastSourceLang: Flow<String?> =
+        context.dataStore.data.map { it[LAST_SOURCE_LANG_KEY] }
+
+    internal val rawLastTargetLang: Flow<String?> =
+        context.dataStore.data.map { it[LAST_TARGET_LANG_KEY] }
+
+    // Null-режим обёртки (без фолбэка): при сбое чтения до первого значения
+    // эмиссии нет — коллекторы (combine в TranslateViewModel/ModelsViewModel)
+    // не получают «направление сброшено» вместо реального сбоя чтения.
     val lastSourceLang: Flow<String?> =
-        flowWithRecovery("last_source_lang", null) {
-            context.dataStore.data.map { it[LAST_SOURCE_LANG_KEY] }
-        }
+        flowWithRecovery("last_source_lang") { rawLastSourceLang }
 
     val lastTargetLang: Flow<String?> =
-        flowWithRecovery("last_target_lang", null) {
-            context.dataStore.data.map { it[LAST_TARGET_LANG_KEY] }
-        }
+        flowWithRecovery("last_target_lang") { rawLastTargetLang }
 
     /**
      * Сохранить последнее выбранное направление перевода.
@@ -292,9 +339,13 @@ class ModelPreferences @Inject constructor(
 
     /**
      * Завершен ли онбординг первого запуска; false до первого выбора/пропуска.
+     *
+     * Null-режим обёртки (без фолбэка false): холодный сбой чтения не должен
+     * эмитить ложный «онбординг не пройден» — sheet не показывается до
+     * прилёта реального значения (регресс: фолбэк false включал онбординг).
      */
     val onboardingDone: Flow<Boolean> =
-        flowWithRecovery("onboarding_done", false) {
+        flowWithRecovery("onboarding_done") {
             context.dataStore.data.map { it[ONBOARDING_DONE_KEY] ?: false }
         }
 
@@ -307,26 +358,38 @@ class ModelPreferences @Inject constructor(
 
     // --- Настройки приложения ---
 
+    /** Сырой поток TTS-движка — только для экспорта бэкапа (см. [rawSttByLanguage]). */
+    internal val rawTtsEngine: Flow<String> =
+        context.dataStore.data.map { it[TTS_ENGINE_KEY] ?: TtsEngines.SYSTEM }
+
     val ttsEngine: Flow<String> =
-        flowWithRecovery("tts_engine", TtsEngines.SYSTEM) {
-            context.dataStore.data.map { it[TTS_ENGINE_KEY] ?: TtsEngines.SYSTEM }
-        }
+        flowWithRecovery("tts_engine", TtsEngines.SYSTEM) { rawTtsEngine }
 
     suspend fun setTtsEngine(engine: String) {
         context.dataStore.edit { it[TTS_ENGINE_KEY] = engine }
     }
 
     /**
-     * Сырое (без recover-обёртки) чтение uiLanguage — только для prefetch и
-     * [awaitUiLanguageCache]: фолбэк по умолчанию нельзя прогревать в кэш как
-     * настоящее значение, иначе он залипает при последующих recreate() и
-     * коллектор бесконечно чинит расхождение языка пересозданием активности.
+     * Сырое (без recover-обёртки) чтение uiLanguage — только для prefetch,
+     * [awaitUiLanguageCache] и экспорта бэкапа: фолбэк по умолчанию нельзя
+     * прогревать в кэш как настоящее значение, иначе он залипает при
+     * последующих recreate() и коллектор бесконечно чинит расхождение языка
+     * пересозданием активности; в бэкапе сбой чтения = ошибка экспорта.
      */
-    private val rawUiLanguage: Flow<String> =
+    internal val rawUiLanguage: Flow<String> =
         context.dataStore.data.map { it[UI_LANGUAGE_KEY] ?: DEFAULT_UI_LANGUAGE }
 
-    val uiLanguage: Flow<String> =
-        flowWithRecovery("ui_language", DEFAULT_UI_LANGUAGE) { rawUiLanguage }
+    /**
+     * Поток языка UI. Фолбэк при сбое чтения — ленивый ([fallbackProvider]):
+     * процессный кэш [uiLanguageCacheRef], если прогреваем, иначе дефолт
+     * (регресс: константный «system» при persist-сбое расходился с
+     * уже применённым языком и MainActivity зацикливался на recreate()
+     * каждые PREFERENCE_RETRY_DELAY_MS).
+     */
+    val uiLanguage: Flow<String> = flowWithRecovery(
+        "ui_language",
+        fallbackProvider = { uiLanguageCacheRef.get() ?: DEFAULT_UI_LANGUAGE }
+    ) { rawUiLanguage }
 
     /**
      * Кэш uiLanguage в памяти процесса: прогревается [prefetchUiLanguage]
@@ -364,10 +427,12 @@ class ModelPreferences @Inject constructor(
         context.dataStore.edit { it[UI_LANGUAGE_KEY] = lang }
     }
 
+    /** Сырой поток темы — только для экспорта бэкапа (см. [rawSttByLanguage]). */
+    internal val rawTheme: Flow<String> =
+        context.dataStore.data.map { it[THEME_KEY] ?: DEFAULT_THEME }
+
     val theme: Flow<String> =
-        flowWithRecovery("theme", DEFAULT_THEME) {
-            context.dataStore.data.map { it[THEME_KEY] ?: DEFAULT_THEME }
-        }
+        flowWithRecovery("theme", DEFAULT_THEME) { rawTheme }
 
     suspend fun setTheme(theme: String) {
         context.dataStore.edit { it[THEME_KEY] = theme }
@@ -377,12 +442,14 @@ class ModelPreferences @Inject constructor(
      * Тайм-аут отложенной выгрузки рантаймов при сворачивании приложения, минуты:
      * 0 — выгружать сразу, -1 — не выгружать. По умолчанию 5.
      */
-    val unloadTimeoutMinutes: Flow<Int> =
-        flowWithRecovery("unload_timeout_minutes", DEFAULT_UNLOAD_TIMEOUT_MINUTES) {
-            context.dataStore.data.map {
-                it[UNLOAD_TIMEOUT_MINUTES_KEY] ?: DEFAULT_UNLOAD_TIMEOUT_MINUTES
-            }
+    /** Сырой поток тайм-аута выгрузки — только для экспорта бэкапа (см. [rawSttByLanguage]). */
+    internal val rawUnloadTimeoutMinutes: Flow<Int> =
+        context.dataStore.data.map {
+            it[UNLOAD_TIMEOUT_MINUTES_KEY] ?: DEFAULT_UNLOAD_TIMEOUT_MINUTES
         }
+
+    val unloadTimeoutMinutes: Flow<Int> =
+        flowWithRecovery("unload_timeout_minutes", DEFAULT_UNLOAD_TIMEOUT_MINUTES) { rawUnloadTimeoutMinutes }
 
     suspend fun setUnloadTimeoutMinutes(minutes: Int) {
         context.dataStore.edit { it[UNLOAD_TIMEOUT_MINUTES_KEY] = minutes }
@@ -423,8 +490,9 @@ class ModelPreferences @Inject constructor(
 
         /**
          * Язык интерфейса по умолчанию («по системе») — единственная точка
-         * значения фолбэка для потока [uiLanguage] и для таймаутного фолбэка
-         * MainActivity (ревью: не дублировать литерал).
+         * фолбэка для потока [uiLanguage] (значение при непрогретом процессном
+         * кэше) и для таймаутного фолбэка MainActivity (ревью: не дублировать
+         * литерал).
          */
         const val DEFAULT_UI_LANGUAGE = "system"
 

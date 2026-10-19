@@ -561,21 +561,28 @@ class ModelBackupManager @Inject constructor(
     /**
      * Построить настройки (ревью #53: полные поязыковые назначения, тайм-аут
      * выгрузки, удержание моделей при смене направления, последнее направление).
+     *
+     * Регресс (исправление): чтение — СЫРЫМИ raw*-потоками, как prefetch
+     * uiLanguage: recover-обёртка flowWithRecovery при сбое DataStore гасит
+     * исключение и эмитит дефолт, поэтому экспорт писал бы в архив дефолтные
+     * настройки вместо отказа, а restore затем затирал бы реальные значения
+     * дефолтами. Здесь сбой чтения — исключение и общая ошибка экспорта
+     * (как было до введения обёртки).
      */
     private suspend fun buildSettings(): BackupSettings {
         return BackupSettings(
             activeTranslation = preferences.getActiveModelId(ModelCategory.TRANSLATION),
             activeStt = preferences.getActiveModelId(ModelCategory.STT),
             activeTts = preferences.getActiveModelId(ModelCategory.TTS),
-            ttsEngine = preferences.ttsEngine.first(),
-            uiLanguage = preferences.uiLanguage.first(),
-            theme = preferences.theme.first(),
-            sttByLanguage = preferences.sttByLanguage.first(),
-            ttsByLanguage = preferences.ttsByLanguage.first(),
-            unloadTimeoutMinutes = preferences.unloadTimeoutMinutes.first(),
+            ttsEngine = preferences.rawTtsEngine.first(),
+            uiLanguage = preferences.rawUiLanguage.first(),
+            theme = preferences.rawTheme.first(),
+            sttByLanguage = preferences.rawSttByLanguage.first(),
+            ttsByLanguage = preferences.rawTtsByLanguage.first(),
+            unloadTimeoutMinutes = preferences.rawUnloadTimeoutMinutes.first(),
             modelDirectionRetention = preferences.modelDirectionRetention.first(),
-            lastSourceLang = preferences.lastSourceLang.first(),
-            lastTargetLang = preferences.lastTargetLang.first()
+            lastSourceLang = preferences.rawLastSourceLang.first(),
+            lastTargetLang = preferences.rawLastTargetLang.first()
         )
     }
 
@@ -588,6 +595,11 @@ class ModelBackupManager @Inject constructor(
      * только для моделей, реально восстановленных в этом импорте
      * ([restoredIds]): иначе настройка осталась бы висячей на отсутствующую
      * модель (кроме сентинеля системного TTS — он не требует модели).
+     *
+     * Все применения — через `edit`-сеттеры [ModelPreferences] (без
+     * recover-обёрток): сбой записи DataStore бросает исключение и
+     * превращается в общую ошибку импорта внешним catch (проверено — путь
+     * restore не читает обёрнутые потоки, регресса фолбэков здесь нет).
      */
     private suspend fun restoreSettings(settings: BackupSettings, restoredIds: Set<String>) {
         restoreActiveIfRestored(ModelCategory.TRANSLATION, settings.activeTranslation, restoredIds)
