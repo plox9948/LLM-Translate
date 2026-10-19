@@ -135,12 +135,6 @@ class TokenizerJson {
     fun eosId(): Int? = eosId
 
     /**
-     * ID токена по имени (языковые коды, спец-токены).
-     */
-    fun specialTokenId(name: String): Int? =
-        addedTokenIdsByContent[name] ?: vocab[name]
-
-    /**
      * Токенизировать один пре-токенизированный фрагмент (Unigram или BPE).
      */
     private fun tokenizePiece(piece: String): List<String> = when (modelType) {

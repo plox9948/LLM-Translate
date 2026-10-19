@@ -3,8 +3,10 @@ package com.plox.llmtranslate.domain.runtime
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import com.plox.llmtranslate.domain.model.RuntimeError
 import java.io.File
 import java.nio.LongBuffer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import timber.log.Timber
@@ -62,6 +64,55 @@ internal fun closePartiallyCreated(label: String, vararg sessions: OrtSession?) 
     } catch (e: Exception) {
         Timber.e(e, "Ошибка при освобождении частично созданных $label-сессий")
     }
+}
+
+/**
+ * Число слоёв encoder-decoder переводческой модели по именам выходов
+ * декодера: все выходы, кроме logits, — четвёрки
+ * `present.{layer}.{decoder,encoder}.{key,value}` (общая формула Marian
+ * и IndicTrans).
+ */
+internal fun numLayersFromDecoderOutputs(decoder: OrtSession): Int =
+    (decoder.outputNames.size - 1) / 4
+
+/**
+ * Закрыть сессии активного пучка модельного движка при его разгрузке
+ * (ошибки — только в лог); общий release() пучков Marian и IndicTrans.
+ */
+internal fun closeBundleSessions(label: String, vararg sessions: OrtSession) {
+    try {
+        sessions.forEach { it.close() }
+    } catch (e: Exception) {
+        Timber.e(e, "Ошибка при разгрузке $label")
+    }
+}
+
+/**
+ * Общий catch-каркас загрузки ONNX-модели перевода (Marian, IndicTrans):
+ * отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем уже созданные
+ * сессии этого пучка ([closeCreatedSessions]; пучки других направлений
+ * остаются в кэше) и всплываем выше, не конвертируя отмену в LoadFailed;
+ * прочие исключения — явный [RuntimeError.LoadFailed]. Тексты логов
+ * строятся из [label]/[engineTag] байт-в-байт как в прежних ensureLoaded
+ * движков. [block] возвращает null при успехе или RuntimeError раннего
+ * возврата (проверки файлов/токенизаторов — остаются внутри block).
+ */
+internal inline fun guardOrtModelLoad(
+    label: String,
+    engineTag: String,
+    path: String,
+    closeCreatedSessions: () -> Unit,
+    block: () -> RuntimeError?
+): RuntimeError? = try {
+    block()
+} catch (e: CancellationException) {
+    Timber.d("Загрузка $label-модели отменена: $path")
+    closeCreatedSessions()
+    throw e
+} catch (e: Exception) {
+    Timber.e(e, "Не удалось загрузить $label-модель $path")
+    closeCreatedSessions()
+    RuntimeError.LoadFailed(engineTag, e.message ?: "Неизвестная ошибка")
 }
 
 /**

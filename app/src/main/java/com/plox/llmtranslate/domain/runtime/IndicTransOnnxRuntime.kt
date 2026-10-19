@@ -5,7 +5,6 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.model.InstalledModel
-import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.tokenizer.IndicProcessorLite
 import com.plox.llmtranslate.domain.tokenizer.TokenizerJson
@@ -102,15 +101,8 @@ class IndicTransOnnxRuntime @Inject constructor(
         val info: LoadedModelInfo
     ) {
         /** Закрыть нативные сессии пучка (ошибки — только в лог). */
-        fun release() {
-            try {
-                encoderSession.close()
-                decoderSession.close()
-                decoderPastSession.close()
-            } catch (e: Exception) {
-                Timber.e(e, "Ошибка при разгрузке IndicTrans")
-            }
-        }
+        fun release() =
+            closeBundleSessions("IndicTrans", encoderSession, decoderSession, decoderPastSession)
     }
 
     /**
@@ -157,7 +149,14 @@ class IndicTransOnnxRuntime @Inject constructor(
                 var encoder: OrtSession? = null
                 var decoder: OrtSession? = null
                 var decoderPast: OrtSession? = null
-                try {
+                guardOrtModelLoad(
+                    label = "IndicTrans",
+                    engineTag = "indictrans",
+                    path = path,
+                    closeCreatedSessions = {
+                        closePartiallyCreated("IndicTrans", encoder, decoder, decoderPast)
+                    }
+                ) {
                     val ortEnv = OrtEnvironment.getEnvironment()
                     val dir = File(path)
 
@@ -185,8 +184,7 @@ class IndicTransOnnxRuntime @Inject constructor(
                     decoder = sessions.second
                     decoderPast = sessions.third
 
-                    // numLayers = (число выходов декодера - 1) / 4.
-                    val numLayers = (decoder.outputNames.size - 1) / 4
+                    val numLayers = numLayersFromDecoderOutputs(decoder)
                     Timber.d(
                         "IndicTrans: numLayers=$numLayers, " +
                             "decoder входы: ${decoder.inputNames}"
@@ -227,29 +225,11 @@ class IndicTransOnnxRuntime @Inject constructor(
                             srcDictSize = dict.srcDictSize,
                             tgtDictSize = dict.tgtDictSize,
                             unkId = dict.unkId,
-                            info = LoadedModelInfo(
-                                modelId = modelInfo.id,
-                                displayName = modelInfo.displayName,
-                                category = ModelCategory.TRANSLATION,
-                                ramRequiredMb = modelInfo.ramRequiredMb,
-                                languages = modelInfo.languages
-                            )
+                            info = translationLoadedInfo(modelInfo)
                         )
                     )
                     engineCache.publishActiveUnlocked(modelInfo.id)
                     null
-                } catch (e: CancellationException) {
-                    // Отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
-                    // уже созданные сессии этого пучка (пучки других направлений
-                    // остаются в кэше) и всплываем выше, не конвертируя отмену
-                    // в LoadFailed.
-                    Timber.d("Загрузка IndicTrans-модели отменена: $path")
-                    closePartiallyCreated("IndicTrans", encoder, decoder, decoderPast)
-                    throw e
-                } catch (e: Exception) {
-                    Timber.e(e, "Не удалось загрузить IndicTrans-модель $path")
-                    closePartiallyCreated("IndicTrans", encoder, decoder, decoderPast)
-                    RuntimeError.LoadFailed("indictrans", e.message ?: "Неизвестная ошибка")
                 }
             }
         }
@@ -287,16 +267,16 @@ class IndicTransOnnxRuntime @Inject constructor(
     /**
      * Перевести текст (IndicTrans2 encoder-decoder, greedy).
      *
-      * Язык задаётся flores-префиксом в тексте по схеме IndicTransToolkit.
-      * Вход энкодера: `punc_norm(prompt) → encode → clamp → +EOS`
-      * (preprocess уже включает punc_norm; EOS на входе — симметрия с Marian).
-      * Выход: `decode → RepetitionTrimmer.trim → postprocess`
-      * (детокенизация строго после триммера — см. комментарий в теле).
-      * Инференс идёт по активному пучку кэша — [ensureLoaded] вызывают перед
+     * Язык задаётся flores-префиксом в тексте по схеме IndicTransToolkit.
+     * Вход энкодера: `punc_norm(prompt) → encode → clamp → +EOS`
+     * (preprocess уже включает punc_norm; EOS на входе — симметрия с Marian).
+     * Выход: `decode → RepetitionTrimmer.trim → postprocess`
+     * (детокенизация строго после триммера — см. комментарий в теле).
+     * Инференс идёт по активному пучку кэша — [ensureLoaded] вызывают перед
      * переводом, поэтому активный пучок соответствует модели направления;
      * при отсутствии активного — [RuntimeError.ModelNotSelected].
      *
-     * Чанкинг (issue #63):IndicTrans кодирует вход целиком в окно
+     * Чанкинг (issue #63): IndicTrans кодирует вход целиком в окно
      * позиционных эмбеддингов (258), поэтому вход разбивается [planChunks]
      * на чанки по бюджету текста [chunkBudget]; каждый чанк проходит ту же
      * цепочку [translateSingleChunk], успешные переводы склеиваются

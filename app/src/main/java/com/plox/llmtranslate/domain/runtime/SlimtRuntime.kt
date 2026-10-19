@@ -3,11 +3,11 @@ package com.plox.llmtranslate.domain.runtime
 import com.plox.llmtranslate.data.native_engine.SlimtNative
 import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.model.InstalledModel
-import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.currentCoroutineContext
@@ -90,7 +90,7 @@ class SlimtRuntime @Inject constructor(
      * выгружаются и перед загрузкой, и при попадании в кэш (прежнее поведение).
      */
     override suspend fun ensureLoaded(modelInfo: InstalledModel): RuntimeError? =
-        withContext(kotlinx.coroutines.Dispatchers.IO) {
+        withContext(Dispatchers.IO) {
             val path = modelInfo.filePath
             if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
 
@@ -132,13 +132,7 @@ class SlimtRuntime @Inject constructor(
                         modelInfo.id,
                         ModelBundle(
                             handle = newHandle,
-                            info = LoadedModelInfo(
-                                modelId = modelInfo.id,
-                                displayName = modelInfo.displayName,
-                                category = ModelCategory.TRANSLATION,
-                                ramRequiredMb = modelInfo.ramRequiredMb,
-                                languages = modelInfo.languages
-                            )
+                            info = translationLoadedInfo(modelInfo)
                         )
                     )
                     engineCache.publishActiveUnlocked(modelInfo.id)
@@ -170,7 +164,7 @@ class SlimtRuntime @Inject constructor(
      * перевод чужой моделью; при отсутствии активного — [RuntimeError.ModelNotSelected].
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
-        withContext(kotlinx.coroutines.Dispatchers.IO) {
+        withContext(Dispatchers.IO) {
             engineCache.sessionMutex.withLock {
                 val bundle = engineCache.activeBundle()
                 if (bundle == null || bundle.handle == 0L) {

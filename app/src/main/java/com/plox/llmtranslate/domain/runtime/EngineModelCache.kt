@@ -23,7 +23,7 @@ package com.plox.llmtranslate.domain.runtime
  * @param T тип пучка модели (сессии/токенизаторы/нативный handle + метаданные).
  * @param capacity максимальное число хранимых пучков.
  */
-class EngineModelCache<T>(val capacity: Int) {
+class EngineModelCache<T>(private val capacity: Int) {
 
     init {
         require(capacity > 0) { "capacity должен быть положительным" }

@@ -5,7 +5,6 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.model.InstalledModel
-import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.tokenizer.TokenizerJson
 import kotlinx.coroutines.CancellationException
@@ -106,15 +105,8 @@ class MarianOnnxRuntime @Inject constructor(
         val info: LoadedModelInfo
     ) {
         /** Закрыть нативные сессии пучка (ошибки — только в лог). */
-        fun release() {
-            try {
-                encoderSession.close()
-                decoderSession.close()
-                decoderPastSession.close()
-            } catch (e: Exception) {
-                Timber.e(e, "Ошибка при разгрузке Marian")
-            }
-        }
+        fun release() =
+            closeBundleSessions("Marian", encoderSession, decoderSession, decoderPastSession)
     }
 
     /**
@@ -161,7 +153,14 @@ class MarianOnnxRuntime @Inject constructor(
                 var encoder: OrtSession? = null
                 var decoder: OrtSession? = null
                 var decoderPast: OrtSession? = null
-                try {
+                guardOrtModelLoad(
+                    label = "Marian",
+                    engineTag = "marian",
+                    path = path,
+                    closeCreatedSessions = {
+                        closePartiallyCreated("Marian", encoder, decoder, decoderPast)
+                    }
+                ) {
                     val ortEnv = OrtEnvironment.getEnvironment()
                     val dir = File(path)
 
@@ -186,9 +185,7 @@ class MarianOnnxRuntime @Inject constructor(
                     decoder = sessions.second
                     decoderPast = sessions.third
 
-                    // numLayers = (число выходов декодера - 1) / 4
-                    // (выходы: logits + present.{layer}.{decoder,encoder}.{key,value}).
-                    val numLayers = (decoder.outputNames.size - 1) / 4
+                    val numLayers = numLayersFromDecoderOutputs(decoder)
                     Timber.d("Marian: numLayers=$numLayers")
 
                     val tok = TokenizerJson()
@@ -220,29 +217,11 @@ class MarianOnnxRuntime @Inject constructor(
                             decoderStartTokenId = gen.decoderStartTokenId,
                             eosTokenId = gen.eosTokenId,
                             badTokenIds = gen.badTokenIds,
-                            info = LoadedModelInfo(
-                                modelId = modelInfo.id,
-                                displayName = modelInfo.displayName,
-                                category = ModelCategory.TRANSLATION,
-                                ramRequiredMb = modelInfo.ramRequiredMb,
-                                languages = modelInfo.languages
-                            )
+                            info = translationLoadedInfo(modelInfo)
                         )
                     )
                     engineCache.publishActiveUnlocked(modelInfo.id)
                     null
-                } catch (e: CancellationException) {
-                    // Отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
-                    // уже созданные сессии этого пучка (пучки других направлений
-                    // остаются в кэше) и всплываем выше, не конвертируя отмену
-                    // в LoadFailed.
-                    Timber.d("Загрузка Marian-модели отменена: $path")
-                    closePartiallyCreated("Marian", encoder, decoder, decoderPast)
-                    throw e
-                } catch (e: Exception) {
-                    Timber.e(e, "Не удалось загрузить Marian-модель $path")
-                    closePartiallyCreated("Marian", encoder, decoder, decoderPast)
-                    RuntimeError.LoadFailed("marian", e.message ?: "Неизвестная ошибка")
                 }
             }
         }

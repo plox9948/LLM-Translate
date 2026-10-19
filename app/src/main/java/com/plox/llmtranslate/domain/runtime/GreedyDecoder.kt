@@ -198,22 +198,6 @@ internal suspend fun <I : AutoCloseable, R : AutoCloseable> greedyDecodeCore(
 }
 
 /**
- * Индекс максимального значения (первое вхождение при равенстве).
- * Общий для greedy-циклов движков перевода.
- */
-internal fun argMax(values: FloatArray): Int {
-    var best = 0
-    var bestVal = Float.NEGATIVE_INFINITY
-    for (i in values.indices) {
-        if (values[i] > bestVal) {
-            bestVal = values[i]
-            best = i
-        }
-    }
-    return best
-}
-
-/**
  * Индекс максимального значения с защитой от NaN/Inf (decode-hygiene, issue #62).
  * Отдельные NaN/±Inf игнорируются при выборе (не могут выиграть); если же
  * ВСЕ значения NaN или бесконечные — выбирать токен не из чего, бросается

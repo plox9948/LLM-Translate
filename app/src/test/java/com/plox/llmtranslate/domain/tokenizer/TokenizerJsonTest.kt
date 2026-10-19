@@ -71,11 +71,13 @@ class TokenizerJsonTest {
     }
 
     @Test
-    fun `bpe specialTokenId resolves eos and unk`() {
+    fun `bpe added tokens resolve eos id and unk replaces out-of-vocab`() {
         val tokenizer = TokenizerJson()
         tokenizer.load(writeTempTokenizer(bpeJson))
-        assertEquals(4, tokenizer.specialTokenId("</s>"))
-        assertEquals(5, tokenizer.specialTokenId("<unk>"))
+        // eosId — из added_tokens (движки дополняют вход EOS).
+        assertEquals(4, tokenizer.eosId())
+        // Вне словаря: "▁" = 0, отсутствующий "x" заменяется на <unk> = 5.
+        assertEquals(listOf(0, 5), tokenizer.encode("x"))
     }
 
     @Test
@@ -87,10 +89,11 @@ class TokenizerJsonTest {
     }
 
     @Test
-    fun `added token language code resolves by id`() {
+    fun `added token language code encodes to its id`() {
         val tokenizer = TokenizerJson()
         tokenizer.load(writeTempTokenizer(bpeJson))
-        assertEquals(6, tokenizer.specialTokenId("<|ru|>"))
+        // added-токен языка кодируется целиком в свой id (языковые коды
+        // IndicTrans-префикса обрабатываются через addedTokenIdsByContent).
         assertEquals(listOf(6), tokenizer.encode("<|ru|>"))
     }
 

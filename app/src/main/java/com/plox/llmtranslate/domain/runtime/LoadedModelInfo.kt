@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.domain.runtime
 
+import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 
@@ -49,3 +50,16 @@ internal fun LoadedModelInfo.directionMismatch(
         )
     }
 }
+
+/**
+ * Метаданные пучка модели перевода для публикации в `loadedModels` —
+ * одинаковые во всех трёх переводческих движках (Marian, IndicTrans, slimt)
+ * при загрузке в `ensureLoaded`.
+ */
+internal fun translationLoadedInfo(model: InstalledModel): LoadedModelInfo = LoadedModelInfo(
+    modelId = model.id,
+    displayName = model.displayName,
+    category = ModelCategory.TRANSLATION,
+    ramRequiredMb = model.ramRequiredMb,
+    languages = model.languages
+)
