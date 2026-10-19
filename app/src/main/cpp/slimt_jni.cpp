@@ -75,7 +75,7 @@ std::string jstr_to_utf8(JNIEnv *env, jstring value) {
         // ED B0-BF 0x80-BF (низкий).
         if (c == 0xED && i + 5 < cesu.size() && is_continuation(i + 2) &&
             u8(cesu[i + 1]) >= 0xA0 && u8(cesu[i + 1]) <= 0xAF &&
-            cesu[i + 3] == 0xED && is_continuation(i + 5) &&
+            u8(cesu[i + 3]) == 0xED && is_continuation(i + 5) &&
             u8(cesu[i + 4]) >= 0xB0 && u8(cesu[i + 4]) <= 0xBF) {
             unsigned int cp = 0x10000 + ((decode3(i) - 0xD800) << 10) +
                               (decode3(i + 3) - 0xDC00);

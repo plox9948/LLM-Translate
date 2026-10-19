@@ -3,6 +3,7 @@ package com.plox.llmtranslate.data.model
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -28,4 +29,17 @@ interface TranslationHistoryDao {
 
     @Query("DELETE FROM translation_history WHERE source_lang = :sourceLang AND target_lang = :targetLang AND input_text = :inputText")
     suspend fun deleteMatching(sourceLang: String, targetLang: String, inputText: String)
+
+    /**
+     * Атомарное добавление записи: удалить предыдущий идентичный перевод,
+     * вставить [entity], обрезать историю до [keep]. Один @Transaction —
+     * конкурентные добавления не плодят дубликаты (по образцу
+     * [FavoritesDao.toggleEntry]).
+     */
+    @Transaction
+    suspend fun addEntry(entity: TranslationHistoryEntity, keep: Int) {
+        deleteMatching(entity.sourceLang, entity.targetLang, entity.inputText)
+        insert(entity)
+        trim(keep)
+    }
 }

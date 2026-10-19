@@ -31,6 +31,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -62,6 +63,9 @@ class ModelManagerImpl @Inject constructor(
 ) : ModelManager {
 
     private companion object {
+        /** Пауза debounce для diskUsage (мс) — частые эмиссии Room-flow сворачиваются в один обход дерева. */
+        const val DISK_USAGE_DEBOUNCE_MS = 2_000L
+
         /** Таймаут ожидания WorkManager-фьючерса при проверке живой загрузки. */
         const val WORK_INFO_TIMEOUT_SECONDS = 5L
 
@@ -151,14 +155,20 @@ class ModelManagerImpl @Inject constructor(
 
     override val loadedModels: Flow<List<LoadedModelInfo>> = runtimeRouter.loadedModels
 
-    override val diskUsage: Flow<DiskUsage> = repository.observeAll().map { _ ->
-        withContext(Dispatchers.IO) {
-            DiskUsage(
-                totalBytes = modelsDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
-                modelsDir = modelsDir.absolutePath
-            )
+    // Debounce: каждое эмиссия Room-flow (статусы моделей меняются часто,
+    // особенно при скачивании) вызывала полный обход дерева каталога моделей —
+    // слишком затратно. Пачка частых обновлений сворачивается в один обход;
+    // первая эмиссия задерживается на DISK_USAGE_DEBOUNCE_MS — приемлемо.
+    override val diskUsage: Flow<DiskUsage> = repository.observeAll()
+        .debounce(DISK_USAGE_DEBOUNCE_MS)
+        .map { _ ->
+            withContext(Dispatchers.IO) {
+                DiskUsage(
+                    totalBytes = modelsDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
+                    modelsDir = modelsDir.absolutePath
+                )
+            }
         }
-    }
 
     override suspend fun setActive(category: ModelCategory, modelId: String): Boolean =
         withContext(Dispatchers.IO) {

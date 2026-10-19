@@ -3,7 +3,9 @@ package com.plox.llmtranslate.data.catalog
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeType
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,6 +18,28 @@ import org.junit.Test
 class ModelCatalogParserTest {
 
     private val parser = ModelCatalogParser()
+
+    /** Каталог assets: unit-тесты запускаются из модуля app или его корня. */
+    private fun catalogFile(): java.io.File = listOf(
+        java.io.File("src/main/assets/models_catalog.json"),
+        java.io.File("app/src/main/assets/models_catalog.json")
+    ).firstOrNull { it.isFile }
+        ?: error("models_catalog.json не найден относительно рабочих каталогов теста")
+
+    /** Манифест моделей (корень репозитория) — источник карточек каталога. */
+    private fun manifestFile(): java.io.File = listOf(
+        java.io.File("models/manifest.json"),
+        java.io.File("../models/manifest.json")
+    ).firstOrNull { it.isFile }
+        ?: error("models/manifest.json не найден относительно рабочих каталогов теста")
+
+    private fun readManifestRoot(): JsonObject = Json.parseToJsonElement(
+        manifestFile().readText(Charsets.UTF_8)
+    ).jsonObject
+
+    private fun manifestVersion(root: JsonObject): Int =
+        (root["version"] as? JsonPrimitive)?.content?.toIntOrNull()
+            ?: error("manifest.json не содержит числового поля version")
 
     @Test
     fun `parses valid catalog`() {
@@ -254,23 +278,21 @@ class ModelCatalogParserTest {
     fun `shipping assets catalog parses with per-url hashes for every download url`() {
         // Реальный каталог из assets: парсер не должен его отбраковать,
         // и каждое downloadUrls() должно иметь непустой SHA-256.
-        val candidates = listOf(
-            java.io.File("src/main/assets/models_catalog.json"),
-            java.io.File("app/src/main/assets/models_catalog.json")
+        val raw = catalogFile().readText(Charsets.UTF_8)
+        // Версия и состав — сверяются с models/manifest.json (без хардкода:
+        // каталог генерируется из манифеста, синхронность фиксируется тестом
+        // assets catalog version matches models manifest version).
+        val manifestRoot = readManifestRoot()
+        assertEquals(
+            "Версия каталога assets отстала от models/manifest.json",
+            manifestVersion(manifestRoot),
+            parser.parseVersion(raw)
         )
-        val file = candidates.firstOrNull { it.isFile }
-        assertTrue("models_catalog.json не найден относительно $candidates", file != null)
-
-        val raw = file!!.readText(Charsets.UTF_8)
-        // Версия каталога assets (после #55 — 12: Whisper/RHVoice/eSpeak NG
-        // помечены hidden; ревью — 13: добавлено поле default_for_language).
-        assertEquals(13, parser.parseVersion(raw))
 
         val cards = parser.parse(raw)
-        // Число карточек = текущему составу каталога assets (после #50 —
-        // 14 моделей: 11 из #34 + 3 скачиваемых Piper TTS; скрытые hidden
-        // карточки issue #55 парсятся и остаются в каталоге).
-        assertEquals(14, cards.size)
+        // Число карточек = составу каталога в манифесте (скрытые hidden-карточки
+        // issue #55 парсятся и остаются в каталоге).
+        assertEquals(manifestRoot["models"]!!.jsonArray.size, cards.size)
         // Скрытые из UI карточки (issue #55): в каталоге есть, hidden=true.
         val expectedHidden = setOf(
             "stt-whisper-small-multilingual",
@@ -336,31 +358,70 @@ class ModelCatalogParserTest {
         // Issue #68: version в assets/models_catalog.json обязан быть синхронен
         // с version манифеста models/manifest.json (единственный источник
         // правды о моделях — см. комментарий самого манифеста).
-        val catalogCandidates = listOf(
-            java.io.File("src/main/assets/models_catalog.json"),
-            java.io.File("app/src/main/assets/models_catalog.json")
-        )
-        val catalog = catalogCandidates.firstOrNull { it.isFile }
-        assertTrue("models_catalog.json не найден относительно $catalogCandidates", catalog != null)
-
-        val manifestCandidates = listOf(
-            java.io.File("models/manifest.json"),
-            java.io.File("../models/manifest.json")
-        )
-        val manifest = manifestCandidates.firstOrNull { it.isFile }
-        assertTrue("models/manifest.json не найден относительно $manifestCandidates", manifest != null)
-
-        val manifestRoot = Json.parseToJsonElement(
-            manifest!!.readText(Charsets.UTF_8)
-        ).jsonObject
-        val manifestVersion = (manifestRoot["version"] as? JsonPrimitive)?.content?.toIntOrNull()
-            ?: error("manifest.json не содержит числового поля version")
-
         assertEquals(
             "Версия каталога assets отстала от models/manifest.json",
-            manifestVersion,
-            parser.parseVersion(catalog!!.readText(Charsets.UTF_8))
+            manifestVersion(readManifestRoot()),
+            parser.parseVersion(catalogFile().readText(Charsets.UTF_8))
         )
+    }
+
+    @Test
+    fun `assets catalog fully matches models manifest`() {
+        // Полная поштучная сверка assets/models_catalog.json с
+        // models/manifest.json: набор id, urls[i] ↔ files[i].url,
+        // sha256s[i] ↔ files[i].sha256, sizeBytes, hidden,
+        // default_for_language. Каталог генерируется из манифеста — любое
+        // расхождение (правкa одного файла без другого) валит этот тест.
+        val cards = parser.parse(catalogFile().readText(Charsets.UTF_8))
+        val manifestRoot = readManifestRoot()
+
+        val manifestById = manifestRoot["models"]!!.jsonArray.associate { element ->
+            val model = element.jsonObject
+            ((model["id"] as JsonPrimitive).content) to model
+        }
+        assertEquals(
+            "Число карточек каталога не совпадает с манифестом",
+            manifestById.size,
+            cards.size
+        )
+        assertEquals(
+            "Набор id в каталоге не совпадает с манифестом",
+            manifestById.keys.toSet(),
+            cards.map { it.id }.toSet()
+        )
+
+        for (card in cards) {
+            val model = manifestById.getValue(card.id)
+            val files = (model["files"] ?: error("${card.id}: в манифесте нет files"))
+                .jsonArray.map { it.jsonObject }
+
+            assertEquals(
+                "${card.id}: sizeBytes рассинхронизирован",
+                (model["sizeBytes"] as JsonPrimitive).content.toLong(),
+                card.sizeBytes
+            )
+            val expectedHidden =
+                (model["hidden"] as? JsonPrimitive)?.content?.toBoolean() ?: false
+            assertEquals("${card.id}: hidden рассинхронизирован", expectedHidden, card.hidden)
+
+            val manifestUrls = files.map { (it["url"] as JsonPrimitive).content }
+            assertEquals("${card.id}: urls рассинхронизированы", manifestUrls, card.downloadUrls())
+
+            val manifestHashes = files.map { file ->
+                (file["sha256"] as? JsonPrimitive)?.content
+            }
+            assertEquals("${card.id}: sha256 рассинхронизированы", manifestHashes, card.sha256s)
+        }
+
+        // default_for_language: карта язык → id модели в каталоге совпадает
+        // с манифестом (карточка несёт язык, остальные — без default).
+        val manifestDefaults = manifestRoot["default_for_language"]?.jsonObject
+            ?.mapValues { (_, id) -> (id as JsonPrimitive).content }
+            ?: emptyMap()
+        val cardDefaults = cards.mapNotNull { card ->
+            card.defaultForLanguage?.let { language -> language to card.id }
+        }.toMap()
+        assertEquals("default_for_language рассинхронизирован", manifestDefaults, cardDefaults)
     }
 
     @Test

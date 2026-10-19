@@ -28,21 +28,22 @@ class TranslationHistoryRepository @Inject constructor(
 
     /**
      * Добавить успешный перевод. Предыдущая идентичная запись (то же направление
-     * и текст) удаляется, чтобы повторы не плодились.
+     * и текст) удаляется, чтобы повторы не плодились. Удаление, вставка и
+     * обрезка выполняются одним [TranslationHistoryDao.addEntry] в транзакции —
+     * конкурентные вызовы не оставляют дубликаты.
      */
     suspend fun add(sourceLang: String, targetLang: String, inputText: String, resultText: String) {
         if (inputText.isBlank() || resultText.isBlank()) return
-        dao.deleteMatching(sourceLang, targetLang, inputText)
-        dao.insert(
+        dao.addEntry(
             TranslationHistoryEntity(
                 sourceLang = sourceLang,
                 targetLang = targetLang,
                 inputText = inputText,
                 resultText = resultText,
                 createdAt = System.currentTimeMillis()
-            )
+            ),
+            MAX_ENTRIES
         )
-        dao.trim(MAX_ENTRIES)
     }
 
     suspend fun delete(id: Long) = dao.deleteById(id)

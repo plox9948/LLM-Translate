@@ -365,6 +365,14 @@ class SherpaSttEngine @Inject constructor(
 
     /**
      * Определить тип модели по файлам каталога.
+     *
+     * Допущение: эвристика по именам ONNX-файлов (`encoder`/`decoder`/`joiner`,
+     * префикс `model`) рассчитана на канонические имена sherpa-onnx
+     * (`*.encoder.onnx` / `*.decoder.onnx` / `*.joiner.onnx`, NeMo — `model*.onnx`).
+     * Она хрупкая: ONNX-файлы с произвольными («прочими») именами могут быть
+     * классифицированы иначе или не распознаны вовсе. Состав файлов в пучках
+     * каталога зафиксирован манифестом (models/manifest.json), для импортируемых
+     * вручную наборов с нестандартными именами классификация не гарантируется.
      */
     private fun detectModel(dir: File): ModelInfo? {
         val files = dir.listFiles() ?: return null
