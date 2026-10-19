@@ -102,6 +102,8 @@ models) together with an estimated memory consumption.
 - Type text into the field ("Enter text to translate…") and press "Translate".
   During a long translation a "Cancel" button appears. "Clear" empties both
   fields.
+- The screen scrolls: long input and long translations are fully visible, the
+  input field grows with the text instead of cutting it off.
 - In the input field header, next to the microphone, there is a "Copy source
   text" button — it puts the typed text into the clipboard (available while the
   field is not empty).
