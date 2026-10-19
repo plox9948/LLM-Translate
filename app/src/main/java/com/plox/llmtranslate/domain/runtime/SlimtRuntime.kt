@@ -19,6 +19,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.ArrayDeque
+import java.util.concurrent.atomic.AtomicBoolean
 import timber.log.Timber
 
 /**
@@ -309,20 +311,48 @@ class SlimtRuntime @Inject constructor(
     override suspend fun release() = engineCache.release()
 
     /**
+     * Очередь пучков, изъятых из кэша, но ещё не уничтоженных nativeDestroy'ом
+     * (ревью раунда 3): при зависшем воркере slimt освобождение неограниченно
+     * накапливало fire-and-forget корутины и потоки. теперь один воркер на
+     * [detachedWorkerActive]; новые пучки до его завершения просто дожидаются
+     * в очереди (память посчитать утечкой нельзя до конца процесса, но
+     * потоки не копятся).
+     */
+    private val detachedQueue = ArrayDeque<ModelBundle>()
+
+    /** Есть ли незавершённое отложенное освобождение (запуск воркера однократен). */
+    private val detachedWorkerActive = AtomicBoolean(false)
+
+    /**
      * Освободить пучки, изъятые из кэша вне общего мьютекса
-     * ([EngineCacheScaffold.detachAllUnlocked]) — fire-and-forget в
-     * [releaseScope] (ревью повт. аудита). nativeDestroy (деструктор
-     * slimt::Async) дожидается зависшего воркера и может не вернуться
-     * вовсе; блокировать им translate/mgr недопустимо, а отменять сам
-     * деструктор нативный слой не умеет — поэтому без withTimeoutOrNull,
-     * просто запуск на освобождение. Уничтожение каждого handle ровно
-     * единожды: пучки изъяты из кэша, повторные release()/releaseModel
-     * на них не сработают (use-after-free исключён).
+     * ([EngineCacheScaffold.detachAllUnlocked]) — в единственный воркер
+     * отложенного освобождения на [releaseScope] (ревью повт. аудита).
+     * nativeDestroy (деструктор slimt::Async) дожидается зависшего воркера
+     * и может не вернуться вовсе; блокировать им translate/mgr недопустимо,
+     * а отменять сам деструктор нативный слой не умеет — поэтому без
+     * withTimeoutOrNull. Повторный вызов, пока предыдущее освобождение
+     * висит, новых потоков не поднимает: пучки кладутся в [detachedQueue]
+     * и будут уничтожены тем же воркером по завершении текущего
+     * (ревью раунда 3). Уничтожение каждого handle ровно единожды: пучки
+     * изъяты из кэша, повторные release()/releaseModel на них не сработают
+     * (use-after-free исключён).
      */
     private fun scheduleDetachedRelease(detached: List<ModelBundle>) {
         if (detached.isEmpty()) return
+        synchronized(detachedQueue) { detachedQueue.addAll(detached) }
+        if (!detachedWorkerActive.compareAndSet(false, true)) return
         releaseScope.launch(NonCancellable) {
-            detached.forEach { bundle ->
+            while (true) {
+                val bundle = synchronized(detachedQueue) {
+                    val head = detachedQueue.poll()
+                    // Флаг снимается в том же замке, что и опустошение
+                    // очереди: конкурентный scheduleDetachedRelease либо
+                    // застанет активного воркера (пучок дождётся этого
+                    // цикла), либо добавит после сброса и сам поднимет
+                    // новый воркер.
+                    if (head == null) detachedWorkerActive.set(false)
+                    head
+                } ?: break
                 if (bundle.handle != 0L) {
                     try {
                         SlimtNative.nativeDestroy(bundle.handle)

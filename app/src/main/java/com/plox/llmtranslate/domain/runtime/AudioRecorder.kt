@@ -513,7 +513,13 @@ class AudioRecorder @Inject constructor(
                         Timber.e(
                             "AudioRecord.read() вернул ошибку $read — запись аварийно останавливается"
                         )
-                        finishAfterReadFailure()
+                        // Поколение уже снято — сцену нашей записи перехватил
+                        // stopRecording()/cancel(), он и освобождает; если в
+                        // этом окне стартовала новая запись, наша обработка её
+                        // убивать не должна (ревью раунда 3).
+                        if (currentGeneration.get()) {
+                            finishAfterReadFailure(currentGeneration)
+                        }
                         break
                     } else {
                         // read == 0: данных в буфере нет, чтение вернулось бы
@@ -538,11 +544,18 @@ class AudioRecorder @Inject constructor(
      * нет; иначе под [sceneLock] — перевод [isRecording] в false, снятие
      * поколения этой записи и захват целевых объектов. Долгий cleanup
      * (join цикла чтения, stop/release, WAV) вызывающий выполняет вне замка.
+     * [expectedGeneration] (ревью раунда 3): если задан — сцена снимается
+     * только когда активное поколение всё ещё это же; иначе (нашу сцену уже
+     * снял конкурентный вход и, возможно, стартовала новая запись) — null
+     * без побочных эффектов, чтобы не убить чужую новую сцену.
      */
-    private fun captureStopScene(): StoppedScene? {
+    private fun captureStopScene(expectedGeneration: AtomicBoolean? = null): StoppedScene? {
         if (!isRecording) return null
         return synchronized(sceneLock) {
             if (!isRecording) return@synchronized null
+            if (expectedGeneration != null && generation !== expectedGeneration) {
+                return@synchronized null
+            }
             _recordingFlow.value = false
             val job = readJob
             readJob = null
@@ -588,9 +601,13 @@ class AudioRecorder @Inject constructor(
      * отмена внешней корутины не должна обрывать освобождение на середине.
      * Данные частично записанного с дефектного устройства аудио ненадёжны —
      * WAV отбрасывается (вызывающий stopRecording() получит null).
+     * [currentGeneration] (ревью раунда 3): сцена снимается и освобождается
+     * только если она принадлежит поколению этого же цикла чтения — иначе
+     * нашу сцену уже снял stopRecording()/cancel() (или стартовала новая
+     * запись), и освобождать должен захвативший, а не мы.
      */
-    private suspend fun finishAfterReadFailure() {
-        val scene = captureStopScene() ?: return
+    private suspend fun finishAfterReadFailure(currentGeneration: AtomicBoolean) {
+        val scene = captureStopScene(expectedGeneration = currentGeneration) ?: return
         withContext(NonCancellable + Dispatchers.IO) {
             // joinscene.job пропускаем: это текущая корутина.
             synchronized(sceneLock) {

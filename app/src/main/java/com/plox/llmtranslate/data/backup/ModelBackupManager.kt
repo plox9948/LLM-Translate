@@ -9,6 +9,7 @@ import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.data.storage.ModelStorage
 import com.plox.llmtranslate.domain.model.ArchiveFormats
+import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
@@ -98,6 +99,29 @@ private fun bundleShaOk(entry: BackupModelEntry, dir: File): Boolean {
         if (actual == null || !actual.equals(expected, ignoreCase = true)) return false
     }
     return true
+}
+
+/**
+ * Оценка места под установку записи бэкапа (ревью раунда 3): sizeBytes
+ * манифеста — размер скачиваемых артефактов, без раздувания распаковки
+ * archive (.tar.gz/.zip/.tar.bz2 → ×2) и gz-артефактов slimt (gunzip → ×1.8).
+ * Тип раскладки определяется по тем же именам URL ([DownloadLayout.
+ * sanitizedBasename] + [ArchiveFormats]), что в гейте скачивания
+ * (InstallCheckLogic.cardLayoutFlags), требуемый объём — единой функцией
+ * [InstallCheckLogic.requiredDownloadFreeBytes] (для одиночных файлов её
+ * запас 1.2x заменяет прежний ×1.1 гейта импорта). Пустые urls
+ * (импортированные модели) — одиночная раскладка.
+ */
+internal fun backupInstallRequiredBytes(entry: BackupModelEntry): Long {
+    val names = entry.urls.mapIndexed { index, url ->
+        DownloadLayout.sanitizedBasename(url, index)
+    }
+    val isArchiveLayout = names.any { ArchiveFormats.isArchive(it) }
+    val isGzipLayout = !isArchiveLayout &&
+        names.any { ArchiveFormats.isCompressedArtifact(it) }
+    return InstallCheckLogic.requiredDownloadFreeBytes(
+        entry.sizeBytes, isArchiveLayout, isGzipLayout
+    )
 }
 
 /**
@@ -278,8 +302,10 @@ class ModelBackupManager @Inject constructor(
      * поэтому [moveToTarget] всегда падал к cross-volume copy, а StatFs-гейт
      * объёма вообще не проверялся на импорте. Temp кладётся соседом корня
      * моделей (по образцу staging в ModelManagerImpl.promoteExtractedDir),
-     * перед распаковкой файлов модели — StatFs-гейт по суммарному размеру
-     * из манифеста (тот же порог ×1.1, что у экспорта, общий [hasFreeSpaceFor]).
+     * перед распаковкой файлов модели — StatFs-гейт по оценке из манифеста
+     * (общий [hasFreeSpaceFor]); оценка учитывает раздувание распаковки
+     * archive/gz-раскладок той же формулой, что гейт скачивания
+     * (ревью раунда 3), а не только размер скачиваемых артефактов.
      */
     suspend fun importFromUri(sourceUri: Uri): ImportResult = withContext(Dispatchers.IO) {
         var imported = 0
@@ -321,13 +347,23 @@ class ModelBackupManager @Inject constructor(
                                 )
                                 manifest = parsed
                                 // StatFs-гейт перед распаковкой файлов моделей
-                                // (ревью повт. аудита, п.6): суммарный размер
-                                // из манифеста с тем же запасом ×1.1, что у
-                                // экспорта; том — тот, где лежит temp (он же
-                                // том каталога моделей). Нехватка — явный
-                                // отказ до записи файлов, temp чистится finally.
+                                // (ревью повт. аудита, п.6 + ревью раунда 3):
+                                // sizeBytes манифеста — размер СКАЧИВАЕМЫХ
+                                // артефактов, а на диск ложится распакованное
+                                // содержимое archive (×2) и gz (×1.8)
+                                // раскладок. Оценка — единой формулой гейта
+                                // скачивания InstallCheckLogic.
+                                // requiredDownloadFreeBytes по типу раскладки
+                                // каждой записи (архивные/gz имена — те же
+                                // ArchiveFormats и DownloadLayout, что в
+                                // bundleShaOk); том — тот, где лежит temp
+                                // (он же том каталога моделей). Нехватка —
+                                // явный отказ до записи файлов, temp чистится
+                                // finally.
                                 val neededBytes =
-                                    parsed.models.sumOf { it.sizeBytes } * 11 / 10
+                                    parsed.models.sumOf { entry ->
+                                        backupInstallRequiredBytes(entry)
+                                    }
                                 if (!hasFreeSpaceFor(tempDir, neededBytes)) {
                                     Timber.e(
                                         "Недостаточно места под распаковку бэкапа: " +
