@@ -74,6 +74,12 @@ import com.plox.llmtranslate.ui.translate.TranslateLanguage
 import kotlinx.coroutines.delay
 import java.util.Locale
 
+/** MIME-фильтры пикера восстановления резервной копии (ZIP). */
+private val ZIP_IMPORT_MIME_TYPES = arrayOf("application/zip", "application/x-zip-compressed", "*/*")
+
+/** MIME-фильтры пикера точечного импорта модели (GGUF/ZIP/произвольный). */
+private val MODEL_IMPORT_MIME_TYPES = arrayOf("application/zip", "application/octet-stream", "*/*")
+
 /**
  * Экран «Модели»: три секции по категориям, карточки, скачивание, импорт.
  */
@@ -161,6 +167,26 @@ fun ModelsScreen(
         }
     }
 
+    // Запуск пикера восстановления бэкапа по запросу из состояния
+    // (ревью #83): запрос снимается ДО launch() — двойной тап не поднимает
+    // второй пикер и не запускает второй импорт архива (паттерн экспорта,
+    // issue #40).
+    LaunchedEffect(uiState.backupRestoreRequest) {
+        if (uiState.backupRestoreRequest) {
+            viewModel.consumeBackupRestoreRequest()
+            backupImportLauncher.launch(ZIP_IMPORT_MIME_TYPES)
+        }
+    }
+
+    // Запуск пикера точечного импорта модели по запросу из состояния
+    // (ревью #83), тот же паттерн.
+    LaunchedEffect(uiState.modelImportRequest) {
+        if (uiState.modelImportRequest) {
+            viewModel.consumeModelImportRequest()
+            importLauncher.launch(MODEL_IMPORT_MIME_TYPES)
+        }
+    }
+
     // SAF: экспорт модели на другое устройство.
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("*/*")
@@ -226,11 +252,7 @@ fun ModelsScreen(
                 OutlinedActionButton(
                     icon = Icons.Filled.FileDownload,
                     labelRes = R.string.models_restore,
-                    onClick = {
-                        backupImportLauncher.launch(
-                            arrayOf("application/zip", "application/x-zip-compressed", "*/*")
-                        )
-                    },
+                    onClick = { viewModel.onBackupRestoreClick() },
                     modifier = Modifier.weight(1f),
                     enabled = !uiState.isBusy
                 )
@@ -361,11 +383,7 @@ fun ModelsScreen(
                     actionsLocked = actionsLocked,
                     downloadPending = downloadPending,
                     onDownload = { viewModel.onDownloadClick(card) },
-                    onImport = {
-                        importLauncher.launch(
-                            arrayOf("application/zip", "application/octet-stream", "*/*")
-                        )
-                    },
+                    onImport = { viewModel.onModelImportClick() },
                     onDelete = { installedModel?.let { viewModel.onDeleteClick(it) } },
                     onActive = {
                         if (card.category == ModelCategory.TTS) {

@@ -90,7 +90,12 @@ class FavoritesViewModel @Inject constructor(
             messageRes = R.string.favorites_observe_failed,
             errors = observeErrors,
             marker = "favorites_combined",
-        ) { _favorites.value = it }
+        ) { entries ->
+            _favorites.value = entries
+            // Список мог дойти позже статуса живой фразы — повторная попытка
+            // привязки выбора «что говорим» (ревью #83).
+            restoreSpeakingFromCoordinator()
+        }
         viewModelScope.launch {
             // Инициализация TTS текущим движком (как на экране «Перевод»).
             ttsRuntime.trackEnginePreference(preferences.ttsEngine)
@@ -111,9 +116,38 @@ class FavoritesViewModel @Inject constructor(
                 } else if (err == null) {
                     lastLoggedTtsError = null
                 }
-                if (!s.isSpeaking) _speaking.value = null
+                if (!s.isSpeaking) {
+                    _speaking.value = null
+                } else if (_speaking.value == null) {
+                    // ViewModel пересоздана при живой фразе координатора
+                    // (смена вкладки, recreation) — выбор не восстанавливался,
+                    // и кнопка говорящего поля не показывала «стоп» (ревью #83).
+                    restoreSpeakingFromCoordinator()
+                }
             }
         }
+    }
+
+    /**
+     * Привязать выбор «что говорим» к живой фразе координатора при
+     * пересоздании ViewModel (ревью #83): [TtsPlaybackCoordinator] — синглтон
+     * процесса, его статус переживает гибель ViewModel; запись находится
+     * совпадением текста активной фразы с оригиналом или переводом. Совпадения
+     * нет (фраза с экрана «Перевод», удалённая запись) — выбор остаётся null.
+     * Перезапуск фразы не выполняется — достаточно стоп-состояния кнопки.
+     */
+    private fun restoreSpeakingFromCoordinator() {
+        if (_speaking.value != null) return
+        val status = ttsCoordinator.status.value
+        if (!status.isSpeaking) return
+        val text = status.text ?: return
+        val match = _favorites.value.firstOrNull {
+            it.inputText == text || it.resultText == text
+        } ?: return
+        _speaking.value = SpeakingSelection(
+            match.id,
+            if (match.inputText == text) FavoriteSpeakField.INPUT else FavoriteSpeakField.RESULT
+        )
     }
 
     /** Обновить поисковый запрос (поиск над списком избранного). */

@@ -26,6 +26,7 @@ import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import com.plox.llmtranslate.domain.runtime.ProcessMemoryReader
 import com.plox.llmtranslate.ui.ObserveErrorTracker
+import com.plox.llmtranslate.ui.launchGuarded
 import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -34,7 +35,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 
@@ -65,6 +68,18 @@ data class ModelsUiState(
     val deviceInfo: DeviceInfo? = null,
     val exportRequest: ExportRequest? = null,
     val backupExportRequest: BackupExportRequest? = null,
+    /**
+     * Pending-запрос запуска SAF-пикера восстановления резервной копии
+     * (ревью #83): live-значение только до запуска пикера — пикер запускается
+     * эффектом ПОСЛЕ снятия запроса (паттерн экспорта, issue #40), двойной
+     * тап не поднимает второй пикер и не запускает второй импорт.
+     */
+    val backupRestoreRequest: Boolean = false,
+    /**
+     * Pending-запрос запуска SAF-пикера точечного импорта модели
+     * (ревью #83), та же семантика, что у [backupRestoreRequest].
+     */
+    val modelImportRequest: Boolean = false,
     val isBusy: Boolean = false,
     /** Id модели, для которой идёт запись экспорта (SAF-копирование/zip). */
     val exportingModelId: String? = null,
@@ -228,6 +243,8 @@ class ModelsViewModel @Inject constructor(
                 pendingDownloadIds = pending,
                 exportRequest = current.exportRequest,
                 backupExportRequest = current.backupExportRequest,
+                backupRestoreRequest = current.backupRestoreRequest,
+                modelImportRequest = current.modelImportRequest,
                 isBusy = current.isBusy,
                 exportingModelId = current.exportingModelId,
                 statusMessage = current.statusMessage
@@ -302,23 +319,25 @@ class ModelsViewModel @Inject constructor(
         // повторно. Pending снимается при статусе из Room (см. подписку init),
         // при блокировке установки или отказе от лицензии.
         if (card.id in _uiState.value.pendingDownloadIds) return
-        _uiState.value = _uiState.value.copy(
-            pendingDownloadIds = _uiState.value.pendingDownloadIds + card.id
-        )
+        _uiState.update { it.copy(pendingDownloadIds = it.pendingDownloadIds + card.id) }
         // Устройство для проверки совместимости: перечитывается при каждом тапе —
         // свободное место и память меняются, пока жив процесс, кэшированное
-        // значение устаревает. Чтение ActivityManager/StatFs блокирует — IO.
-        viewModelScope.launch(Dispatchers.IO) {
-            val loaded = modelManager.deviceInfo().also { _deviceInfo.value = it }
+        // значение устаревает. Чтение ActivityManager/StatFs блокирует — только
+        // ОН выполнятся на IO; правки состояния (pending, license-диалог,
+        // blockedReason) — на Main.immediate: RMW _uiState из IO-корутины
+        // гонялся с Main-коллектором Room-цепочки и терял transient-поля,
+        // оставляя залипшую кнопку «Скачать» (ревью #83).
+        viewModelScope.launch {
+            val loaded = withContext(Dispatchers.IO) {
+                modelManager.deviceInfo().also { _deviceInfo.value = it }
+            }
             applyInstallCheck(card, loaded)
         }
     }
 
     /** Снять guard «скачивание запущено» с карточки. */
     private fun clearDownloadPending(cardId: String) {
-        _uiState.value = _uiState.value.copy(
-            pendingDownloadIds = _uiState.value.pendingDownloadIds - cardId
-        )
+        _uiState.update { it.copy(pendingDownloadIds = it.pendingDownloadIds - cardId) }
     }
 
     private fun applyInstallCheck(card: ModelCard, device: DeviceInfo) {
@@ -331,6 +350,13 @@ class ModelsViewModel @Inject constructor(
             }
             else -> {
                 if (card.requiresLicenseConfirmation) {
+                    // Перезапись диалога лицензирования другой карточкой:
+                    // скачивание прежней не запускалось и уже не запустится —
+                    // снимаем её pending, иначе кнопка «Скачать» залипнет
+                    // заблокированной навсегда (ревью #83).
+                    _licenseConfirmModel.value?.takeIf { it.id != card.id }?.let { previous ->
+                        clearDownloadPending(previous.id)
+                    }
                     _licenseConfirmModel.value = card
                 } else {
                     doDownload(card)
@@ -361,9 +387,15 @@ class ModelsViewModel @Inject constructor(
     }
 
     fun onActiveClick(model: InstalledModel) {
-        viewModelScope.launch {
-            modelManager.setActive(model.category, model.id)
-        }
+        // Сбой Room/DataStore в операции назначения (getById + edit) не роняет
+        // процесс: лог + sticky-баннер трекера (ревью #83).
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.models_assignment_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось назначить активную модель ${model.id}",
+            marker = "set_active_model"
+        ) { modelManager.setActive(model.category, model.id) }
     }
 
     /**
@@ -372,7 +404,13 @@ class ModelsViewModel @Inject constructor(
      */
     fun onTtsEngineSelect(card: ModelCard) {
         val engine = card.runtime.ttsEngineId() ?: return
-        viewModelScope.launch { preferences.setTtsEngine(engine) }
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.settings_write_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось сохранить выбор движка синтеза речи",
+            marker = "select_tts_engine"
+        ) { preferences.setTtsEngine(engine) }
     }
 
     fun onCancelDownload(model: InstalledModel) {
@@ -401,9 +439,13 @@ class ModelsViewModel @Inject constructor(
     fun onSttLanguageToggle(card: ModelCard, language: String) {
         val current = _sttByLanguage.value[language]
         val next = if (current == card.id) null else card.id
-        viewModelScope.launch {
-            modelManager.setSttForLanguage(language, next)
-        }
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.models_assignment_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось обновить STT-назначение языка $language",
+            marker = "set_stt_language"
+        ) { modelManager.setSttForLanguage(language, next) }
     }
 
     /**
@@ -423,9 +465,13 @@ class ModelsViewModel @Inject constructor(
             val current = _ttsByLanguage.value[language]
             if (current == card.id) null else card.id
         }
-        viewModelScope.launch {
-            modelManager.setTtsForLanguage(language, next)
-        }
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.models_assignment_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось обновить TTS-назначение языка $language",
+            marker = "set_tts_language"
+        ) { modelManager.setTtsForLanguage(language, next) }
     }
 
     /**
@@ -476,6 +522,35 @@ class ModelsViewModel @Inject constructor(
      */
     fun consumeBackupExportRequest() {
         _uiState.value = _uiState.value.copy(backupExportRequest = null)
+    }
+
+    /**
+     * Тап «Восстановить»: пометить запрос выбора ZIP в пикере (ревью #83).
+     * Пикер запускает эффект на [ModelsUiState.backupRestoreRequest] и снимает
+     * запрос ДО launch() — двойной тап не поднимает второй пикер и не
+     * запускает повторный импорт архива.
+     */
+    fun onBackupRestoreClick() {
+        _uiState.update { it.copy(backupRestoreRequest = true) }
+    }
+
+    /** Снять показанный запрос пикера восстановления (сразу после launch()). */
+    fun consumeBackupRestoreRequest() {
+        _uiState.update { it.copy(backupRestoreRequest = false) }
+    }
+
+    /**
+     * Тап «Импорт» на карточке: пометить запрос выбора файла модели в пикере
+     * (ревью #83), тот же паттерн request-in-state, что у
+     * [onBackupRestoreClick].
+     */
+    fun onModelImportClick() {
+        _uiState.update { it.copy(modelImportRequest = true) }
+    }
+
+    /** Снять показанный запрос пикера импорта (сразу после launch()). */
+    fun consumeModelImportRequest() {
+        _uiState.update { it.copy(modelImportRequest = false) }
     }
 
     /**

@@ -197,6 +197,13 @@ class TranslateViewModel @Inject constructor(
         internal const val MAX_RESTORED_TEXT_CHARS = 10_000
 
         /**
+         * Пауза перед повторной попыткой забрать WAV, дозакрытый рекордером
+         * по потолку длительности (ревью #83): патч размеров выполняется на IO
+         * сразу после снятия recordingFlow.
+         */
+        internal const val AUTO_WAV_RETRY_MS = 300L
+
+        /**
          * Снятое из SavedStateHandle направление результата (issue #81):
          * код языка → [TranslateLanguage]; при отсутствии/неизвестном коде —
          * null (дальше работает прежний фолбэк на направление по умолчанию).
@@ -247,6 +254,14 @@ class TranslateViewModel @Inject constructor(
     // Установленные STT-модели и назначения «язык → модель» (issue #28).
     private var sttModels: List<InstalledModel> = emptyList()
     private var sttAssignments: Map<String, String> = emptyMap()
+
+    // Локальный guard «скачивание запущено» для карточек недостающих моделей
+    // (по образцу pendingDownloadIds экрана «Модели», ревью #83): между тапом
+    // «Скачать» и Room-эмиссией DOWNLOADING есть окно двойного тапа, а
+    // идемпотентность запуска скачивания не гарантирована (WorkManager REPLACE
+    // перезапускает воркер). Обращения — только из viewModelScope (главный
+    // поток), атомарности не требуется.
+    private val pendingMissingDownloads = mutableSetOf<String>()
 
     // Ключи избранного «направление|исходный текст» для звёздочки результата
     // (issue #38).
@@ -426,15 +441,41 @@ class TranslateViewModel @Inject constructor(
                     // Таймер обнуляется только на реальном переходе
                     // true→false (ревью #13): повторная эмиссия «false»
                     // не стирает восстановленный из рекордера elapsed.
-                    if (wasRecording) _recordingElapsed.value = 0L
+                    if (wasRecording) {
+                        _recordingElapsed.value = 0L
+                        // Само-закрытие цикла чтения по потолку MAX_PCM_BYTES
+                        // (issue #83): WAV дозакрыт и сохранён, путь отдаёт
+                        // первый stopRecording(). Сцена снимается ДО патча
+                        // размеров на IO — путь может отстать от recordingFlow,
+                        // повтор с паузой. Внешний cancel(), сбой чтения и
+                        // штатная остановка (stopRecordingInProgress) отдают
+                        // null — без ложной «Запись пуста» и без двойного
+                        // транскрайба (отдача пути одноразовая).
+                        if (!stopRecordingInProgress) {
+                            val autoWav = audioRecorder.stopRecording()
+                            if (autoWav != null) {
+                                transcribeAudio(autoWav)
+                            } else if (!audioRecorder.isRecording) {
+                                delay(AUTO_WAV_RETRY_MS)
+                                if (!stopRecordingInProgress && !audioRecorder.isRecording) {
+                                    val lateWav = audioRecorder.stopRecording()
+                                    if (lateWav != null) transcribeAudio(lateWav)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
         viewModelScope.launch {
             // Таймер длительности записи для индикатора (issue #68): в
-            // отдельный поток, не через общий UiState (ревью).
+            // отдельный поток, не через общий UiState (ревью). Пишется только
+            // пока запись активна (ревью #83): поздняя эмиссия elapsed после
+            // остановки иначе затирала бы сброленный в ноль таймер.
             audioRecorder.recordingElapsedMs.collect { elapsedMs ->
-                _recordingElapsed.value = elapsedMs
+                if (_uiState.value.isRecording) {
+                    _recordingElapsed.value = elapsedMs
+                }
             }
         }
         viewModelScope.launch {
@@ -563,12 +604,25 @@ class TranslateViewModel @Inject constructor(
         // направления перевешивает более раннюю). Все обращения — из
         // viewModelScope (главный поток), атомарности не требуется.
         val generation = ++directionSaveGeneration
-        viewModelScope.launch {
-            preferences.setLastDirection(saved.first.code, saved.second.code)
-            if (generation == directionSaveGeneration &&
-                pendingHistoryDirection == saved
-            ) {
-                pendingHistoryDirection = null
+        // Сбой записи настроек (IOException DataStore) не роняет процесс и не
+        // оставляет pending-направление залипшим: снимаем его и в ветке сбоя
+        // (ревью #83) — иначе эмиссии настроек навсегда заблокированы
+        // направлением применённой записи истории.
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.settings_write_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось сохранить направление перевода",
+            marker = "save_last_direction"
+        ) {
+            try {
+                preferences.setLastDirection(saved.first.code, saved.second.code)
+            } finally {
+                if (generation == directionSaveGeneration &&
+                    pendingHistoryDirection == saved
+                ) {
+                    pendingHistoryDirection = null
+                }
             }
         }
     }
@@ -592,9 +646,15 @@ class TranslateViewModel @Inject constructor(
 
     private fun markOnboardingDone() {
         update { it.copy(showOnboarding = false) }
-        viewModelScope.launch {
-            preferences.setOnboardingDone()
-        }
+        // Сбой записи флага онбординга — лог + sticky-ошибка вместо падения
+        // процесса (ревью #83).
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.settings_write_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось отметить прохождение онбординга",
+            marker = "mark_onboarding_done"
+        ) { preferences.setOnboardingDone() }
     }
 
     fun onInputTextChanged(text: String) {
@@ -1194,6 +1254,17 @@ class TranslateViewModel @Inject constructor(
             SttModelSelector.missingCard(catalogCards, sttAssignments, sttModels, sttLanguage)
         )
 
+        // Снимаем локальный гейт скачивания с id, статус которых подтверждён
+        // Room (DOWNLOADING — есть downloadingProgress; ERROR — кнопка
+        // «Повторить» снова активна), та же семантика, что у
+        // pendingDownloadIds экрана «Модели» (ревью #83).
+        if (pendingMissingDownloads.isNotEmpty()) {
+            val settled = (translationModels + sttModels)
+                .filter { it.status == ModelStatus.DOWNLOADING || it.status == ModelStatus.ERROR }
+                .mapTo(mutableSetOf()) { it.id }
+            pendingMissingDownloads.removeAll(settled)
+        }
+
         _uiState.value = state.copy(
             hasTranslationModel = hasChain,
             missingModels = missing,
@@ -1212,6 +1283,9 @@ class TranslateViewModel @Inject constructor(
      */
     fun downloadMissingModel(card: ModelCard) {
         if (_uiState.value.downloadingProgress.containsKey(card.id)) return
+        // Повторный тап до Room-эмиссии DOWNLOADING: id уже в локальном
+        // гейте — скачивание не перевыпускается (ревью #83).
+        if (!pendingMissingDownloads.add(card.id)) return
         modelManager.startDownload(card)
     }
 

@@ -166,6 +166,40 @@ class WavReaderTest {
     }
 
     @Test
+    fun `data chunk size zero reads file remainder instead of silence`() {
+        // Ревью #83: data с заявленным размером 0 раньше молча давал пустое
+        // чтение; теперь предупреждение в лог и salvage по фактический
+        // остаток файла.
+        val bytes = wavWithDeclaredDataSize(pcm, 0)
+        val samples = WavReader.readPcmAsFloat(write(bytes))
+        assertEquals(2, samples.size)
+        assertEquals(0.5f, samples[0], 1e-6f)
+        assertEquals(-0.5f, samples[1], 1e-6f)
+    }
+
+    @Test
+    fun `data chunk 0xFFFFFFFF reads file remainder instead of silence`() {
+        // 0xFFFFFFFF как int32 = -1: прежняя реализация возвращала пустой
+        // массив без единой строки в логе (ревью #83).
+        val bytes = wavWithDeclaredDataSize(pcm, -1)
+        val samples = WavReader.readPcmAsFloat(write(bytes))
+        assertEquals(2, samples.size)
+    }
+
+    @Test
+    fun `sample count is capped at MAX_SAMPLES instead of declaring whole chunk`() {
+        // Ревью #83: FloatArray аллоцировался по заявленному data-чанку вплоть
+        // до MAX_WAV_BYTES — пик памяти ~150 МБ. Потолок отсчётов —
+        // рекордерный порядок (MAX_PCM_BYTES/2); большее — обрезка с логом.
+        val pcmBig = ByteArray((WavReader.MAX_SAMPLES + 50) * 2) {
+            if (it % 2 == 0) 0x00 else 0x40
+        }
+        val samples = WavReader.readPcmAsFloat(write(wav(pcmBig)))
+        assertEquals(WavReader.MAX_SAMPLES, samples.size)
+        assertEquals(0.5f, samples[0], 1e-6f)
+    }
+
+    @Test
     fun `mismatched fmt is tolerated but data still located`() {
         // Формат вне ожидаемого (16-bit mono 16 кГц) — только предупреждение
         // в лог, данные читаются как раньше (совместимость с чужими WAV).

@@ -78,6 +78,7 @@
     <string name="history_observe_failed">Failed to load history</string>
     <string name="models_observe_failed">Failed to load the model list</string>
     <string name="models_tts_engine_observe_failed">Failed to load the text-to-speech engine setting</string>
+    <string name="models_assignment_failed">Failed to update model selection</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">Backup</string>
@@ -136,6 +137,7 @@
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_observe_failed">Failed to load settings. Refresh the screen</string>
+    <string name="settings_write_failed">Failed to save the setting</string>
     <string name="settings_unload_models">Model unloading</string>
     <string name="settings_unload_now">Immediately</string>
     <plurals name="settings_unload_after_default">

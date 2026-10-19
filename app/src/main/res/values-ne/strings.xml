@@ -78,6 +78,7 @@
     <string name="history_observe_failed">इतिहास लोड गर्न सकिएन</string>
     <string name="models_observe_failed">मोडेलहरूको सूची लोड गर्न सकिएन</string>
     <string name="models_tts_engine_observe_failed">स्पीच सिन्थेसिस इन्जिन सेटिङ लोड गर्न सकिएन</string>
+    <string name="models_assignment_failed">मोडेल चयन अद्यावधिक गर्न सकिएन</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">ब्याकअप</string>
@@ -136,6 +137,7 @@
     <string name="settings_theme_light">उज्यालो</string>
     <string name="settings_theme_dark">अँध्यारो</string>
     <string name="settings_observe_failed">सेटिङ लोड गर्न सकिएन। स्क्रिन ताजा पार्नुहोस्</string>
+    <string name="settings_write_failed">सेटिङ सेभ गर्न सकिएन</string>
     <string name="settings_unload_models">मोडेल अनलोडिङ</string>
     <string name="settings_unload_now">तुरुन्तै</string>
     <plurals name="settings_unload_after_default">

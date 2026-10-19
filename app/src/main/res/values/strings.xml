@@ -78,6 +78,7 @@
     <string name="history_observe_failed">Не удалось загрузить историю</string>
     <string name="models_observe_failed">Не удалось загрузить список моделей</string>
     <string name="models_tts_engine_observe_failed">Не удалось загрузить настройку движка синтеза речи</string>
+    <string name="models_assignment_failed">Не удалось обновить выбор моделей</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">Бэкап</string>
@@ -136,6 +137,7 @@
     <string name="settings_theme_light">Светлая</string>
     <string name="settings_theme_dark">Тёмная</string>
     <string name="settings_observe_failed">Не удалось загрузить настройки. Обновите экран</string>
+    <string name="settings_write_failed">Не удалось сохранить настройку</string>
     <string name="settings_unload_models">Выгрузка моделей</string>
     <string name="settings_unload_now">Сразу</string>
     <plurals name="settings_unload_after_default">

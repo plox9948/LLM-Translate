@@ -154,7 +154,11 @@ class PiperTtsRuntime @Inject constructor(
                                 modelId = model.id,
                                 displayName = model.displayName,
                                 category = ModelCategory.TTS,
-                                ramRequiredMb = model.ramRequiredMb
+                                ramRequiredMb = model.ramRequiredMb,
+                                // Языки пучка в карточке «Загружено в память»
+                                // (ревью #83, тот же класс, что починен у
+                                // SherpaSttEngine).
+                                languages = model.languages
                             )
                         )
                         publishLoadedUnlocked()
@@ -188,7 +192,11 @@ class PiperTtsRuntime @Inject constructor(
                             modelId = model?.id ?: modelDir.name,
                             displayName = model?.displayName ?: modelDir.name,
                             category = ModelCategory.TTS,
-                            ramRequiredMb = model?.ramRequiredMb ?: 0
+                            ramRequiredMb = model?.ramRequiredMb ?: 0,
+                            // Языки пучка (ревью #83): у импортированных без
+                            // объявленных языков — пусто (гейт directionMismatch
+                            // для них пропускается).
+                            languages = model?.languages ?: emptyList()
                         )
                     )
                     publishLoadedUnlocked()

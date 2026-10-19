@@ -285,7 +285,23 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeDestroy(
         throw_java(env, "slimt: некорректный handle");
         return;
     }
-    delete reinterpret_cast<Session *>(handle);  // NOLINT
+    auto *session = reinterpret_cast<Session *>(handle);  // NOLINT
+    try {
+        // ПЕРЕД удалением поднимаем флаг отмены (ревью #83): воркеры Async
+        // читают cancel_flag_ на шагах декода (тот же механизм, что в
+        // nativeCancel), поэтому ~Async.join() не ждёт конца длинного
+        // перевода. cancel объявлен в Session ДО frontend — при обратном
+        // порядке деструкции ~Async завершится раньше уничтожения cancel,
+        // UAF нет. Исключения деструкторов (std::system_error из join/
+        // освобождения Model) иначе уходят через границу JNI — UB
+        // (единственный экспорт без try/catch).
+        session->cancel.store(true);
+        delete session;  // NOLINT
+    } catch (const std::exception &e) {
+        throw_java(env, e.what());
+    } catch (...) {
+        throw_java(env, "slimt: unknown native error");
+    }
 }
 
 JNIEXPORT void JNICALL

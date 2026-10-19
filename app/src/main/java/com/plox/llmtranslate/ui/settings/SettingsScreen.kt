@@ -36,6 +36,7 @@ import com.plox.llmtranslate.domain.model.TtsEngines
 import com.plox.llmtranslate.domain.model.visibleTtsEngineIds
 import com.plox.llmtranslate.ui.ErrorBanner
 import com.plox.llmtranslate.ui.ObserveErrorTracker
+import com.plox.llmtranslate.ui.launchGuarded
 import com.plox.llmtranslate.ui.observeResilient
 import com.plox.llmtranslate.ui.translate.TranslateLanguage
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -130,16 +131,33 @@ class SettingsViewModel @Inject constructor(
         observeErrors.dismissAll()
     }
 
+    /**
+     * Запись настройки с guard (ревью #83):IOException коммита DataStore в
+     * launch без обработчика роняла процесс; общий каркас launchGuarded
+     * логирует сбой и регистрирует его в том же трекере, что подписки
+     * (маркер уникален на операцию, баннер общий).
+     */
+    private fun writeSetting(marker: String, block: suspend () -> Unit) {
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.settings_write_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось сохранить настройку $marker",
+            marker = "write_$marker",
+            block = block
+        )
+    }
+
     fun onTtsEngineChange(engine: String) {
-        viewModelScope.launch { preferences.setTtsEngine(engine) }
+        writeSetting("tts_engine") { preferences.setTtsEngine(engine) }
     }
 
     fun onUiLanguageChange(lang: String) {
-        viewModelScope.launch { preferences.setUiLanguage(lang) }
+        writeSetting("ui_language") { preferences.setUiLanguage(lang) }
     }
 
     fun onThemeChange(theme: String) {
-        viewModelScope.launch { preferences.setTheme(theme) }
+        writeSetting("theme") { preferences.setTheme(theme) }
     }
 
     /**
@@ -149,7 +167,7 @@ class SettingsViewModel @Inject constructor(
     fun onUnloadTimeoutChange(value: String) {
         val minutes = value.toIntOrNull()
             ?: ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES
-        viewModelScope.launch { preferences.setUnloadTimeoutMinutes(minutes) }
+        writeSetting("unload_timeout") { preferences.setUnloadTimeoutMinutes(minutes) }
     }
 
     /**
@@ -159,7 +177,7 @@ class SettingsViewModel @Inject constructor(
      * в единственной точке [ModelPreferences.setModelDirectionRetention].
      */
     fun onDirectionRetentionChange(value: String) {
-        viewModelScope.launch { preferences.setModelDirectionRetention(value) }
+        writeSetting("direction_retention") { preferences.setModelDirectionRetention(value) }
     }
 }
 

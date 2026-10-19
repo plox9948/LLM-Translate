@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.util
 
+import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import timber.log.Timber
 import java.io.File
 
@@ -18,9 +19,21 @@ object WavReader {
     const val MAX_WAV_BYTES: Long = 50L * 1024 * 1024
 
     /**
+     * Потолок числа PCM-отсчётов (ревью #83): FloatArray аллоцировался по
+     * заявленному data-чанку вплоть до [MAX_WAV_BYTES] — пик памяти ~150 МБ
+     * (байты файла + 4 байта на сэмпл). Штатные consumers — записи рекордера,
+     * чей PCM не превышает [AudioRecorder.MAX_PCM_BYTES] байт (16-битные
+     * сэмплы — вдвое меньше отсчётов); заявленный чанок больше читается до
+     * потолка с предупреждением.
+     */
+    val MAX_SAMPLES: Int = (AudioRecorder.MAX_PCM_BYTES / 2).toInt()
+
+    /**
      * Прочитать PCM из WAV-файла как FloatArray (16-bit → float /32768).
      * @return массив сэмплов в диапазоне [-1.0, 1.0] или пустой массив при
-     *         ошибке (битый WAV, файл больше [MAX_WAV_BYTES]).
+     *         ошибке (битый WAV, файл больше [MAX_WAV_BYTES]); некорректный
+     *         размер data-чанка (0, отрицательный, за EOF) — salvage по
+     *         фактическому остатку файла (ревью #83).
      */
     fun readPcmAsFloat(file: File): FloatArray {
         val fileBytes = file.length()
@@ -29,15 +42,34 @@ object WavReader {
             return FloatArray(0)
         }
         val bytes = file.readBytes()
-        val (start, size) = locateDataChunk(bytes) ?: return FloatArray(0)
-        val end = minOf(start + size, bytes.size)
+        val (start, declaredSize) = locateDataChunk(bytes) ?: return FloatArray(0)
+        if (start >= bytes.size) return FloatArray(0)
+        var size = declaredSize
+        if (size <= 0 || start.toLong() + size > bytes.size) {
+            // Аномальный data-чанк: 0, 0xFFFFFFFF и просто размер за EOF
+            // раньше молча давали пустое либо обрезанное чтение (ревью #83).
+            // Фолбэк — PCM по фактический остаток файла: частично
+            // распознаваемый звук лучше тишины, лог предупреждает о битости.
+            Timber.w(
+                "WAV: размер data-чанка $declaredSize в позиции $start не согласован " +
+                    "с файлом (${bytes.size} байт) — читаем фактический остаток: ${file.name}"
+            )
+            size = bytes.size - start
+        }
+        val end = minOf(start.toLong() + size, bytes.size.toLong()).toInt()
         if (end <= start) return FloatArray(0)
 
-        val count = (end - start) / 2
+        var count = (end - start) / 2
+        if (count > MAX_SAMPLES) {
+            Timber.w(
+                "WAV: $count сэмплов больше потолка $MAX_SAMPLES — читаем потолок: ${file.name}"
+            )
+            count = MAX_SAMPLES
+        }
         val samples = FloatArray(count)
         var idx = 0
         var pos = start
-        while (pos + 1 < end) {
+        while (idx < count && pos + 1 < end) {
             // 16-bit little-endian signed → нормализованный float.
             val lo = bytes[pos].toInt() and 0xFF
             val hi = bytes[pos + 1].toInt() and 0xFF

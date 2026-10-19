@@ -513,6 +513,130 @@ class TranslateViewModelTest {
         assertFalse(viewModel.uiState.value.isRecording)
     }
 
+    // ── Таймер записи: поздние эмиссии elapsed не затирают сброс (ревью #83) ──
+
+    @Test
+    fun `late recording elapsed emission does not resurrect reset timer`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val recording = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val elapsed = kotlinx.coroutines.flow.MutableStateFlow(0L)
+        every { audioRecorder.recordingFlow } returns recording
+        every { audioRecorder.recordingElapsedMs } returns elapsed
+        createViewModel()
+
+        recording.value = true
+        elapsed.value = 42_000L
+        assertEquals(42_000L, viewModel.recordingElapsed.value)
+
+        recording.value = false
+        assertEquals(0L, viewModel.recordingElapsed.value)
+
+        // Рекордер эмиттит финальный elapsed/ноль уже после снятия сцены —
+        // коллектор пишет только при активной записи, таймер остаётся нулевым.
+        elapsed.value = 43_000L
+        assertEquals(0L, viewModel.recordingElapsed.value)
+    }
+
+    // ── Pending-гейт «Скачать» на карточках недостающих моделей (ревью #83) ──
+
+    /** Установленная STT-модель с произвольным статусом/прогрессом. */
+    private fun sttWithStatus(id: String, status: ModelStatus, progress: Int) = InstalledModel(
+        id = id,
+        category = ModelCategory.STT,
+        displayName = id,
+        description = "",
+        runtime = RuntimeType.SHERPA,
+        sizeBytes = 100,
+        ramRequiredMb = 100,
+        languages = listOf("ru"),
+        quality = 4,
+        speed = 4,
+        url = "",
+        urls = emptyList(),
+        sha256 = null,
+        license = "Apache-2.0",
+        minAndroidSdk = 26,
+        recommendedRamMb = 0,
+        status = status,
+        progress = progress,
+        filePath = "",
+        bytesDone = 0L,
+        isBuiltin = true
+    )
+
+    @Test
+    fun `double tap missing model download starts once until room settles`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val sttFlow = kotlinx.coroutines.flow.MutableStateFlow<List<InstalledModel>>(emptyList())
+        every { modelManager.installedModels(ModelCategory.TRANSLATION) } returns
+            flowOf(listOf(readyTranslationRuEn()))
+        every { modelManager.installedModels(ModelCategory.STT) } returns sttFlow
+        every { modelManager.catalog } returns flowOf(sttCatalog())
+        every { modelManager.sttByLanguage } returns flowOf(emptyMap())
+        createViewModel()
+
+        val sttHint = viewModel.uiState.value.missingSttModels.first()
+        // Двойной тап до Room-эмиссии DOWNLOADING: локальный pending-гейт
+        // не даёт перевыпустить скачивание (WorkManager REPLACE иначе
+        // перезапускает воркер).
+        viewModel.downloadMissingModel(sttHint)
+        viewModel.downloadMissingModel(sttHint)
+        io.mockk.verify(exactly = 1) {
+            modelManager.startDownload(sttCard("stt-ru-gigaam", listOf("ru")))
+        }
+
+        // Room подтвердил DOWNLOADING — «Скачать» на карточке недоступна,
+        // повторный вызов не запускает скачивание.
+        sttFlow.value = listOf(sttWithStatus("stt-ru-gigaam", ModelStatus.DOWNLOADING, 40))
+        viewModel.downloadMissingModel(sttHint)
+        io.mockk.verify(exactly = 1) {
+            modelManager.startDownload(sttCard("stt-ru-gigaam", listOf("ru")))
+        }
+
+        // Room-отказ (ERROR) — гейт снят, «Повторить» снова запускает.
+        sttFlow.value = listOf(sttWithStatus("stt-ru-gigaam", ModelStatus.ERROR, 40))
+        assertFalse(sttHint.id in viewModel.uiState.value.downloadingProgress.keys)
+        viewModel.downloadMissingModel(sttHint)
+        io.mockk.verify(exactly = 2) {
+            modelManager.startDownload(sttCard("stt-ru-gigaam", listOf("ru")))
+        }
+    }
+
+    // ── Сбой записи настроек: pending-направление и онбординг (ревью #83) ──
+
+    @Test
+    fun `failed direction save releases pending so later settings emission applies`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val lastSource = kotlinx.coroutines.flow.MutableStateFlow<String?>("ru")
+        val lastTarget = kotlinx.coroutines.flow.MutableStateFlow<String?>("en")
+        every { preferences.lastSourceLang } returns lastSource
+        every { preferences.lastTargetLang } returns lastTarget
+        coEvery { preferences.setLastDirection(any(), any()) } throws java.io.IOException("journal")
+        createViewModel()
+        // Направление применённой записи истории помечено pending.
+        applyPendingEntry()
+
+        // Сбой записи не роняет VM и снимает pending: последующая эмиссия
+        // настроек применяется, не заблокированная залипшим маркером.
+        lastSource.value = "en"
+        lastTarget.value = "ru"
+        assertEquals(TranslateLanguage.EN, viewModel.uiState.value.sourceLang)
+        assertEquals(TranslateLanguage.RU, viewModel.uiState.value.targetLang)
+    }
+
+    @Test
+    fun `failed onboarding flag save reported without crash`() {
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        coEvery { preferences.setOnboardingDone() } throws java.io.IOException("journal")
+        createViewModel()
+
+        viewModel.onOnboardingSkip()
+
+        // Sheet закрыт в UI, сбой записи ушёл в баннер ошибок.
+        assertFalse(viewModel.uiState.value.showOnboarding)
+        org.junit.Assert.assertNotNull(viewModel.uiState.value.error)
+    }
+
     // ── Анти-повтор sticky-статусов координатора (ревью #55, правка #8) ──
     // Якоря показанных id живут в синглтон-координаторе; тест подменяет их
     // фасетчатым хранилищем в моке, имитируя переживание якорей между VM.

@@ -137,6 +137,58 @@ class FavoritesViewModelTest {
 
     // --- Поиск по избранному ---
 
+    // ── Восстановление «стоп»-состояния при пересоздании ViewModel (ревью #83) ──
+
+    @Test
+    fun `recreated view model restores stop state for live phrase`() {
+        // Первая VM запускает озвучивание; «гибель» VM при живой фразе
+        // координатора-синглтона.
+        viewModel.speak(entry, FavoriteSpeakField.INPUT)
+
+        val recreated = FavoritesViewModel(
+            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder,
+            SavedStateHandle()
+        )
+        // Выбор восстановлен привязкой текста живой фразы к записи.
+        assertEquals(SpeakingSelection(7L, FavoriteSpeakField.INPUT), recreated.speaking.value)
+
+        // Завершение фразы — стоп-состояние снимается как обычно.
+        doneCallbacks.getValue("ru").invoke()
+        assertNull(recreated.speaking.value)
+    }
+
+    @Test
+    fun `recreated view model keeps null selection for foreign live phrase`() {
+        // Живая фраза не из избранного (текст без совпадения с записями).
+        ttsCoordinator.speak("не из избранного", "ru")
+
+        val recreated = FavoritesViewModel(
+            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder,
+            SavedStateHandle()
+        )
+        assertNull(recreated.speaking.value)
+    }
+
+    @Test
+    fun `recreated view model restores stop state when favorites resolve after status`() {
+        // Каталог избранного доходит асинхронно: попытка при эмиссии статуса
+        // не находит список — привязка выполняется при эмиссии избранного.
+        val favoritesFlow = kotlinx.coroutines.flow.MutableStateFlow<List<FavoriteEntry>>(emptyList())
+        every { favoritesRepository.observeAll() } returns favoritesFlow
+        viewModel.speak(entry, FavoriteSpeakField.RESULT)
+
+        // «Пересоздание»: список пуст, статус живой.
+        val recreated = FavoritesViewModel(
+            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder,
+            SavedStateHandle()
+        )
+        assertNull(recreated.speaking.value)
+
+        // Избранное дошло — привязка восстановлена.
+        favoritesFlow.value = listOf(entry)
+        assertEquals(SpeakingSelection(7L, FavoriteSpeakField.RESULT), recreated.speaking.value)
+    }
+
     /** Новый VM со списком [entries] — для тестов фильтрации поиска. */
     private fun newViewModelWith(entries: List<FavoriteEntry>): FavoritesViewModel {
         every { favoritesRepository.observeAll() } returns flowOf(entries)
