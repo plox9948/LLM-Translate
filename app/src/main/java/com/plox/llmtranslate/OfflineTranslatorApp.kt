@@ -145,10 +145,17 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
      * распознавания; остатки от процесса, убитого во время записи, чистит
      * общий хелпер [AudioRecorder.cleanupOrphanRecordings] — вызывается и
      * здесь при старте (файлы старше суточного порога), и при старте самой
-     * записи. Логика одна, каталога «audio» в приложении нет (ревью).
+     * записи. Логика одна, каталога «audio» в приложении нет (ревью) —
+     * каталог getExternalFilesDir("audio") relic ранних версий: удаляется
+     * целиком однократно при обнаружении (ревью повторно).
      */
     private fun cleanupAudioRecords() {
         AudioRecorder.cleanupOrphanRecordings(cacheDir)
+        val legacyAudioDir = getExternalFilesDir("audio") ?: return
+        if (legacyAudioDir.exists()) {
+            legacyAudioDir.deleteRecursively()
+            Timber.i("Удалён relic-каталог записей ранних версий: ${legacyAudioDir.absolutePath}")
+        }
     }
 }
 

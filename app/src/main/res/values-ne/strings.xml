@@ -77,6 +77,7 @@
     <string name="history_clear_confirm_text">इतिहासका सबै अभिलेखहरू स्थायी रूपमा मेटिनेछन्।</string>
     <string name="history_observe_failed">इतिहास लोड गर्न सकिएन</string>
     <string name="models_observe_failed">मोडेलहरूको सूची लोड गर्न सकिएन</string>
+    <string name="models_tts_engine_observe_failed">स्पीच सिन्थेसिस इन्जिन सेटिङ लोड गर्न सकिएन</string>
 
     <!-- Экран «Модели» -->
     <string name="models_backup">ब्याकअप</string>

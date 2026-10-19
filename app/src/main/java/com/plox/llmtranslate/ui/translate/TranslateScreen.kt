@@ -245,9 +245,10 @@ fun TranslateScreen(
         }
 
         // Индикатор записи: таймер изолирован в дочерний composable (ревью #14) —
-        // рекомпозиция по тикам elapsed не затрагивает весь экран.
+        // рекомпозиция по тикам elapsed не затрагивает весь экран; сам elapsed
+        // — отдельный поток ViewModel (ревью), в общий UiState не попадает.
         if (state.isRecording) {
-            RecordingIndicator(elapsedMs = state.recordingElapsedMs)
+            RecordingIndicator(viewModel)
         }
 
         // Ошибка.
@@ -271,7 +272,10 @@ fun TranslateScreen(
  * длительности приводили к рекомпозиции только этой строки.
  */
 @Composable
-private fun RecordingIndicator(elapsedMs: Long) {
+private fun RecordingIndicator(viewModel: TranslateViewModel) {
+    // Точечная подписка на таймер (ревью): секундные тики рекомпозируют
+    // только эту строку, не весь экран.
+    val elapsedMs by viewModel.recordingElapsed.collectAsStateWithLifecycle()
     val totalSec = (elapsedMs / 1000L).toInt()
     Text(
         text = stringResource(

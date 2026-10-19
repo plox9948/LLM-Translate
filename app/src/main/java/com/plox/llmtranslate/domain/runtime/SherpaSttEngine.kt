@@ -217,10 +217,16 @@ class SherpaSttEngine @Inject constructor(
                 // оставался бы зафиксирован на прошлом языке (ревью).
                 val effectiveLanguage = language ?: "auto"
                 if (bundle.type == TYPE_WHISPER && effectiveLanguage != bundle.whisperLanguage) {
+                    val oldRecognizer = bundle.recognizer
+                    // Ревью: локальный флаг — повторный release() в catch только
+                    // если первый не выполнился (double-release нативного
+                    // распознавателя sherpa иначе возможен при сбое buildRecognizer).
+                    var released = false
                     try {
                         // Обязательно освобождаем старый распознаватель — иначе
                         // утечка сотен МБ нативной памяти при каждой смене языка.
-                        bundle.recognizer.release()
+                        oldRecognizer.release()
+                        released = true
                         bundle.recognizer = buildRecognizer(bundle.modelMeta, effectiveLanguage)
                         bundle.whisperLanguage = effectiveLanguage
                         Timber.d("Whisper переключён на язык: $effectiveLanguage")
@@ -232,17 +238,19 @@ class SherpaSttEngine @Inject constructor(
                         Timber.e(e, "Не удалось пересоздать whisper для языка $effectiveLanguage")
                         // Если исключение бросил сам recognizer.release(), старый
                         // нативный распознаватель мог пережить снятие пучка —
-                        // повторная попытка release() на удержанной ссылке
-                        // (повторный destroy у sherpa безвреден; неудача —
-                        // утечка логируется, ревью).
-                        try {
-                            bundle.recognizer.release()
-                        } catch (e2: Exception) {
-                            Timber.e(
-                                e2,
-                                "Не удалось освободить recognizer пучка ${bundle.info.modelId} — " +
-                                    "нативная память может утечь"
-                            )
+                        // повторная попытка release() только по неосвобождённой
+                        // ссылке (успешно освобождённый повторно не освобождаем,
+                        // неудача — утечка логируется, ревью).
+                        if (!released) {
+                            try {
+                                oldRecognizer.release()
+                            } catch (e2: Exception) {
+                                Timber.e(
+                                    e2,
+                                    "Не удалось освободить recognizer пучка ${bundle.info.modelId} — " +
+                                        "нативная память может утечь"
+                                )
+                            }
                         }
                         val failedId = activeId
                         if (failedId != null) {

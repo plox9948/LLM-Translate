@@ -5,7 +5,9 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.RuntimeType
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import javax.inject.Inject
@@ -127,13 +129,18 @@ class RuntimeRouter @Inject constructor(
      */
     suspend fun releaseAll() {
         audioRecorder.cancel()
-        releaseSafely("Marian") { marianOnnxRuntime.release() }
-        releaseSafely("IndicTrans") { indicTransOnnxRuntime.release() }
-        releaseSafely("slimt") { slimtRuntime.release() }
-        releaseSafely("sherpa") { sherpaSttEngine.release() }
+        // Ревью: отмена внешней корутины не должна обрывать обход — каждый
+        // release выполняется под NonCancellable, сохранённая (последняя)
+        // отмена всплывает после завершения цикла.
+        var deferredCancellation: CancellationException? = null
+        releaseSafely("Marian") { marianOnnxRuntime.release() }?.let { deferredCancellation = it }
+        releaseSafely("IndicTrans") { indicTransOnnxRuntime.release() }?.let { deferredCancellation = it }
+        releaseSafely("slimt") { slimtRuntime.release() }?.let { deferredCancellation = it }
+        releaseSafely("sherpa") { sherpaSttEngine.release() }?.let { deferredCancellation = it }
         // Piper release() не suspend: останавливает озвучку и асинхронно
         // освобождает нативный OfflineTts под своим мьютексом (issue #52).
         piperTtsRuntime.release()
+        deferredCancellation?.let { throw it }
     }
 
     /**
@@ -141,20 +148,28 @@ class RuntimeRouter @Inject constructor(
      * нативный инференс, удерживающий мьютекс движка, не должен блокировать
      * разгрузку остальных рантаймов — по образцу ограниченного дренажа
      * SlimtRuntime. Ошибка/таймаут одного движка логируются, остальные
-     * двигаются безусловно; отмена внешней корутины не проглатывается.
+     * двигаются безусловно; отмена внешней корутины не обрывает цикл
+     * [releaseAll]: тело под NonCancellable, отмена возвращается вызывающему
+     * коду и всплывает после обхода всех движков.
+     * @return сохранённая отмена внешней корутины или null.
      */
-    private suspend fun releaseSafely(label: String, release: suspend () -> Unit) {
-        try {
-            val completed = withTimeoutOrNull(RELEASE_TIMEOUT_MS) { release() }
-            if (completed == null) {
-                Timber.w("Разгрузка рантайма $label не завершилась за ${RELEASE_TIMEOUT_MS} мс — пропущена")
+    private suspend fun releaseSafely(label: String, release: suspend () -> Unit): CancellationException? {
+        return try {
+            withContext(NonCancellable) {
+                val completed = withTimeoutOrNull(RELEASE_TIMEOUT_MS) { release() }
+                if (completed == null) {
+                    Timber.w("Разгрузка рантайма $label не завершилась за ${RELEASE_TIMEOUT_MS} мс — пропущена")
+                }
             }
+            null
         } catch (e: CancellationException) {
             // Внутренняя отмена сгоревшего withTimeoutOrNull уже погашена им;
-            // сюда доходит только отмена внешней корутины — всплываем выше.
-            throw e
+            // сюда доходит только отмена внешней корутины (withContext
+            // всплывает ей и после штатного тела) — сохраняем до конца цикла.
+            e
         } catch (e: Exception) {
             Timber.e(e, "Ошибка разгрузки рантайма $label")
+            null
         }
     }
 

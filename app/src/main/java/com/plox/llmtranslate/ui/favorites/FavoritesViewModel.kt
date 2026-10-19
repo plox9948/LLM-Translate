@@ -14,6 +14,7 @@ import com.plox.llmtranslate.domain.model.userMessage
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import com.plox.llmtranslate.domain.runtime.trackEnginePreference
+import com.plox.llmtranslate.ui.ObserveErrorTracker
 import com.plox.llmtranslate.ui.launchGuarded
 import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -63,9 +64,10 @@ class FavoritesViewModel @Inject constructor(
     val speaking: StateFlow<SpeakingSelection?> = _speaking
 
     // Сообщение сбоя репозиторной операции — id строкового ресурса; sticky до
-    // закрытия UI (ревью #65): сбой Room не должен ронять процесс.
-    private val _errorMessageRes = MutableStateFlow<Int?>(null)
-    val errorMessageRes: StateFlow<Int?> = _errorMessageRes
+    // закрытия UI (ревью #65): сбой Room не должен ронять процесс. Трекер
+    // множества ошибок (ревью): баннер снимается только при пустом множестве.
+    private val observeErrors = ObserveErrorTracker()
+    val errorMessageRes: StateFlow<Int?> = observeErrors.state
 
     /** Последняя залогированная ошибка координатора (однократность лога). */
     private var lastLoggedTtsError: RuntimeError? = null
@@ -86,7 +88,8 @@ class FavoritesViewModel @Inject constructor(
                 ) { entries, query -> filterByQuery(entries, query) }
             },
             messageRes = R.string.favorites_observe_failed,
-            errorState = _errorMessageRes,
+            errors = observeErrors,
+            marker = "favorites_combined",
         ) { _favorites.value = it }
         viewModelScope.launch {
             // Инициализация TTS текущим движком (как на экране «Перевод»).
@@ -169,8 +172,9 @@ class FavoritesViewModel @Inject constructor(
         launchGuarded(
             scope = viewModelScope,
             messageRes = R.string.favorites_update_failed,
-            errorState = _errorMessageRes,
-            logMessage = "Не удалось убрать запись из избранного id=${entry.id}"
+            errors = observeErrors,
+            logMessage = "Не удалось убрать запись из избранного id=${entry.id}",
+            marker = "remove_favorite"
         ) {
             favoritesRepository.remove(entry.sourceLang, entry.targetLang, entry.inputText)
         }
@@ -178,7 +182,7 @@ class FavoritesViewModel @Inject constructor(
 
     /** Скрыть сообщение об ошибке (закрытие диалога в UI). */
     fun clearError() {
-        _errorMessageRes.value = null
+        observeErrors.dismissAll()
     }
 
     /** Подставить запись на экран «Перевод» (конвертация в формат истории). */

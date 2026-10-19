@@ -29,6 +29,7 @@ import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import com.plox.llmtranslate.domain.runtime.trackEnginePreference
+import com.plox.llmtranslate.ui.ObserveErrorTracker
 import com.plox.llmtranslate.ui.launchGuarded
 import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -110,8 +111,6 @@ data class TranslateUiState(
     val isTranslating: Boolean = false,
     val canCancelTranslation: Boolean = false,
     val isRecording: Boolean = false,
-    /** Истёкшая длительность записи, мс (таймер в индикаторе, issue #68). */
-    val recordingElapsedMs: Long = 0,
     val isSpeaking: Boolean = false,
     /** Прогресс автоскачивания Piper-модели озвучки, % (issue #50; null — нет). */
     val ttsDownloadProgress: Int? = null,
@@ -233,6 +232,12 @@ class TranslateViewModel @Inject constructor(
     )
     val uiState: StateFlow<TranslateUiState> = _uiState
 
+    // Истёкшая длительность записи, мс (таймер в индикаторе, issue #68):
+    // отдельный поток (ревью) — секундные тики не гонят перерисовку всего
+    // UiState, UI забирает его точечно в RecordingIndicator.
+    private val _recordingElapsed = MutableStateFlow(0L)
+    val recordingElapsed: StateFlow<Long> = _recordingElapsed
+
     // Установленные модели перевода для автовыбора по направлению.
     private var translationModels: List<InstalledModel> = emptyList()
 
@@ -249,6 +254,16 @@ class TranslateViewModel @Inject constructor(
     //  тексты ввода и перевода) вместо усечённых текстов в паре ключа.
     private var favoriteKeys: Set<String> = emptySet()
 
+    // Направление применённой записи истории, «защищённое» от отката
+    // эмиссией настроек (ревью #7); снимается завершением saveLastDirection
+    // или совпадающей эмиссией — см. коллектор настроек в init и
+    // useHistoryEntry. Обращения только из viewModelScope (главный поток).
+    private var pendingHistoryDirection: Pair<TranslateLanguage, TranslateLanguage>? = null
+
+    // Счётчик generation для saveLastDirection: поздняя отложенная запись
+    // настроек не снимает pending более позднего изменения направления.
+    private var directionSaveGeneration = 0L
+
     // Анти-повтор sticky-состояний синглтон-координатора (ревью #55, правка #8):
     // якоря показанных id хранятся в самом TtsPlaybackCoordinator (monotonic id),
     // а не в базовой линии ViewModel: ошибка/сбой скачивания, слученный, когда
@@ -257,13 +272,14 @@ class TranslateViewModel @Inject constructor(
 
     // Ресурс сообщения сбоя наблюдения Room-потоков (issue #67): observeResilient
     // пишет сюда id текста, коллектор ниже переводит его в человекочитаемую
-    // ошибку uiState.error — семантика поля error не меняется.
-    private val _observeErrorRes = MutableStateFlow<Int?>(null)
+    // ошибку uiState.error — семантика поля error не меняется. Трекер множества
+    // ошибок (ревью): баннер живёт, пока хоть один источник observation мёртв.
+    private val observeErrors = ObserveErrorTracker()
 
     init {
         // Мост: id текста сбоя наблюдения → ошибка UI (без изменения семантики).
         viewModelScope.launch {
-            _observeErrorRes.collect { res ->
+            observeErrors.state.collect { res ->
                 if (res != null) {
                     update { it.copy(error = appContext.getString(res)) }
                 }
@@ -277,7 +293,8 @@ class TranslateViewModel @Inject constructor(
             scope = viewModelScope,
             source = { modelManager.installedModels(ModelCategory.TRANSLATION) },
             messageRes = R.string.models_observe_failed,
-            errorState = _observeErrorRes,
+            errors = observeErrors,
+            marker = "installed_translations",
         ) { models ->
             translationModels = models
             refreshTranslationAvailability()
@@ -286,7 +303,8 @@ class TranslateViewModel @Inject constructor(
             scope = viewModelScope,
             source = { modelManager.catalog },
             messageRes = R.string.models_observe_failed,
-            errorState = _observeErrorRes,
+            errors = observeErrors,
+            marker = "catalog",
         ) { cards ->
             catalogCards = cards
             refreshTranslationAvailability()
@@ -295,7 +313,8 @@ class TranslateViewModel @Inject constructor(
             scope = viewModelScope,
             source = { modelManager.installedModels(ModelCategory.STT) },
             messageRes = R.string.models_observe_failed,
-            errorState = _observeErrorRes,
+            errors = observeErrors,
+            marker = "installed_stt",
         ) { models ->
             sttModels = models
             // Доступность распознавания — любая готовая STT-модель:
@@ -310,7 +329,8 @@ class TranslateViewModel @Inject constructor(
             scope = viewModelScope,
             source = { modelManager.sttByLanguage },
             messageRes = R.string.models_observe_failed,
-            errorState = _observeErrorRes,
+            errors = observeErrors,
+            marker = "stt_by_language",
         ) { assignments ->
             sttAssignments = assignments
             // Назначения «язык → модель» влияют на подбор STT-подсказки (issue #56).
@@ -332,8 +352,21 @@ class TranslateViewModel @Inject constructor(
                         TranslateLanguage.entries.firstOrNull { it.code == code }
                     }
                     if (src != null && tgt != null) {
-                        update { it.copy(sourceLang = src, targetLang = tgt) }
-                        refreshTranslationAvailability()
+                        // Гонка направления (ревью): пока активно pending-
+                        // направление применённой записи истории, эмиссии
+                        // настроек не откатывают его (мерцание карточки
+                        // результата). Флаг снимается по завершении сохране-
+                        // ния направления (saveLastDirection) или при эмиссии,
+                        // совпавшей с pending (настройки догнали экран).
+                        val pending = pendingHistoryDirection
+                        if (pending != null) {
+                            if (pending.first == src && pending.second == tgt) {
+                                pendingHistoryDirection = null
+                            }
+                        } else {
+                            update { it.copy(sourceLang = src, targetLang = tgt) }
+                            refreshTranslationAvailability()
+                        }
                     }
                 }
         }
@@ -362,7 +395,8 @@ class TranslateViewModel @Inject constructor(
             scope = viewModelScope,
             source = { favoritesRepository.observeAll() },
             messageRes = R.string.favorites_observe_failed,
-            errorState = _observeErrorRes,
+            errors = observeErrors,
+            marker = "favorites_observed",
         ) { favorites ->
             favoriteKeys = favorites.map {
                 FavoriteEntry.key(it.sourceLang, it.targetLang, it.inputText)
@@ -386,22 +420,19 @@ class TranslateViewModel @Inject constructor(
                     recordingLimitJob?.cancel()
                     recordingLimitJob = null
                     val wasRecording = _uiState.value.isRecording
-                    update {
-                        it.copy(
-                            isRecording = false,
-                            // Таймер обнуляется только на реальном переходе
-                            // true→false (ревью #13): повторная эмиссия «false»
-                            // не стирает восстановленный из рекордера elapsedMs.
-                            recordingElapsedMs = if (wasRecording) 0L else it.recordingElapsedMs
-                        )
-                    }
+                    update { it.copy(isRecording = false) }
+                    // Таймер обнуляется только на реальном переходе
+                    // true→false (ревью #13): повторная эмиссия «false»
+                    // не стирает восстановленный из рекордера elapsed.
+                    if (wasRecording) _recordingElapsed.value = 0L
                 }
             }
         }
         viewModelScope.launch {
-            // Таймер длительности записи для индикатора (issue #68).
+            // Таймер длительности записи для индикатора (issue #68): в
+            // отдельный поток, не через общий UiState (ревью).
             audioRecorder.recordingElapsedMs.collect { elapsedMs ->
-                update { it.copy(recordingElapsedMs = elapsedMs) }
+                _recordingElapsed.value = elapsedMs
             }
         }
         viewModelScope.launch {
@@ -503,8 +534,9 @@ class TranslateViewModel @Inject constructor(
         launchGuarded(
             scope = viewModelScope,
             messageRes = R.string.favorites_update_failed,
-            errorState = _observeErrorRes,
-            logMessage = "Не удалось переключить избранность перевода"
+            errors = observeErrors,
+            logMessage = "Не удалось переключить избранность перевода",
+            marker = "toggle_result_favorite"
         ) {
             val added = favoritesRepository.toggle(
                 st.sourceLang.code, st.targetLang.code, st.resultInputText, st.resultText
@@ -516,12 +548,26 @@ class TranslateViewModel @Inject constructor(
     /**
      * Сохранить текущее направление перевода в настройки (issue #33).
      * AUTO-источник не сохраняется — сохранённое направление остаётся прежним.
+     * Побочная запись (направление записи истории тоже попадает в настройки
+     * через [useHistoryEntry]) — намеренная: настройки обязаны сойтись с
+     * экраном, иначе следующая эмиссия откатит применённое направление (ревью).
      */
     private fun saveLastDirection() {
         val state = _uiState.value
         if (state.sourceLang == TranslateLanguage.AUTO) return
+        val saved = state.sourceLang to state.targetLang
+        // Generation-токен: отложенная запись снимает pending-направление
+        // только если это последний сохранённый запрос (более поздняя смена
+        // направления перевешивает более раннюю). Все обращения — из
+        // viewModelScope (главный поток), атомарности не требуется.
+        val generation = ++directionSaveGeneration
         viewModelScope.launch {
-            preferences.setLastDirection(state.sourceLang.code, state.targetLang.code)
+            preferences.setLastDirection(saved.first.code, saved.second.code)
+            if (generation == directionSaveGeneration &&
+                pendingHistoryDirection == saved
+            ) {
+                pendingHistoryDirection = null
+            }
         }
     }
 
@@ -892,7 +938,8 @@ class TranslateViewModel @Inject constructor(
             update { it.copy(error = appContext.getString(R.string.translate_record_start_failed)) }
             return false
         }
-        update { it.copy(isRecording = true, error = null, recordingElapsedMs = 0L) }
+        update { it.copy(isRecording = true, error = null) }
+        _recordingElapsed.value = 0L
         // Потолок записи ставится коллектором recordingFlow (ревью #9) —
         // он же восстанавливает таймер при пересоздании ViewModel на живой
         // записи (уход на другой таб не оставляет микрофон без потолка).
@@ -943,7 +990,8 @@ class TranslateViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val wavPath = audioRecorder.stopRecording()
-                update { it.copy(isRecording = false, recordingElapsedMs = 0L) }
+                update { it.copy(isRecording = false) }
+                _recordingElapsed.value = 0L
                 if (wavPath == null) {
                     update { it.copy(error = appContext.getString(R.string.translate_record_empty)) }
                     return@launch
@@ -977,10 +1025,11 @@ class TranslateViewModel @Inject constructor(
 
     fun clearError() {
         update { it.copy(error = null) }
-        // Сброс и моста сбоя наблюдения (ревью #6): StateFlow дедуплицирует
-        // повторную запись того же res — без обнуления следующий сбой источника
-        // с тем же текстом не показался бы в UI.
-        _observeErrorRes.value = null
+        // Сброс и множества сбоев наблюдения (ревью #6, re-review): трекер
+        // очищается целиком — без этого следующий сбой источника с тем же
+        // текстом не показался бы в UI, а восстановление другого источника
+        // вновь подняло бы уже скрытое сообщение.
+        observeErrors.dismissAll()
         // Синхронно снимаем ошибку и в координаторе, чтобы следующий
         // эмит статуса не воспроизвёл диалог (issue #50).
         ttsCoordinator.clearError()
@@ -1028,13 +1077,18 @@ class TranslateViewModel @Inject constructor(
         }
         persistRestorableTexts()
         refreshResultFavorite()
-        // Гонка направления (ревью #1, критично): применённое направление записи
-        // пишется в настройки — асинхронный коллектор lastSourceLang/lastTargetLang
-        // иначе перезаписывает его Previously сохранённым направлением (тап по
-        // записи EN→NE откатывался на ru→en и прятал карточку результата).
-        // Настройки после записи согласованы с экраном, потеря секунд/результата
-        // исчезает; сохранение через saveLastDirection совпадает с обычным
-        // выбором чипов (AUTO-источник в настройки не пишется).
+        // Гонка направления (ревью #1, критично; ревью повторно — гонка не
+        // до конца закрыта): применённое направление записи пишется в настройки
+        // (побочная запись намеренная — настройки должны сойтись с экраном),
+        // но асинхронный коллектор lastSourceLang/lastTargetLang мог прийти с
+        // ПРЕЖНИМ сохранённым направлением после применения и откатить его
+        // (мерцание карточки результата). Pending-маркер: коллектор не
+        // применяет эмиссии настроек, пока активно направление записи;
+        // снимается после завершения saveLastDirection (настройки дописаны)
+        // или при эмиссии, совпавшей с pending (см. коллектор в init).
+        if (source != TranslateLanguage.AUTO && target != TranslateLanguage.AUTO) {
+            pendingHistoryDirection = source to target
+        }
         saveLastDirection()
     }
 

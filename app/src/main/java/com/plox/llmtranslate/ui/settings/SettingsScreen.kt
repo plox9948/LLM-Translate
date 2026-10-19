@@ -35,6 +35,7 @@ import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.TtsEngines
 import com.plox.llmtranslate.domain.model.visibleTtsEngineIds
 import com.plox.llmtranslate.ui.ErrorBanner
+import com.plox.llmtranslate.ui.ObserveErrorTracker
 import com.plox.llmtranslate.ui.observeResilient
 import com.plox.llmtranslate.ui.translate.TranslateLanguage
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -84,33 +85,41 @@ class SettingsViewModel @Inject constructor(
 
     // Сообщение сбоя наблюдения потоков (ревью #3): id строкового ресурса,
     // sticky до скрытия баннером — по образцу экранов «Модели»/«История».
-    private val _observeErrorRes = MutableStateFlow<Int?>(null)
-    val observeErrorRes: StateFlow<Int?> = _observeErrorRes
+    // Трекер множества ошибок (ревью): баннер снимается только когда все
+    // подписки живы — восстановление одной не гасит сбой другой.
+    private val observeErrors = ObserveErrorTracker()
+    val observeErrorRes: StateFlow<Int?> = observeErrors.state
 
     init {
         // Все настройки наблюдаются одинаково: значение потока пишется в
         // соответствующее поле состояния (общий каркас — [watch]). Room/DataStore
         // поток без guard ронял процесс при сбое — observeResilient логирует,
-        // показывает ошибку и перезапускает подписку (ревью #3).
-        watch(modelManager.catalog) { state, cards -> state.copy(catalog = cards) }
-        watch(preferences.ttsEngine) { state, engine -> state.copy(ttsEngine = engine) }
-        watch(preferences.uiLanguage) { state, lang -> state.copy(uiLanguage = lang) }
-        watch(preferences.theme) { state, theme -> state.copy(theme = theme) }
-        watch(preferences.unloadTimeoutMinutes) { state, minutes ->
+        // показывает ошибку и перезапускает подписку (ревью #3). Маркер —
+        // имя наблюдаемой настройки (уникален на подписку, re-review).
+        watch(modelManager.catalog, "catalog") { state, cards -> state.copy(catalog = cards) }
+        watch(preferences.ttsEngine, "tts_engine") { state, engine -> state.copy(ttsEngine = engine) }
+        watch(preferences.uiLanguage, "ui_language") { state, lang -> state.copy(uiLanguage = lang) }
+        watch(preferences.theme, "theme") { state, theme -> state.copy(theme = theme) }
+        watch(preferences.unloadTimeoutMinutes, "unload_timeout") { state, minutes ->
             state.copy(unloadTimeoutMinutes = minutes)
         }
-        watch(preferences.modelDirectionRetention) { state, retention ->
+        watch(preferences.modelDirectionRetention, "direction_retention") { state, retention ->
             state.copy(directionRetention = retention)
         }
     }
 
     /** Подписка потока настройки на запись в [uiState] без потери остальных полей. */
-    private fun <T> watch(source: Flow<T>, assign: (SettingsUiState, T) -> SettingsUiState) {
+    private fun <T> watch(
+        source: Flow<T>,
+        marker: String,
+        assign: (SettingsUiState, T) -> SettingsUiState
+    ) {
         observeResilient(
             scope = viewModelScope,
             source = { source },
             messageRes = R.string.settings_observe_failed,
-            errorState = _observeErrorRes
+            errors = observeErrors,
+            marker = marker
         ) { value ->
             _uiState.value = assign(_uiState.value, value)
         }
@@ -118,7 +127,7 @@ class SettingsViewModel @Inject constructor(
 
     /** Скрыть баннер сбоя наблюдения (тап по баннеру в UI). */
     fun clearObserveError() {
-        _observeErrorRes.value = null
+        observeErrors.dismissAll()
     }
 
     fun onTtsEngineChange(engine: String) {

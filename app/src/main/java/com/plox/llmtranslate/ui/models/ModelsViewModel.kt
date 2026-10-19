@@ -24,6 +24,7 @@ import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import com.plox.llmtranslate.domain.runtime.ProcessMemoryReader
+import com.plox.llmtranslate.ui.ObserveErrorTracker
 import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -161,9 +162,10 @@ class ModelsViewModel @Inject constructor(
     val uiState: StateFlow<ModelsUiState> = _uiState
 
     // Сообщение сбоя наблюдения Room-потоков — id строкового ресурса (issue #67):
-    // sticky до скрытия баннером в UI.
-    private val _observeErrorRes = MutableStateFlow<Int?>(null)
-    val observeErrorRes: StateFlow<Int?> = _observeErrorRes
+    // sticky до скрытия баннером в UI. Трекер множества ошибок (ревью):
+    // восстановление одного источника не гасит баннер при мёртвом другом.
+    private val observeErrors = ObserveErrorTracker()
+    val observeErrorRes: StateFlow<Int?> = observeErrors.state
 
     init {
         // issue #67: combine-цепочка с Room-источниками (каталог, installed,
@@ -206,7 +208,8 @@ class ModelsViewModel @Inject constructor(
                 }
             },
             messageRes = R.string.models_observe_failed,
-            errorState = _observeErrorRes,
+            errors = observeErrors,
+            marker = "ui_state_chain",
         ) { derived ->
             // Сохраняем транзиентные поля (статус, экспорт, busy),
             // чтобы они не терялись при обновлении Room/DataStore.
@@ -241,20 +244,23 @@ class ModelsViewModel @Inject constructor(
         observeResilient(
             scope = viewModelScope,
             source = { preferences.ttsEngine },
-            messageRes = R.string.models_observe_failed,
-            errorState = _observeErrorRes
+            messageRes = R.string.models_tts_engine_observe_failed,
+            errors = observeErrors,
+            marker = "tts_engine"
         ) { value -> _ttsEngine.value = value }
         observeResilient(
             scope = viewModelScope,
             source = { modelManager.sttByLanguage },
             messageRes = R.string.models_observe_failed,
-            errorState = _observeErrorRes
+            errors = observeErrors,
+            marker = "stt_by_language"
         ) { value -> _sttByLanguage.value = value }
         observeResilient(
             scope = viewModelScope,
             source = { modelManager.ttsByLanguage },
             messageRes = R.string.models_observe_failed,
-            errorState = _observeErrorRes
+            errors = observeErrors,
+            marker = "tts_by_language"
         ) { value -> _ttsByLanguage.value = value }
     }
 
@@ -580,7 +586,7 @@ class ModelsViewModel @Inject constructor(
 
     /** Скрыть баннер сбоя наблюдения Room-потоков. */
     fun clearObserveError() {
-        _observeErrorRes.value = null
+        observeErrors.dismissAll()
     }
 
     /**

@@ -2,6 +2,8 @@ package com.plox.llmtranslate.data.backup
 
 import android.content.Context
 import android.net.Uri
+import android.os.StatFs
+import android.provider.DocumentsContract
 import com.plox.llmtranslate.data.download.DownloadLayout
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
@@ -134,19 +136,41 @@ class ModelBackupManager @Inject constructor(
     /**
      * Экспортировать все модели и настройки в ZIP по Uri.
      *
-     * Ревью #4: архив сначала собирается целиком во временный файл в
-     * cacheDir, и только готовый копируется в выходной Uri — обрыв SAF-
-     * потока или ENOSPC при записи ZIP не оставляет пользователю битый
-     * архив (неполный документ). Временный файл удаляется в любом случае.
+     * Ревью #4: архив сначала собирается целиком во временный файл, и только
+     * готовый копируется в выходной Uri — обрыв SAF-потока или ENOSPC при
+     * записи ZIP не оставляет пользователю битый архив (неполный документ).
+     * Ревью (раунд повторный): temp пишется в getExternalCacheDir() (фолбэк
+     * cacheDir) — пик «модели + ZIP» не должен целиком ложиться на /data;
+     * перед сборкой — StatFs-гейт тома temp (суммарный размер включаемых
+     * файлов ×1.1); при обрыве уже начатого копирования в Uri недописанный
+     * SAF-документ удаляется. Временный файл удаляется в любом случае.
      * @return true при успехе.
      */
     suspend fun exportToUri(targetUri: Uri): Boolean = withContext(Dispatchers.IO) {
+        // Внешний кэш не выделяется (отсутствует примонтованный volume) —
+        // фолбэк на внутренний cacheDir.
+        val tempRoot = context.externalCacheDir?.takeIf { it.exists() || it.mkdirs() }
+            ?: context.cacheDir
         // Уникальный суффикс: параллельные экспорты не затирают общий temp.
-        val tempZip = File(context.cacheDir, "backup_export_${UUID.randomUUID()}.zip")
+        val tempZip = File(tempRoot, "backup_export_${UUID.randomUUID()}.zip")
+        // Копирование в Uri уже началось — по исключению документ обрезан.
+        var outputOpened = false
         try {
             val models = repository.observeAll().first().filter { it.isReady }
             if (models.isEmpty()) {
                 Timber.w("Нет моделей для экспорта")
+                return@withContext false
+            }
+
+            // Гейт свободного объёма под temp-ZIP до сборки: ZIP почти не
+            // сжимает бинарные модели, требуется ~суммарный размер файлов
+            // (×1.1 запас); нехватка — понятный отказ до начала записи.
+            val neededBytes = includedContentBytes(models) * 11 / 10
+            if (!hasFreeSpaceFor(tempRoot, neededBytes)) {
+                Timber.e(
+                    "Недостаточно места под временный архив бэкапа: требуется ~$neededBytes " +
+                        "байт на томе ${tempRoot.absolutePath}"
+                )
                 return@withContext false
             }
 
@@ -182,8 +206,17 @@ class ModelBackupManager @Inject constructor(
 
             val output = context.contentResolver.openOutputStream(targetUri)
                 ?: return@withContext false
-            output.use { out ->
-                tempZip.inputStream().use { it.copyTo(out) }
+            outputOpened = true
+            try {
+                output.use { out ->
+                    tempZip.inputStream().use { it.copyTo(out) }
+                }
+            } catch (e: Exception) {
+                // Обрыв copyTo: в Uri остался усечённый документ — удаляем его,
+                // иначе пользователь получит «битый архив» вместо отсутствия файла.
+                Timber.e(e, "Обрыв копирования бэкапа в $targetUri — удаляем недописанный документ")
+                if (outputOpened) deleteFailedDocument(targetUri)
+                throw e
             }
 
             Timber.d("Экспортировано ${models.size} моделей")
@@ -193,6 +226,46 @@ class ModelBackupManager @Inject constructor(
             false
         } finally {
             tempZip.delete()
+        }
+    }
+
+    /** Суммарный размер файлов, попадающих в ZIP (кандидат гейта temp-объёма). */
+    private fun includedContentBytes(models: List<InstalledModel>): Long =
+        models.sumOf { model ->
+            val file = model.filePath?.let(::File) ?: return@sumOf 0L
+            when {
+                file.isFile -> file.length()
+                file.isDirectory -> file.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+                else -> 0L
+            }
+        }
+
+    /**
+     * Достаточно ли свободного места на томе [dir] под [neededBytes].
+     * Неготовность оценки (StatFs-исключение — в т.ч. unit-test JVM без
+     * android.os) не блокирует экспорт (true), по образцу
+     * ModelManagerImpl.hasEnoughFreeSpace.
+     */
+    private fun hasFreeSpaceFor(dir: File, neededBytes: Long): Boolean = try {
+        val stat = StatFs(dir.absolutePath)
+        stat.availableBlocksLong * stat.blockSizeLong >= neededBytes
+    } catch (e: Exception) {
+        Timber.w(e, "Не удалось оценить свободное место под temp-архив бэкапа — гейт пропущен")
+        true
+    }
+
+    /**
+     * Удалить SAF-документ, оставшийся недописанным после обрыва копирования.
+     * Работает для document Uri из SAF-пикера; для прочих Uri (или при
+     * отказе самого провайдера) — только лог.
+     */
+    private fun deleteFailedDocument(targetUri: Uri) {
+        try {
+            if (!DocumentsContract.deleteDocument(context.contentResolver, targetUri)) {
+                Timber.w("Недописанный SAF-документ бэкапа не удалён: $targetUri")
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Не удалось удалить недописанный SAF-документ бэкапа: $targetUri")
         }
     }
 

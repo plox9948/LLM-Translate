@@ -95,7 +95,11 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
                         if (!out.renameTo(unpacked)) {
                             throw IOException("Не удалось переименовать ${out.name} в ${unpacked.name}")
                         }
+                        // Временного имени после rename нет, а итоговый файл
+                        // обязан остаться в множестве отбраковки — при более
+                        // позднем сбое цикла осколок распаковки чистится (ревью).
                         created -= out
+                        created += unpacked
                     }
                 } else {
                     created += downloaded

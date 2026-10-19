@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.domain.model
 
+import com.plox.llmtranslate.data.download.DownloadLayout
 import java.util.Locale
 
 /**
@@ -10,12 +11,13 @@ object InstallCheckLogic {
     /**
      * Определить тип раскладки карточки по её URLам скачивания: одиночный
      * файл, архив (unpack-пик 2x) или gz-артефакты slimt-пачки ( gunzip-пик
-     * ≈1.5–1.7x). Совпадает с классификацией гейта в ModelDownloadWorker и
-     * используется единой формулой [requiredDownloadFreeBytes] (ревью).
+     * ≈1.5–1.7x). Имена извлекаются единой точкой [DownloadLayout.sanitizedBasename]
+     * — той же, что в гейте скачивания ModelDownloadWorker, иначе классификация
+     * расходится на URL с query/спец-символами (ревью).
      */
     private fun cardLayoutFlags(card: ModelCard): Pair<Boolean, Boolean> {
-        val names = card.downloadUrls().map { url ->
-            url.substringAfterLast('/').substringBefore('?').substringBefore('#')
+        val names = card.downloadUrls().mapIndexed { index, url ->
+            DownloadLayout.sanitizedBasename(url, index)
         }
         val isArchiveLayout = names.any { ArchiveFormats.isArchive(it) }
         val isGzipLayout = !isArchiveLayout &&

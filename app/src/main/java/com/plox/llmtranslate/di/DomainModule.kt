@@ -79,7 +79,8 @@ abstract class DomainModule {
         /**
          * Поставщик политики удержания моделей при смене направления
          * перевода (issue #36): читает настройку из DataStore в момент
-         * загрузки; при ошибке чтения или неизвестном значении — unload
+         * загрузки; удержание — только явное значение RETENTION_KEEP,
+         * при ошибке чтения или неизвестном значении — unload
          * (консервативно по памяти: сбойным чтением нельзя незаметно
          * включить удержание нескольких крупных пучков, ревью).
          */
@@ -89,8 +90,8 @@ abstract class DomainModule {
             preferences: ModelPreferences
         ): ModelRetentionProvider = ModelRetentionProvider {
             try {
-                preferences.modelDirectionRetention.first() !=
-                    ModelPreferences.RETENTION_UNLOAD
+                preferences.modelDirectionRetention.first() ==
+                    ModelPreferences.RETENTION_KEEP
             } catch (e: CancellationException) {
                 // Отмену корутины не проглатываем — иначе движок решит,
                 // что настройка прочитана, и применит дефолт вместо отмены.

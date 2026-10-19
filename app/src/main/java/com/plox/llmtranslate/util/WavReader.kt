@@ -53,6 +53,12 @@ object WavReader {
 
     /**
      * Найти чанк "data" в RIFF-заголовке.
+     *
+     * Ревью: предупреждение по fmt-чанку выдаётся только после полного обхода
+     * (или нахождения fmt) — при расположении fmt после data прежнее
+     * «fmt-чанк отсутствует» было ложным, а несоответствие формата не
+     * проверялось вовсе. Контракт не меняется: (начало PCM, размер) или null
+     * при битом заголовке.
      * @return пара (начало PCM, размер PCM) или null, если WAV некорректен.
      */
     // internal — покрыто unit-тестом (чистая логика, без Android).
@@ -70,6 +76,9 @@ object WavReader {
         var fmtSeen = false
         var fmtMatches = false
         var fmtBodyPos = -1
+        // data найден раньше fmt — запоминаем и продолжаем обход в поисках fmt.
+        var pendingData: Pair<Int, Int>? = null
+
         var pos = 12
         while (pos + 8 <= bytes.size) {
             if (bytes[pos].toInt() == 'd'.code &&
@@ -77,16 +86,19 @@ object WavReader {
                 bytes[pos + 2].toInt() == 't'.code &&
                 bytes[pos + 3].toInt() == 'a'.code
             ) {
-                if (!fmtSeen) {
-                    Timber.w("WAV: fmt-чанк отсутствует (ожидаем 16-bit mono %d Гц)", EXPECTED_SAMPLE_RATE)
-                } else if (!fmtMatches) {
-                    Timber.w(
-                        "WAV: fmt-чанк не соответствует ожидаемому формату " +
-                            "(16-bit mono %d Гц PCM). Фактически: ${fmtHint(bytes, fmtBodyPos)}",
-                        EXPECTED_SAMPLE_RATE
-                    )
+                if (fmtSeen) {
+                    if (!fmtMatches) {
+                        Timber.w(
+                            "WAV: fmt-чанк не соответствует ожидаемому формату " +
+                                "(16-bit mono %d Гц PCM). Фактически: ${fmtHint(bytes, fmtBodyPos)}",
+                            EXPECTED_SAMPLE_RATE
+                        )
+                    }
+                    return (pos + 8) to readIntLE(bytes, pos + 4)
                 }
-                return (pos + 8) to readIntLE(bytes, pos + 4)
+                if (pendingData == null) {
+                    pendingData = (pos + 8) to readIntLE(bytes, pos + 4)
+                }
             }
             if (bytes[pos].toInt() == 'f'.code &&
                 bytes[pos + 1].toInt() == 'm'.code &&
@@ -96,6 +108,17 @@ object WavReader {
                 fmtSeen = true
                 fmtBodyPos = pos + 8
                 fmtMatches = fmtMatchesExpected(bytes, fmtBodyPos)
+                // fmt после data — предупреждение по факту сверки, ответ по data.
+                pendingData?.let { (start, size) ->
+                    if (!fmtMatches) {
+                        Timber.w(
+                            "WAV: fmt-чанк не соответствует ожидаемому формату " +
+                                "(16-bit mono %d Гц PCM). Фактически: ${fmtHint(bytes, fmtBodyPos)}",
+                            EXPECTED_SAMPLE_RATE
+                        )
+                    }
+                    return start to size
+                }
             }
             // Переходим к следующему чанку (с выравниванием по 2 байта).
             val chunkSize = readIntLE(bytes, pos + 4)
@@ -103,18 +126,45 @@ object WavReader {
             // не двигает — обход зацикливается (висячий вызов под мьютексом STT).
             if (chunkSize < 0) {
                 Timber.w("WAV: отрицательный размер чанка в позиции $pos")
-                return null
+                return finishWithPendingData(pendingData, fmtSeen, fmtMatches, bytes, fmtBodyPos)
             }
             // Заявленный чанк за концом массива — битый заголовок; без
             // ограничения Int-позиция `pos += 8 + chunkSize + pad` может
             // переполниться (ревью).
             if (chunkSize > bytes.size - pos) {
                 Timber.w("WAV: размер чанка $chunkSize выходит за пределы файла (позиция $pos)")
-                return null
+                return finishWithPendingData(pendingData, fmtSeen, fmtMatches, bytes, fmtBodyPos)
             }
             pos += 8 + chunkSize + (chunkSize and 1)
         }
-        return null
+        // Полный обход завершён — честное предупреждение по fmt (он мог и не
+        // встретиться, и лежать после data), ответ — по найденному data (ревью).
+        return finishWithPendingData(pendingData, fmtSeen, fmtMatches, bytes, fmtBodyPos)
+    }
+
+    /**
+     * Завершение обхода с ранее найденным data-чанком: предупреждение по
+     * fmt выдаётся здесь (после полного обхода), ответ — пара из data
+     * (контракт прежний); без pending data — null.
+     */
+    private fun finishWithPendingData(
+        pendingData: Pair<Int, Int>?,
+        fmtSeen: Boolean,
+        fmtMatches: Boolean,
+        bytes: ByteArray,
+        fmtBodyPos: Int
+    ): Pair<Int, Int>? {
+        pendingData ?: return null
+        if (!fmtSeen) {
+            Timber.w("WAV: fmt-чанк отсутствует (ожидаем 16-bit mono %d Гц)", EXPECTED_SAMPLE_RATE)
+        } else if (!fmtMatches) {
+            Timber.w(
+                "WAV: fmt-чанк не соответствует ожидаемому формату " +
+                    "(16-bit mono %d Гц PCM). Фактически: ${fmtHint(bytes, fmtBodyPos)}",
+                EXPECTED_SAMPLE_RATE
+            )
+        }
+        return pendingData
     }
 
     /**

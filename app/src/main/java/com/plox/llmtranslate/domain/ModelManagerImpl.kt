@@ -337,6 +337,12 @@ class ModelManagerImpl @Inject constructor(
                         // при повторном скачивании начнётся заново.
                         deleteOrphanParts(model)
                         repository.deleteById(modelId)
+                        // Ревью: по образцу delete() — назначения «язык → модель»
+                        // (STT/TTS) с удалённым id снимаются, иначе отменённая
+                        // загрузка оставляет в настройках висячий id.
+                        if (model.category == ModelCategory.STT || model.category == ModelCategory.TTS) {
+                            preferences.removeModelFromLanguageAssignments(modelId)
+                        }
                         // Ревью: по образцу delete() — если удалённая запись была
                         // активной для категории (осколок настройки), переключаемся
                         // на первую доступную, иначе активный id повиснет на неё.
