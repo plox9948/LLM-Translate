@@ -13,6 +13,8 @@
 <full-backup-content>
     <exclude domain="database" path="llm_translate.db" />
     <!-- DataStore лежит В КОРНЕ filesDir (File(filesDir, "model_prefs.preferences_pb"),
-         см. ModelPreferences.kt) — не в подкаталоге datastore/. -->
+         см. ModelPreferences.kt). Путь datastore/ —legacy-раскладка делегата
+         preferencesDataStore на установках со старых версий — исключаем оба. -->
     <exclude domain="file" path="model_prefs.preferences_pb" />
+    <exclude domain="file" path="datastore/model_prefs.preferences_pb" />
 </full-backup-content>

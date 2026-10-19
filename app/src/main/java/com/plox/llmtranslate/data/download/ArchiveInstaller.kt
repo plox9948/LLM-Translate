@@ -88,18 +88,23 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                                 permanent = true
                             )
                         } catch (e: Exception) {
-                            // ENOSPC при распаковке (rethrow из extractTar/extractZip):
-                            // повтор без освобождения места бессилен — permanent
-                            // (контрольный аудит, п.5: без 5 перекачек),
-                            // осколки распаковки extract* уже убраны.
-                            Timber.e(e, "Место на диске закончилось при распаковке: $fileName")
-                            if (!archiveFile.delete()) {
-                                Timber.w("Не удалось удалить архив после ENOSPC: ${archiveFile.name}")
+                            if (isOutOfSpaceError(e)) {
+                                // ENOSPC при распаковке (rethrow из extractTar/extractZip):
+                                // повтор без освобождения места бессилен — permanent
+                                // (контрольный аудит, п.5: без 5 перекачек),
+                                // осколки распаковки extract* уже убраны.
+                                Timber.e(e, "Место на диске закончилось при распаковке: $fileName")
+                                if (!archiveFile.delete()) {
+                                    Timber.w("Не удалось удалить архив после ENOSPC: ${archiveFile.name}")
+                                }
+                                return InstallResult.Failure(
+                                    "Недостаточно места на диске при распаковке: $fileName",
+                                    permanent = true
+                                )
                             }
-                            return InstallResult.Failure(
-                                "Недостаточно места на диске при распаковке: $fileName",
-                                permanent = true
-                            )
+                            // Прочие сбои распаковки — обычно повторные.
+                            Timber.e(e, "Сбой распаковки: $fileName")
+                            return InstallResult.Failure("Ошибка распаковки: $fileName")
                         }
                         archiveFile.delete()
                         if (!extracted) {

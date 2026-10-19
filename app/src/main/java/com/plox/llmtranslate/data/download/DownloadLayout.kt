@@ -69,32 +69,6 @@ object DownloadLayout {
         else -> urls.size > 1
     }
 
-    /** Цель скачивания инсталлятора: каталог цели + имя целевого файла (единая схема п.15). */
-    data class FileTarget(val dir: File, val fileName: String)
-
-    /**
-     * Единый расчёт цели скачивания конкретного URL инсталляторами:
-     * каталог по раскладке [fileDir] и имя по [targetFileName] (с префиксом
-     * modelId в общем корне рантайма). Инсталляторы обязаны брать имя отсюда,
-     * чтобы cleanup ([deleteOrphanedFiles]/[deletePendingParts]) находил файлы,
-     * названные той же схемой.
-     */
-    fun fileTarget(
-        runtimeDir: File,
-        runtime: RuntimeType,
-        modelId: String,
-        urls: List<String>,
-        url: String,
-        index: Int
-    ): FileTarget {
-        val fileName = sanitizedBasename(url, index)
-        val inModelDir = inModelDirFor(runtime, urls, fileName)
-        return FileTarget(
-            dir = if (inModelDir) modelDir(runtimeDir, modelId) else runtimeDir,
-            fileName = targetFileName(modelId, url, index, inModelDir)
-        )
-    }
-
     /**
      * Каталог, в который инсталлятор скачивает файл по URL (и в котором
      * лежит его `<имя>.part`):

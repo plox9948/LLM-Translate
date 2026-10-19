@@ -1,4 +1,4 @@
-﻿package com.plox.llmtranslate.domain
+package com.plox.llmtranslate.domain
 
 import android.content.Context
 import android.net.Uri

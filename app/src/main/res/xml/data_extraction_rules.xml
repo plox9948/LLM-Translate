@@ -8,11 +8,13 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="database" path="llm_translate.db" />
-        <!-- DataStore лежит в корне filesDir, не в datastore/ (ModelPreferences.kt). -->
+        <!-- DataStore в корне filesDir + legacy-путь datastore/ со старых версий. -->
         <exclude domain="file" path="model_prefs.preferences_pb" />
+        <exclude domain="file" path="datastore/model_prefs.preferences_pb" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="database" path="llm_translate.db" />
         <exclude domain="file" path="model_prefs.preferences_pb" />
+        <exclude domain="file" path="datastore/model_prefs.preferences_pb" />
     </device-transfer>
 </data-extraction-rules>
