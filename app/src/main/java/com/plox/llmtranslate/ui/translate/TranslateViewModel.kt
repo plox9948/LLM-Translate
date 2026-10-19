@@ -517,7 +517,15 @@ class TranslateViewModel @Inject constructor(
                         )
                         break
                     }
-                    val engine = runtimeRouter.translationEngine(model.runtime)
+                    // Явная sealed-ошибка для TRANSLATION-записи с типом
+                    // рантайма без движка перевода (роутер больше не даёт
+                    // молчаливый fallback на Marian, ревью #79).
+                    val engine = try {
+                        runtimeRouter.translationEngine(model.runtime)
+                    } catch (e: RuntimeError.UnsupportedRuntime) {
+                        failed = e.userMessage()
+                        break
+                    }
                     val loadError = engine.ensureLoaded(model)
                     if (loadError != null) {
                         failed = loadError.userMessage()

@@ -1,8 +1,11 @@
 package com.plox.llmtranslate.domain.runtime
 
 import com.plox.llmtranslate.domain.model.ModelFileNaming
+import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.RuntimeType
 import io.mockk.mockk
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Test
 
@@ -58,9 +61,25 @@ class RuntimeRouterTranslationEngineTest {
     }
 
     @Test
-    fun `unknown runtime type falls back to marian engine`() {
-        val (router, marian) = router()
-        assertSame(marian, router.translationEngine(RuntimeType.SHERPA))
-        assertSame(marian, router.translationEngine(RuntimeType.PIPER_ONNX))
+    fun `non-translation runtime type raises unsupported runtime error`() {
+        // Ревью #79: вместо молчаливого fallback на Marian — явная
+        // sealed-ошибка RuntimeError.UnsupportedRuntime.
+        val (router, _) = router()
+        for (runtime in listOf(
+            RuntimeType.SHERPA,
+            RuntimeType.PIPER_ONNX,
+            RuntimeType.SYSTEM_TTS,
+            RuntimeType.RHVOICE,
+            RuntimeType.ESPEAK
+        )) {
+            val thrown = try {
+                router.translationEngine(runtime)
+                null
+            } catch (e: RuntimeError.UnsupportedRuntime) {
+                e
+            }
+            assertNotNull("ожидался UnsupportedRuntime для $runtime", thrown)
+            assertEquals(runtime.name, thrown!!.runtime)
+        }
     }
 }

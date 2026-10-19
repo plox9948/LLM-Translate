@@ -372,6 +372,19 @@ class ModelManagerImpl @Inject constructor(
                 importMutex.withLock {
                     val model = repository.getById(modelId) ?: return@launch
                     val path = model.filePath
+                    // Кэш движков по id модели (issue #40): без eviction
+                    // удалённая модель остаётся «загруженной» в loadedModels,
+                    // а повторная загрузка того же id берёт из LRU-кэша старый
+                    // нативный handle по уже удалённым файлам. Движок под своим
+                    // мьютексом ждёт окончания активного инференса —
+                    // use-after-free исключён.
+                    // Порядок шагов (ревью #79, согласован с promoteExtractedDir):
+                    // releaseModel → deleteById → удаление файлов. Файлы нельзя
+                    // стирать, пока slimt mmap / ORT-сессии держат их занятыми:
+                    // сначала освобождение движка, затем запись БД, и только
+                    // потом диск.
+                    runtimeRouter.releaseModel(model)
+                    repository.deleteById(modelId)
                     if (!path.isNullOrBlank()) {
                         val file = File(path)
                         if (file.isDirectory) file.deleteRecursively() else file.delete()
@@ -382,13 +395,6 @@ class ModelManagerImpl @Inject constructor(
                         // до finalizeDownload, остаются на диске навсегда).
                         deleteOrphanParts(model)
                     }
-                    repository.deleteById(modelId)
-                    // Кэш движков по id модели (issue #40): без eviction удалённая
-                    // модель остаётся «загруженной» в loadedModels, а повторная
-                    // загрузка того же id берёт из LRU-кэша старый нативный handle
-                    // по уже удалённым файлам. Движок под своим мьютексом ждёт
-                    // окончания активного инференса — use-after-free исключён.
-                    runtimeRouter.releaseModel(model)
                     // Если удалена активная модель — переключаемся на первую доступную.
                     if (preferences.getActiveModelId(model.category) == modelId) {
                         val fallback = repository.getFirstReady(model.category)

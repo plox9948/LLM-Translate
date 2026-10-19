@@ -54,6 +54,16 @@ class EngineModelCacheTest {
     }
 
     @Test
+    fun `put returns previous value so caller can release it`() {
+        // Ревью #79: прежний пучок при замене не должен теряться — put
+        // возвращает прежнее значение для освобождения его ресурсов.
+        val cache = EngineModelCache<String>(capacity = 3)
+        assertNull(cache.put("a", "A"))
+        assertEquals("A", cache.put("a", "A2"))
+        assertEquals("A2", cache.put("a", "A3"))
+    }
+
+    @Test
     fun `get returns stored value`() {
         val cache = EngineModelCache<String>(capacity = 2)
         cache.put("a", "A")

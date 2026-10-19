@@ -199,6 +199,23 @@ class GreedyDecoderCancellationTest {
     }
 
     @Test
+    fun `no executed steps means no hitMaxLength`() {
+        // Ревью #79: hitMaxLength=true только при минимум одном выполненном
+        // шаге декода без EOS; цикл нулевой длины (maxNewTokens=0) — не упор.
+        val thrown = runCore(
+            maxNewTokens = 0,
+            cancelAtStep = null,
+            startCancelled = false,
+            pick = { NOT_EOS }
+        )
+        assertNull(thrown)
+        val outcome = requireNotNull(lastOutcome)
+        assertFalse(outcome.eosReached)
+        assertFalse(outcome.hitMaxLength)
+        assertTrue(outcome.generated.isEmpty())
+    }
+
+    @Test
     fun `argMaxSafe throws when every logit is NaN or infinite`() {
         val arrays = listOf(
             floatArrayOf(Float.NaN, Float.NaN, Float.NaN),

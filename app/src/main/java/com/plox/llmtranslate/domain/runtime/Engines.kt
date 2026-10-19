@@ -23,8 +23,15 @@ interface TranslationEngine {
     suspend fun ensureLoaded(model: InstalledModel): RuntimeError?
 
     /**
-     * Перевести текст.
-     * @param from код исходного языка (ru, en, ne)
+     * Перевести текст по АКТИВНОМУ пучку движка (предварительно загруженному
+     * [ensureLoaded]). Инференс и смена активного пучка сериализованы мьютексом
+     * движка, но между [ensureLoaded] и [translate] другой вызов может сменить
+     * активный пучок — движки проверяют соответствие направления и при
+     * несовпадении возвращают [RuntimeError.DirectionMismatch] вместо перевода
+     * чужой моделью (для моделей без определяемого направления — импортированных
+     * с пустым списком языков — проверка пропускается).
+     * @param from код исходного языка (ru, en, ne); у IndicTrans задаёт
+     *        flores-префикс входа, у Marian/slimt — только проверяется.
      * @param to код целевого языка
      */
     suspend fun translate(text: String, from: String, to: String): Result<String>

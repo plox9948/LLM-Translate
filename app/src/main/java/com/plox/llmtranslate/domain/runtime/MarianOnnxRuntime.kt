@@ -64,7 +64,31 @@ class MarianOnnxRuntime @Inject constructor(
 
         /** Ёмкость LRU-кэша: два направления перевода + активная модель. */
         private const val MODEL_CACHE_CAPACITY = 3
+
+        /**
+         * Лимит позиционных эмбеддингов Marian/opus-mt: модельный конфиг
+         * задаёт `max_source_positions = 512` (таблица `embed_positions` —
+         * 512 строк). Форма этой инициализации из ORT-сессии не читается
+         * (не вход графа), поэтому лимит — константа семейства opus-mt:
+         * вход длиннее даёт падение ORT внутри run (ревью #79).
+         */
+        private const val MAX_INPUT_TOKENS = 512
     }
+
+    /**
+     * Проверка длины входа энкодера: вход длиннее лимита позиционных
+     * эмбеддингов ([MAX_INPUT_TOKENS]) привёл бы к внутреннему исключению
+     * ORT — возвращаем явную [RuntimeError] с русским сообщением.
+     * Внутренняя функция — покрыта unit-тестом.
+     */
+    internal fun inputLengthError(inputTokens: Int): RuntimeError? =
+        if (inputTokens > MAX_INPUT_TOKENS) {
+            RuntimeError.InferenceFailed(
+                "marian",
+                "Предложение слишком длинное: $inputTokens токенов, " +
+                    "максимум $MAX_INPUT_TOKENS"
+            )
+        } else null
 
     /**
      * Пучок Marian-модели: сессии ORT, токенизатор и параметры генерации
@@ -185,7 +209,7 @@ class MarianOnnxRuntime @Inject constructor(
                     currentCoroutineContext().ensureActive()
                     val gen = parseGenerationConfig(dir.resolve("generation_config.json"))
 
-                    engineCache.cache.put(
+                    engineCache.putBundleUnlocked(
                         modelInfo.id,
                         ModelBundle(
                             encoderSession = encoder,
@@ -200,7 +224,8 @@ class MarianOnnxRuntime @Inject constructor(
                                 modelId = modelInfo.id,
                                 displayName = modelInfo.displayName,
                                 category = ModelCategory.TRANSLATION,
-                                ramRequiredMb = modelInfo.ramRequiredMb
+                                ramRequiredMb = modelInfo.ramRequiredMb,
+                                languages = modelInfo.languages
                             )
                         )
                     )
@@ -235,6 +260,13 @@ class MarianOnnxRuntime @Inject constructor(
                 if (bundle == null) {
                     return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
+                // Пара [from]→[to] сверяется с языками активного пучка ДО
+                // инференса: другой вызов между ensureLoaded и translate мог
+                // сменить активный пучок — чужая модель перевела бы молча
+                // (ревью #79).
+                bundle.info.directionMismatch("marian", from, to)?.let {
+                    return@withContext Result.failure(it)
+                }
                 val ortEnv = OrtEnvironment.getEnvironment()
                 val enc = bundle.encoderSession
                 val dec = bundle.decoderSession
@@ -252,6 +284,12 @@ class MarianOnnxRuntime @Inject constructor(
                     }
                     val inputIds = (textIds + eos).map { it.toLong() }.toLongArray()
                     val attentionMask = LongArray(inputIds.size) { 1L }
+                    // Guard лимита позиционных эмбеддингов до энкодера:
+                    // иначе ORT падал бы внутренним исключением вместо
+                    // явной ошибки с русским сообщением (ревью #79).
+                    inputLengthError(inputIds.size)?.let {
+                        return@withContext Result.failure(it)
+                    }
 
                     // Encoder. Входные тензоры закрываются сразу после run —
                     // на любом пути, в т.ч. при падении второго createTensor
@@ -339,10 +377,10 @@ class MarianOnnxRuntime @Inject constructor(
         }
 
     /**
-     * Выбрать следующий токен: argmax по logits последнего шага с учётом
-     * bad-слов из generation config пучка и повторного штрафа (аналог HF
-     * `repetition_penalty`). Маска — чистая функция [applyGenerationMask],
-     * вынесена для unit-тестов.
+     * Выбрать следующий токен: argmax c NaN/Inf-защитой ([argMaxSafe]) по
+     * logits последнего шага с учётом bad-слов из generation config пучка и
+     * повторного штрафа (аналог HF `repetition_penalty`). Маска — чистая
+     * функция [applyGenerationMask], вынесена для unit-тестов.
      */
     private fun pickToken(
         bundle: ModelBundle,
@@ -351,7 +389,9 @@ class MarianOnnxRuntime @Inject constructor(
     ): Int {
         val last = logitsLastPosition(result)
         applyGenerationMask(last, generated, bundle.badTokenIds, REPETITION_PENALTY)
-        return argMax(last)
+        // argMaxSafe вместо сырого argMax: единичные NaN/Inf в logits крошечных
+        // kвантованных opus-mt иначе выигрывали argmax (ревью #79).
+        return argMaxSafe(last, "Marian: после ${generated.size} сгенерированных токенов")
     }
 
     /**

@@ -2,8 +2,10 @@ cmake_minimum_required(VERSION 3.22.1)
 project(llmslimt_jni CXX C)
 
 # Численное ядро slimt в отладочной сборке APK неприемлемо медленно,
-# поэтому C++-движок всегда собирается с оптимизацией Release.
-set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+# поэтому тип сборки по умолчанию — Release. Без FORCE внешний
+# -DCMAKE_BUILD_TYPE=Debug (например при отладке JNI через lldb) имеет
+# приоритет командной строки и не перезатирается этим значением.
+set(CMAKE_BUILD_TYPE Release CACHE STRING "Тип сборки C++ (по умолчанию Release)")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)

@@ -30,8 +30,12 @@ private const val JOIN_MARGIN = 4
  * `IndicTransOnnxRuntime.translate`); здесь [tokenCount] — абстрактная мера
  * длины чанка, сравнение строго `<= budget` (ровно бюджет — без нарезки).
  *
- * 1. Границы — [SentenceSplitter.splitWithSeparators]; сегментов не больше
- *    одного — [text] возвращается как есть (единственный чанк).
+ * 1. Границы — [SentenceSplitter.splitWithSeparators]; сегментов нет
+ *    (пробельный ввод) — [text] возвращается как есть (единственный чанк);
+ *    одиночный сегмент проходит общий цикл и, если превышает бюджет,
+ *    дорезается по словам наравне с прочими (ревью #79: прежний ранний
+ *    возврат «один сегмент — как есть» оставлял сверхбюджетный чанк
+ *    нетронутым).
  * 2. Жадная упаковка последовательных сегментов в чанк, пока [tokenCount]
  *    склеенного (через исходные разделители) чанка не превысит [budget];
  *    переполнение — закрытие чанка, разделитель разрыва = разделитель той
@@ -49,7 +53,9 @@ private const val JOIN_MARGIN = 4
  */
 internal fun planChunks(text: String, tokenCount: (String) -> Int, budget: Int): ChunkPlan {
     val (segments, segSeps) = SentenceSplitter.splitWithSeparators(text)
-    if (segments.size <= 1) return ChunkPlan(listOf(text), emptyList())
+    // Пустой/пробельный ввод — единственный чанк как есть; одиночный
+    // сегмент длиннее бюджета дорезается общим циклом (ревью #79).
+    if (segments.isEmpty()) return ChunkPlan(listOf(text), emptyList())
 
     val chunks = ArrayList<String>()
     val separators = ArrayList<String>()

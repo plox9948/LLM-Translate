@@ -62,11 +62,13 @@ class IndicTransOnnxRuntime @Inject constructor(
          */
         private const val EMBED_POSITION_LIMIT = 258
         /**
-         * Потолок бюджета ТЕКСТА чанка в токенах (без языкового префикса и
-         * входного EOS) — см. [chunkBudget]: запас между бюджетом и лимитом
-         * эмбеддингов покрывает рост числа токенов от punc_norm, который
-         * чанкинг в [planChunks] не учитывает (план считается по сырому
-         * тексту сегментов).
+         * Потолок бюджета чанка в токенах ПОЛНОГО препроцессированного входа
+         * (с языковым префиксом, без входного EOS) — см. [chunkBudget].
+         * [planChunks] считает [TokenizerJson.encode] от текста ПРОЙДЕВШЕГО
+         * [IndicProcessorLite.preprocess] (punc_norm eng_Latn добавляет токены
+         * голой пунктуации — ревью #79), поэтому cap 250 остаётся лишь
+         * страховкой: фактический лимит задаёт [EMBED_POSITION_LIMIT] минус
+         * EOS, а рост от punc_norm уже учтён в оценке.
          */
         private const val CHUNK_BUDGET_CAP = 250
         /** Размер no_repeat_ngram для ретрайного прохода при вырожденном выводе (issue #62). */
@@ -211,7 +213,7 @@ class IndicTransOnnxRuntime @Inject constructor(
                     val gen = parseGenerationConfig(genConfigFile)
                     val dict = parseTokenizerMeta(metaFile)
 
-                    engineCache.cache.put(
+                    engineCache.putBundleUnlocked(
                         modelInfo.id,
                         ModelBundle(
                             encoderSession = encoder,
@@ -229,7 +231,8 @@ class IndicTransOnnxRuntime @Inject constructor(
                                 modelId = modelInfo.id,
                                 displayName = modelInfo.displayName,
                                 category = ModelCategory.TRANSLATION,
-                                ramRequiredMb = modelInfo.ramRequiredMb
+                                ramRequiredMb = modelInfo.ramRequiredMb,
+                                languages = modelInfo.languages
                             )
                         )
                     )
@@ -255,24 +258,26 @@ class IndicTransOnnxRuntime @Inject constructor(
     override val splitsIntoSentences: Boolean = false
 
     /**
-     * Бюджет ТЕКСТА чанка в токенах для [planChunks] (issue #63).
+     * Бюджет чанка в токенах ПОЛНОГО препроцессированного входа (issue #63,
+     * пересмотр ревью #79).
      *
      * Полным входом энкодера является `encode(preprocess(чанк)) + EOS`, где
-     * [IndicProcessorLite.preprocess] вставляет flores-префикс `"$srcLang $tgtLang"`.
-     * Из лимита таблицы позиционных эмбеддингов ([EMBED_POSITION_LIMIT] = 258)
-     * вычитаются фактический размер префикса ([TokenizerJson.encode] от пары
-     * кодов — обычно 2 токена) и входной EOS (1 при доступном `eosId`).
-     * Сверху накладывается [CHUNK_BUDGET_CAP] = 250: [planChunks] считает
-     * tokен-длину по СЫРОМУ тексту сегментов ([TokenizerJson.encode] без
-     * preprocessing), а punc_norm внутри preprocess может добавить несколько
-     * токенов — cap оставляет запас; в Typical-случае бюджет = 250.
+     * [IndicProcessorLite.preprocess] вставляет flores-префикс
+     * `"$srcLang $tgtLang"` и для eng_Latn выполняет punc_norm, ДОБАВЛЯЮЩИЙ
+     * токены голой пунктуации. Из лимита таблицы позиционных эмбеддингов
+     * ([EMBED_POSITION_LIMIT] = 258) вычитается только входной EOS
+     * (1 при доступном `eosId`): префикс и рост punc_norm считаются уже
+     * внутри [planChunks] — её [tokenCount] измеряет
+     * `encode(preprocess(...))`, а не сырой текст (прежняя оценка по сырому
+     * тексту не видела добавленные пунктуацией токены и допускала превышение
+     * лимита). Сверху накладывается [CHUNK_BUDGET_CAP] = 250 как страховка.
      */
     private fun chunkBudget(srcTok: TokenizerJson, srcLang: String, tgtLang: String): Int {
         val prefixTokens = srcTok.encode("$srcLang $tgtLang").size
         val eosTokens = if (srcTok.eosId() != null) 1 else 0
-        val budget = minOf(CHUNK_BUDGET_CAP, EMBED_POSITION_LIMIT - prefixTokens - eosTokens)
+        val budget = minOf(CHUNK_BUDGET_CAP, EMBED_POSITION_LIMIT - eosTokens)
         Timber.d(
-            "IndicTrans: бюджет чанка текста=$budget " +
+            "IndicTrans: бюджет чанка (пост-preprocess, префикс включён)=$budget " +
                 "(prefix=$prefixTokens, eos=$eosTokens, " +
                 "cap=$CHUNK_BUDGET_CAP, лимит=$EMBED_POSITION_LIMIT)"
         )
@@ -304,6 +309,12 @@ class IndicTransOnnxRuntime @Inject constructor(
                 if (bundle == null) {
                     return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
+                // Направление активного пучка проверяется ДО инференса: другой
+                // вызов между ensureLoaded и translate мог сменить его — чужая
+                // модель перевела бы молча (ревью #79).
+                bundle.info.directionMismatch("indictrans", from, to)?.let {
+                    return@withContext Result.failure(it)
+                }
                 val ortEnv = OrtEnvironment.getEnvironment()
                 val srcTok = bundle.srcTokenizer
 
@@ -328,11 +339,18 @@ class IndicTransOnnxRuntime @Inject constructor(
                         }
                     }
 
-                    // План чанков: tokenCount — длина ЭНКОДИРУЕМОГО текста чанка
-                    // без префикса/EOS (они уже вычтены из бюджета в chunkBudget,
-                    // рост от punc_norm покрывает cap бюджета).
+                    // План чанков: tokenCount — длина ПОЛНОГО входа энкодера
+                    // чанка после preprocess (префикс и добавленные punc_norm
+                    // токены включены; EOS вычтен из бюджета в chunkBudget).
+                    // Суммарная оценка в planChunks с префиксом в каждом
+                    // слагаемом завышена — это консервативно: реальный
+                    // encode склейки всегда не больше оценки (ревью #79).
                     val budget = chunkBudget(srcTok, srcLang, tgtLang)
-                    val plan = planChunks(text, { t -> srcTok.encode(t).size }, budget)
+                    val plan = planChunks(
+                        text,
+                        { t -> srcTok.encode(IndicProcessorLite.preprocess(t, srcLang, tgtLang)).size },
+                        budget
+                    )
                     if (plan.chunks.size == 1) {
                         return@withContext translateSingleChunk(
                             ortEnv, bundle, plan.chunks.first(), srcLang, tgtLang
@@ -341,7 +359,8 @@ class IndicTransOnnxRuntime @Inject constructor(
 
                     Timber.d(
                         "IndicTrans: вход разбит на ${plan.chunks.size} чанков " +
-                            "(budget=$budget, длина входа=${srcTok.encode(text).size} токенов)"
+                            "(budget=$budget, длина входа после preprocess=" +
+                            "${srcTok.encode(IndicProcessorLite.preprocess(text, srcLang, tgtLang)).size} токенов)"
                     )
                     val merged = StringBuilder()
                     for (index in plan.chunks.indices) {
@@ -520,7 +539,9 @@ class IndicTransOnnxRuntime @Inject constructor(
                 eosTokenId = bundle.eosTokenId,
                 initialIds = listOf(bundle.decoderStartTokenId),
                 pickToken = { result, generated ->
-                    pickGreedyTokenSafe(result, generated, noRepeatNgramSize)
+                    pickGreedyTokenSafe(
+                        result, generated, noRepeatNgramSize, bundle.eosTokenId
+                    )
                 }
             ) { step, decInputIds, decAttnMask, _, prev ->
                 if (step == 0) {

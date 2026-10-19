@@ -55,6 +55,18 @@ class WavReaderTest {
     }
 
     @Test
+    fun `file over size limit is rejected without loading`() {
+        // Ревью #79: файл больше MAX_WAV_BYTES — явный отказ (пустой массив)
+        // до чтения в память. Разрежённый файл — без факической затраты дискового объёма.
+        val f = tmp.newFile("huge.wav")
+        java.io.RandomAccessFile(f, "rw").use { it.setLength(WavReader.MAX_WAV_BYTES + 1) }
+        assertTrue(WavReader.readPcmAsFloat(f).isEmpty())
+        // Ровно на границе лимита — читается как обычно (битый WAV → пуст).
+        java.io.RandomAccessFile(f, "rw").use { it.setLength(WavReader.MAX_WAV_BYTES) }
+        assertTrue(WavReader.readPcmAsFloat(f).isEmpty())
+    }
+
+    @Test
     fun `standard wav locates data chunk after fmt`() {
         val bytes = wav(pcm)
         val loc = requireNotNull(WavReader.locateDataChunk(bytes))

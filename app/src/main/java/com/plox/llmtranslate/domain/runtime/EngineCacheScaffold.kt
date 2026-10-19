@@ -42,16 +42,22 @@ internal class EngineCacheScaffold<T>(
      * (use-after-free исключён). Вся работа с [cache] и [activeId] — только
      * под этим мьютексом.
      */
-    val sessionMutex = Mutex()
+    internal val sessionMutex = Mutex()
 
-    /** LRU-кэш загруженных пучков моделей (issue #36). */
-    val cache = EngineModelCache<T>(capacity)
+    /**
+     * LRU-кэш загруженных пучков моделей (issue #36). Наружу не отдаётся:
+     * кладка пучков идёт через [putBundleUnlocked] (ревью #79 — прежнее
+     * значение при повторном put не должно теряться без освобождения).
+     *internal — только для юнит-тестов каркаса.
+     */
+    internal val cache = EngineModelCache<T>(capacity)
 
     /**
      * Id пучка, на котором работает translate движка; пишется и читается
-     * только под [sessionMutex].
+     * только под [sessionMutex]. Наружу не отдаётся (ревью #79).
+     * internal — только для юнит-тестов каркаса.
      */
-    var activeId: String? = null
+    internal var activeId: String? = null
 
     private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
 
@@ -87,6 +93,18 @@ internal class EngineCacheScaffold<T>(
     suspend fun applyRetentionUnlocked() {
         if (!retentionProvider.keepModelsOnDirectionChange()) {
             releaseUnlocked()
+        }
+    }
+
+    /**
+     * Положить пучок [bundle] в кэш под [sessionMutex]. Если по этому id уже
+     * был пучок — он изымается и освобождается через [releaseBundle]: прежний
+     * нативный ресурс не должен переживать замену (ревью #79).
+     */
+    fun putBundleUnlocked(modelId: String, bundle: T) {
+        cache.put(modelId, bundle)?.let { previous ->
+            Timber.w("$logLabel: пучок $modelId уже был в кэше — прежний освобождён")
+            releaseBundle(previous)
         }
     }
 

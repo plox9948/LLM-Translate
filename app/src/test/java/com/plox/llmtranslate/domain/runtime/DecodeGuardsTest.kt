@@ -122,6 +122,24 @@ class DecodeGuardsTest {
     }
 
     @Test
+    fun `eos is never masked by ngram mask`() {
+        // Ревью #79: стоп-токены всегда разрешены — EOS под маску no_repeat
+        // не попадает, иначе запрет последнего n-грамма блокировал бы EOS
+        // и генерация упиралась в лимит.
+        val eos = 9
+        val logits = FloatArray(10) { 0f }
+        logits[eos] = 5f
+        // EOS уже встречался как продолжение контекста [1, 2].
+        val generated = listOf(1, 2, eos, 1, 2)
+        maskRepeatingNgrams(logits, generated, n = 3, eosTokenId = eos)
+        assertEquals(5f, logits[eos], 0f)
+        assertEquals(eos, argMaxSafe(logits, "тест EOS не замаскирован"))
+        // Без eosTokenId (значение по умолчанию) тот же id маскируется.
+        maskRepeatingNgrams(logits, generated, n = 3)
+        assertEquals(-Float.MAX_VALUE, logits[eos], 0f)
+    }
+
+    @Test
     fun `context occurrence without continuation is not masked`() {
         val logits = FloatArray(10) { 0f }
         logits[9] = 5f

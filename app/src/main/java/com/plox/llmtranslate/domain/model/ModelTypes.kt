@@ -206,6 +206,22 @@ sealed class RuntimeError : Exception() {
     data class LanguageNotSupported(val engine: String, val language: String) : RuntimeError()
     object ModelNotSelected : RuntimeError()
     object ModelNotReady : RuntimeError()
+
+    /**
+     * Ни один движок перевода не поддерживает [runtime] модели
+     * (ревью #79): раньше роутер молча подставлял Marian как fallback,
+     * и ошибочный тип рантайма TRANSLATION-модели переводился чужим
+     * движком вместо явной ошибки.
+     */
+    data class UnsupportedRuntime(val runtime: String) : RuntimeError()
+
+    /**
+     * Активный пучок движка перевода загружен для другой языковой пары, чем
+     * запрошено в translate (ревью #79): гонка между ensureLoaded другой
+     * модели и translate не должна приводить к молчаливому переводу чужой
+     * моделью.
+     */
+    data class DirectionMismatch(val runtime: String, val reason: String) : RuntimeError()
 }
 
 /**
@@ -218,6 +234,8 @@ fun RuntimeError.userMessage(): String = when (this) {
     is RuntimeError.LanguageNotSupported -> "Язык не поддерживается движком озвучивания: $language"
     RuntimeError.ModelNotSelected -> "Модель не выбрана"
     RuntimeError.ModelNotReady -> "Модель не готова"
+    is RuntimeError.UnsupportedRuntime -> "Неподдерживаемый тип движка модели: $runtime"
+    is RuntimeError.DirectionMismatch -> "Модель загружена для другого направления перевода: $reason"
 }
 
 /**

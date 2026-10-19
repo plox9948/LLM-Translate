@@ -69,9 +69,20 @@ class ChunkPlannerTest {
     }
 
     @Test
-    fun `single segment returned as single chunk untouched`() {
+    fun `single overbudget segment is cut like any other`() {
+        // Ревью #79: прежний ранний возврат «один сегмент — как есть» оставлял
+        // сверхбюджетный чанк нетронутым; теперь одиночный сегмент дорезается
+        // общим циклом наравне с прочими.
         val plan = planChunks("a long stretch without terminators", ::wordTokens, budget = 2)
-        assertEquals(listOf("a long stretch without terminators"), plan.chunks)
+        assertEquals(5, plan.chunks.size)
+        assertEquals(4, plan.separators.size)
+        plan.chunks.forEach { chunk -> assertTrue(wordTokens(chunk) <= 2) }
+    }
+
+    @Test
+    fun `single segment within budget returned untouched`() {
+        val plan = planChunks("a long stretch", ::wordTokens, budget = 8)
+        assertEquals(listOf("a long stretch"), plan.chunks)
         assertTrue(plan.separators.isEmpty())
     }
 

@@ -102,15 +102,15 @@ internal suspend fun greedyDecode(
  * Результат greedy-цикла: список сгенерированных id (включая [initialIds] и,
  * при достижении, EOS) и флаги остановки:
  * - [eosReached] — pickToken вернул EOS (штатная остановка);
- * - [hitMaxLength] — цикл выполнил все maxNewTokens шагов без EOS —
- *   вероятное вырождение декодера (зацикливание), см. isDegenerateOutput.
+ * - [hitMaxLength] — цикл выполнил все maxNewTokens шагов без EOS и при этом
+ *   был минимум один шаг декода без EOS — вероятное вырождение декодера
+ *   (зацикливание), см. isDegenerateOutput.
  */
 internal data class DecodeOutcome(
     val generated: List<Int>,
     val eosReached: Boolean,
     val hitMaxLength: Boolean
 )
-
 /**
  * Ядро greedy-цикла, не зависящее от ONNX Runtime: типы входа шага и
  * результата шага обобщены ([I]/[R]) и обязаны быть [AutoCloseable].
@@ -122,8 +122,9 @@ internal data class DecodeOutcome(
  *
  * Флаги результата:
  * - `eosReached` — [pickToken] вернул [eosTokenId] (штатная остановка);
- * - `hitMaxLength` — цикл выполнил все [maxNewTokens] шагов без EOS
- *   (потенциальное вырождение декодера — см. isDegenerateOutput).
+ * - `hitMaxLength` — цикл выполнил все [maxNewTokens] шагов без EOS и был
+ *   минимум один шаг без EOS (потенциальное вырождение декодера — см.
+ *   isDegenerateOutput).
  */
 internal suspend fun <I : AutoCloseable, R : AutoCloseable> greedyDecodeCore(
     initialIds: List<Int>,
@@ -144,6 +145,7 @@ internal suspend fun <I : AutoCloseable, R : AutoCloseable> greedyDecodeCore(
     var firstResult: R? = null
     var prevResult: R? = null
     var eosReached = false
+    var stepsDone = 0
     try {
         for (step in 0 until maxNewTokens) {
             // Отмена длинного инференса: проверка на каждой итерации,
@@ -158,7 +160,18 @@ internal suspend fun <I : AutoCloseable, R : AutoCloseable> greedyDecodeCore(
                 inputIds.close()
                 encoderAttentionMask.close()
             }
+            stepsDone++
 
+            // Первый результат держится до конца цикла ОБЩИМ контрактом
+            // владения: у Marian из него берут неизменные encoder-past.
+            // У IndicTrans encoder-past подаётся из prevResult (граф
+            // decoder_with_past получает все четыре past предыдущего шага),
+            // поэтому первый результат его коллбэком не читается — но
+            // retention намеренно оставлен общим: персональный параметр
+            // keepFirstResult добавлял бы ветвление в контракт закрытия
+            // ресурсов ради экономии одного лишнего результата шага, с
+            // риском рассинхронизации владения (минимальный общий цикл
+            // сохранён сознательно, ревью #79).
             if (step == 0) firstResult = result
             // Результат предыдущего шага замещён текущим и больше не нужен
             // (первого — держим до конца цикла).
@@ -179,7 +192,9 @@ internal suspend fun <I : AutoCloseable, R : AutoCloseable> greedyDecodeCore(
         if (prevResult !== firstResult) prevResult?.close()
     }
     // EOS не достигнут за все maxNewTokens шагов — декодер упёрся в лимит.
-    return DecodeOutcome(generated, eosReached, hitMaxLength = !eosReached)
+    // Без выполненного шага (maxNewTokens == 0) упора не было: флаг только
+    // при минимум одном шаге декода без EOS (ревью #79).
+    return DecodeOutcome(generated, eosReached, hitMaxLength = !eosReached && stepsDone > 0)
 }
 
 /**
@@ -228,7 +243,8 @@ internal fun argMaxSafe(values: FloatArray, stepDesc: String): Int {
 /**
  * Логи последней позиции последовательности из результата шага декодера
  * (shape [batch, seq, vocab]) — копия, можно мутировать.
- * @throws IllegalStateException если тензор отсутствует или имеет иной тип.
+ * @throws IllegalStateException если тензор отсутствует, имеет иной тип
+ *         или пустой/некорректной формы (нет позиции для чтения).
  */
 internal fun logitsLastPosition(result: OrtSession.Result): FloatArray {
     val logitsTensor = ortTensor(result, "logits")
@@ -236,6 +252,12 @@ internal fun logitsLastPosition(result: OrtSession.Result): FloatArray {
     @Suppress("UNCHECKED_CAST")
     val logitsData = logitsTensor.getValue() as? Array<Array<FloatArray>>
         ?: throw IllegalStateException("Неверный тип logits")
+    // Пустой либо некорректной формы ([0][] или [][]) тензор: обращение
+    // logitsData[0][...] бросило бы ArrayIndexOutOfBoundsException —
+    // приводим к той же явной ошибке, что и отсутствующий тензор (ревью #79).
+    if (logitsData.isEmpty() || logitsData[0].isEmpty()) {
+        throw IllegalStateException("Нет logits")
+    }
     return logitsData[0][logitsData[0].size - 1].copyOf()
 }
 

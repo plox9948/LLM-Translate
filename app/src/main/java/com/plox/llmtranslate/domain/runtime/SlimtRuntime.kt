@@ -41,6 +41,12 @@ class SlimtRuntime @Inject constructor(
         private const val STATUS_ERROR = 2
         private const val STATUS_CANCELLED = 3
 
+        /**
+         * Лимит дренажа после nativeCancel в NonCancellable: зависший воркер
+         * slimt не должен держать мьютекс движка вечно (ревью #79).
+         */
+        private const val CANCEL_DRAIN_TIMEOUT_MS = 10_000L
+
         /** Ёмкость LRU-кэша: два направления перевода + активная модель. */
         private const val MODEL_CACHE_CAPACITY = 3
     }
@@ -48,8 +54,13 @@ class SlimtRuntime @Inject constructor(
     /**
      * Пучок модели slimt: нативный handle и метаданные для UI.
      * Пучки движка хранятся в LRU-кэше [engineCache].
+     * Языковая пара модели — в [LoadedModelInfo.languages]; используется
+     * для проверки направления в [translate] (ревью #79).
      */
-    private class ModelBundle(val handle: Long, val info: LoadedModelInfo)
+    private class ModelBundle(
+        val handle: Long,
+        val info: LoadedModelInfo
+    )
 
     /**
      * Каркас LRU-кэша пучков: нативные модели защищены внутренним мьютексом —
@@ -117,7 +128,7 @@ class SlimtRuntime @Inject constructor(
                             "slimt", "Не удалось создать модель slimt"
                         )
                     }
-                    engineCache.cache.put(
+                    engineCache.putBundleUnlocked(
                         modelInfo.id,
                         ModelBundle(
                             handle = newHandle,
@@ -125,7 +136,8 @@ class SlimtRuntime @Inject constructor(
                                 modelId = modelInfo.id,
                                 displayName = modelInfo.displayName,
                                 category = ModelCategory.TRANSLATION,
-                                ramRequiredMb = modelInfo.ramRequiredMb
+                                ramRequiredMb = modelInfo.ramRequiredMb,
+                                languages = modelInfo.languages
                             )
                         )
                     )
@@ -137,6 +149,14 @@ class SlimtRuntime @Inject constructor(
                 } catch (e: Exception) {
                     Timber.e(e, "Не удалось загрузить slimt-модель $path")
                     RuntimeError.LoadFailed("slimt", e.message ?: "Неизвестная ошибка")
+                } catch (e: Throwable) {
+                    // UnsatisfiedLinkError / ExceptionInInitializerError:
+                    // System.loadLibrary в init SlimtNative бросает Error, а не
+                    // Exception — без этой ветки он ронял бы процесс вместо
+                    // явной LoadFailed (ревью #79). CancellationException
+                    // обработан выше и не глотается.
+                    Timber.e(e, "Критическая ошибка нативного слоя slimt при загрузке $path")
+                    RuntimeError.LoadFailed("slimt", e.message ?: "Ошибка нативной библиотеки")
                 }
             }
         }
@@ -144,17 +164,25 @@ class SlimtRuntime @Inject constructor(
     /**
      * Перевести текст через slimt (Blocking-фронтенд с атомарным флагом
      * отмены; опрос с границами отмены корутины между итерациями).
-     * Инференс идёт по активному пучку кэша — [ensureLoaded] вызывает
-     * перед переводом, поэтому активный пучок соответствует модели
-     * направления; при отсутствии активного — [RuntimeError.ModelNotSelected].
+     * Инференс идёт по активному пучку кэша; пара [from]→[to] сверяется с
+     * направлением активного пучка — при несовпадении (смена направления
+     * между ensureLoaded и translate) [RuntimeError.DirectionMismatch], а не
+     * перевод чужой моделью; при отсутствии активного — [RuntimeError.ModelNotSelected].
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(kotlinx.coroutines.Dispatchers.IO) {
             engineCache.sessionMutex.withLock {
-                val handle = engineCache.activeBundle()?.handle ?: 0L
-                if (handle == 0L) {
+                val bundle = engineCache.activeBundle()
+                if (bundle == null || bundle.handle == 0L) {
                     return@withContext Result.failure(RuntimeError.ModelNotSelected)
                 }
+                // Проверяем, что активный пучок загружен для запрошенного
+                // направления (ревью #79): мьютекс сериализует операции, но
+                // другой вызов между ensureLoaded и translate мог сменить его.
+                bundle.info.directionMismatch("slimt", from, to)?.let {
+                    return@withContext Result.failure(it)
+                }
+                val handle = bundle.handle
                 try {
                     SlimtNative.nativeStart(handle, text)
                     var outcome: Result<String>? = null
@@ -162,11 +190,16 @@ class SlimtRuntime @Inject constructor(
                         currentCoroutineContext().ensureActive()
                         when (SlimtNative.nativePoll(handle)) {
                             STATUS_DONE -> {
-                                outcome = Result.success(SlimtNative.nativeTakeResult(handle))
+                                val result = SlimtNative.nativeTakeResult(handle)
+                                    ?: return@withContext Result.failure(
+                                        RuntimeError.InferenceFailed("slimt", "Не удалось прочитать результат")
+                                    )
+                                outcome = Result.success(result)
                             }
 
                             STATUS_ERROR -> {
                                 val reason = SlimtNative.nativeTakeError(handle)
+                                    ?: "Ошибка декодирования без сообщения"
                                 outcome = Result.failure(
                                     RuntimeError.InferenceFailed("slimt", reason)
                                 )
@@ -187,8 +220,18 @@ class SlimtRuntime @Inject constructor(
                         SlimtNative.nativeCancel(handle)
                         // С-drain до терминального статуса: воркер slimt
                         // прерывает пакет по флагу отмены; иначе следующий
-                        // nativeStart упрётся в «already running».
+                        // nativeStart упрётся в «already running». Ограничен
+                        // таймаутом: зависший нативный воркер не должен
+                        // удерживать мьютекс движка вечно (ревью #79).
+                        val deadline = System.currentTimeMillis() + CANCEL_DRAIN_TIMEOUT_MS
                         while (SlimtNative.nativePoll(handle) == STATUS_PENDING) {
+                            if (System.currentTimeMillis() >= deadline) {
+                                Timber.w(
+                                    "slimt: отмена не завершилась за ${CANCEL_DRAIN_TIMEOUT_MS} мс — " +
+                                        "дренаж прерван, следующий nativeStart может увидеть «already running»"
+                                )
+                                break
+                            }
                             delay(POLL_INTERVAL_MS)
                         }
                     }

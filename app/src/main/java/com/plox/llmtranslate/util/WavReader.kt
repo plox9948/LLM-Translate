@@ -10,10 +10,24 @@ import java.io.File
 object WavReader {
 
     /**
+     * Потолок размера WAV: файл читается в память целиком; consumers —
+     * короткие STT-записи (потолок рекордера ~3 мин, единицы МБ). Файл
+     * заведомо большего размера — битый/чужой вход: отказ с явной ошибкой
+     * в логе вместо риска OOM (ревью #79).
+     */
+    const val MAX_WAV_BYTES: Long = 50L * 1024 * 1024
+
+    /**
      * Прочитать PCM из WAV-файла как FloatArray (16-bit → float /32768).
-     * @return массив сэмплов в диапазоне [-1.0, 1.0] или пустой массив при ошибке.
+     * @return массив сэмплов в диапазоне [-1.0, 1.0] или пустой массив при
+     *         ошибке (битый WAV, файл больше [MAX_WAV_BYTES]).
      */
     fun readPcmAsFloat(file: File): FloatArray {
+        val fileBytes = file.length()
+        if (fileBytes > MAX_WAV_BYTES) {
+            Timber.e("WAV слишком большой: $fileBytes байт (макс. $MAX_WAV_BYTES): ${file.name}")
+            return FloatArray(0)
+        }
         val bytes = file.readBytes()
         val (start, size) = locateDataChunk(bytes) ?: return FloatArray(0)
         val end = minOf(start + size, bytes.size)

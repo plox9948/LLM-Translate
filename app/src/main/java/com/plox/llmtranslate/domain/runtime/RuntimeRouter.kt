@@ -2,6 +2,7 @@ package com.plox.llmtranslate.domain.runtime
 
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.RuntimeType
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
@@ -39,14 +40,22 @@ class RuntimeRouter @Inject constructor(
 
     /**
      * Движок перевода для типа модели.
-     * Marian — по умолчанию (fallback), IndicTrans — для ne,
-     * slimt — для паков Firefox Translations (RU⇄EN).
+     * Marian — для ONNX-моделей Marian (имортируемые opus-mt),
+     * IndicTrans — для ne, slimt — для паков Firefox Translations (RU⇄EN).
+     * Не-переводческие рантаймы (STT/TTS/движки синтеза) — явная sealed-ошибка
+     * [RuntimeError.UnsupportedRuntime]: молчаливый fallback на Marian прятал
+     * ошибочный тип модели за переводом чужим движком (ревью #79).
      */
     fun translationEngine(runtime: RuntimeType): TranslationEngine = when (runtime) {
         RuntimeType.MARIAN_ONNX -> marianOnnxRuntime
         RuntimeType.INDICTRANS_ONNX -> indicTransOnnxRuntime
         RuntimeType.MARIAN_SLIMT -> slimtRuntime
-        else -> marianOnnxRuntime // fallback
+        RuntimeType.SHERPA,
+        RuntimeType.SYSTEM_TTS,
+        RuntimeType.RHVOICE,
+        RuntimeType.ESPEAK,
+        RuntimeType.PIPER_ONNX ->
+            throw RuntimeError.UnsupportedRuntime(runtime.name)
     }
 
     /**

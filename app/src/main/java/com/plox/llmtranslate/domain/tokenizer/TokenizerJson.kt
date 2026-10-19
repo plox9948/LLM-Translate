@@ -23,7 +23,13 @@ import java.util.Base64
  * - Unigram (Marian / opus-mt_tiny): vocab — список пар [token, score].
  * - BPE (IndicTrans2): vocab — объект {token: id}, merges — список пар.
  *
- * Пре-токенизаторы: Metaspace (основной), Whitespace, ByteLevel.
+ * Реально поддержана только Metaspace-претокенизация: [encode] разбивает
+ * текст по пробельным границам и добавляет каждому слову префикс
+ * [metaspaceReplacement];
+ * типы Whitespace, ByteLevel, Split и прочие в [parsePreTokenizer] дают
+ * явную ошибку загрузки (молчаливая подмена молча ломала бы id, ревью #79).
+ * Отсутствие секции pre_tokenizer трактуется как Metaspace-поведение
+ * (значения по умолчанию).
  * Нормализация: null, NFC/NFD, Sequence (вкл. Precompiled charsmap).
  *
  * Ленивая загрузка, encode/decode/eosId.
@@ -213,9 +219,17 @@ class TokenizerJson {
     private fun parsePreTokenizer(root: JsonObject) {
         val pt = root["pre_tokenizer"] as? JsonObject ?: return
         val type = (pt["type"] as? JsonPrimitive)?.contentOrNull ?: ""
-        if (type == "Metaspace") {
-            metaspaceReplacement = (pt["replacement"] as? JsonPrimitive)?.contentOrNull ?: "▁"
+        if (type != "Metaspace") {
+            // encode() реализует только Metaspace (разбор по пробелам +
+            // префикс replacement): Whitespace/ByteLevel/Split дали бы
+            // молчаливо неверные id — явная ошибка загрузки токенизатора
+            // (isLoaded останется false, движок сообщит LoadFailed).
+            throw IllegalStateException(
+                "Пре-токенизатор типа \"$type\" не поддерживается: " +
+                    "реализован только Metaspace"
+            )
         }
+        metaspaceReplacement = (pt["replacement"] as? JsonPrimitive)?.contentOrNull ?: "▁"
     }
 
     private fun parseDecoder(root: JsonObject) {

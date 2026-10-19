@@ -45,7 +45,13 @@ std::string jstr_to_utf8(JNIEnv *env, jstring value) {
     }
     const char *chars = env->GetStringUTFChars(value, nullptr);
     if (chars == nullptr) {
-        return {};
+        // nullptr означает уже pending Java-исключение (например
+        // OutOfMemoryError) либо тихую JNI-ошибку. Пустая строка молча
+        // подменила бы входные данные — пробрасываем явную ошибку.
+        if (!env->ExceptionCheck()) {
+            throw_java(env, "slimt: JNI GetStringUTFChars failed");
+        }
+        throw std::runtime_error("slimt: JNI GetStringUTFChars failed");
     }
     std::string cesu(chars);
     env->ReleaseStringUTFChars(value, chars);
@@ -103,8 +109,16 @@ jstring utf8_to_jstr(JNIEnv *env, const std::string &text) {
         } else if ((c & 0xF8u) == 0xF0u) {
             cp = c & 0x07u;
             len = 4;
+        } else {
+            // Одиночный continuation-байт (0x80..0xBF) или недопустимый
+            // lead-байт (0xF8..0xFF): U+FFFD вместо U+0000.
+            units.push_back(static_cast<char16_t>(0xFFFD));
+            ++i;
+            continue;
         }
         if (i + len > text.size()) {
+            // Обрыв многобайтовой последовательности в конце строки.
+            units.push_back(static_cast<char16_t>(0xFFFD));
             break;
         }
         for (size_t j = 1; j < len; ++j) {
@@ -137,7 +151,10 @@ Model::Config detect_config(const std::string &model_path) {
     Model::Config config = preset::tiny();
     std::ifstream file(model_path, std::ios::binary);
     if (!file) {
-        return config;
+        // Молчаливый preset::tiny() на неоткрытом файле дал бы тихую порчу
+        // перевода — это явная ошибка загрузки пакета.
+        throw std::runtime_error(
+            "slimt: не удалось открыть файл модели: " + model_path);
     }
     std::string head(65536, '\0');
     file.read(head.data(), static_cast<std::streamsize>(head.size()));
@@ -187,14 +204,16 @@ JNIEXPORT jlong JNICALL
 Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeCreate(
     JNIEnv *env, jclass /*clazz*/, jstring jmodel, jstring jvocab,
     jstring jshortlist, jstring jtarget_vocab) {
-    Package<std::string> package;
-    package.model = jstr_to_utf8(env, jmodel);
-    package.vocabulary = jstr_to_utf8(env, jvocab);
-    package.shortlist = jstr_to_utf8(env, jshortlist);
-    package.target_vocabulary = jstr_to_utf8(env, jtarget_vocab);
-    package.ssplit.clear();
-
     try {
+        // jstr_to_utf8 может бросить JNI-ошибку чтения строки — только
+        // внутри try, иначе исключение уйдёт через границу JNI.
+        Package<std::string> package;
+        package.model = jstr_to_utf8(env, jmodel);
+        package.vocabulary = jstr_to_utf8(env, jvocab);
+        package.shortlist = jstr_to_utf8(env, jshortlist);
+        package.target_vocabulary = jstr_to_utf8(env, jtarget_vocab);
+        package.ssplit.clear();
+
         auto session = std::make_unique<Session>();
         session->model =
             std::make_shared<Model>(detect_config(package.model), package);
@@ -205,33 +224,46 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeCreate(
     } catch (const std::exception &e) {
         throw_java(env, e.what());
         return 0;
+    } catch (...) {
+        throw_java(env, "slimt: unknown native error");
+        return 0;
     }
 }
 
 JNIEXPORT void JNICALL
 Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeDestroy(
-    JNIEnv * /*env*/, jclass /*clazz*/, jlong handle) {
+    JNIEnv *env, jclass /*clazz*/, jlong handle) {
+    if (handle == 0) {
+        throw_java(env, "slimt: некорректный handle");
+        return;
+    }
     delete reinterpret_cast<Session *>(handle);  // NOLINT
 }
 
 JNIEXPORT void JNICALL
 Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeStart(
     JNIEnv *env, jclass /*clazz*/, jlong handle, jstring jtext) {
-    auto *session = reinterpret_cast<Session *>(handle);  // NOLINT
-    std::string text = jstr_to_utf8(env, jtext);
-    std::lock_guard<std::mutex> lock(session->mu);
-    if (session->pending) {
-        throw_java(env, "slimt: translation already running");
+    if (handle == 0) {
+        throw_java(env, "slimt: некорректный handle");
         return;
     }
-    // Сброс результатов предыдущего перевода: иначе при исключении в
-    // translate nativePoll/nativeTakeError вернут устаревшие данные.
-    session->result.clear();
-    session->error.clear();
-    session->cancel.store(false);
-    // Options.alignment по умолчанию false — выравнивания переводу не нужны.
-    Options options;
+    // jstr_to_utf8 бросает при JNI-ошибке чтения строки — весь тело держим
+    // в try, чтобы ошибка всегда уходила в Java как IllegalStateException.
     try {
+        auto *session = reinterpret_cast<Session *>(handle);  // NOLINT
+        std::string text = jstr_to_utf8(env, jtext);
+        std::lock_guard<std::mutex> lock(session->mu);
+        if (session->pending) {
+            throw_java(env, "slimt: translation already running");
+            return;
+        }
+        // Сброс результатов предыдущего перевода: иначе при исключении в
+        // translate nativePoll/nativeTakeError вернут устаревшие данные.
+        session->result.clear();
+        session->error.clear();
+        session->cancel.store(false);
+        // Options.alignment по умолчанию false — выравнивания переводу не нужны.
+        Options options;
         session->frontend->set_cancel_flag(&session->cancel);
         Handle request = session->frontend->translate(
             session->model, std::move(text), options);
@@ -239,13 +271,19 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeStart(
         session->pending = true;
     } catch (const std::exception &e) {
         throw_java(env, e.what());
+    } catch (...) {
+        throw_java(env, "slimt: unknown native error");
     }
 }
 
 // 0 — ещё идёт, 1 — готово, 2 — ошибка, 3 — отменено.
 JNIEXPORT jint JNICALL
 Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativePoll(
-    JNIEnv * /*env*/, jclass /*clazz*/, jlong handle) {
+    JNIEnv *env, jclass /*clazz*/, jlong handle) {
+    if (handle == 0) {
+        throw_java(env, "slimt: некорректный handle");
+        return 2;
+    }
     auto *session = reinterpret_cast<Session *>(handle);  // NOLINT
     std::lock_guard<std::mutex> lock(session->mu);
     if (!session->pending) {
@@ -266,12 +304,22 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativePoll(
         }
         session->error = e.what();
         return 2;
+    } catch (...) {
+        if (session->cancel.load()) {
+            return 3;
+        }
+        session->error = "slimt: unknown native error";
+        return 2;
     }
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeTakeResult(
     JNIEnv *env, jclass /*clazz*/, jlong handle) {
+    if (handle == 0) {
+        throw_java(env, "slimt: некорректный handle");
+        return nullptr;
+    }
     auto *session = reinterpret_cast<Session *>(handle);  // NOLINT
     std::lock_guard<std::mutex> lock(session->mu);
     return utf8_to_jstr(env, session->result);
@@ -280,14 +328,25 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeTakeResult(
 JNIEXPORT jstring JNICALL
 Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeTakeError(
     JNIEnv *env, jclass /*clazz*/, jlong handle) {
+    if (handle == 0) {
+        throw_java(env, "slimt: некорректный handle");
+        return nullptr;
+    }
     auto *session = reinterpret_cast<Session *>(handle);  // NOLINT
     std::lock_guard<std::mutex> lock(session->mu);
-    return env->NewStringUTF(session->error.c_str());
+    // error может содержать не-ASCII (тексты slimt на языке модели):
+    // NewStringUTF ждёт модифицированную UTF-8 — кодируем явно через
+    // общий utf8_to_jstr.
+    return utf8_to_jstr(env, session->error);
 }
 
 JNIEXPORT void JNICALL
 Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeCancel(
-    JNIEnv * /*env*/, jclass /*clazz*/, jlong handle) {
+    JNIEnv *env, jclass /*clazz*/, jlong handle) {
+    if (handle == 0) {
+        throw_java(env, "slimt: некорректный handle");
+        return;
+    }
     auto *session = reinterpret_cast<Session *>(handle);  // NOLINT
     session->cancel.store(true);
 }

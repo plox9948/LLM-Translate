@@ -102,6 +102,42 @@ class TokenizerJsonTest {
         assertEquals("hello", tokenizer.decode(listOf(0, 1, 2, 4)))
     }
 
+    @Test
+    fun `unsupported pre-tokenizer type fails load`() {
+        // Ревью #79: Metaspace — единственная реализованная претокенизация;
+        // другой тип — явная ошибка загрузки, а не тихий fallback.
+        val json = bpeJson.replace(
+            "\"pre_tokenizer\": {\"type\": \"Metaspace\", \"replacement\": \"▁\", \"prepend_scheme\": \"always\"}",
+            "\"pre_tokenizer\": {\"type\": \"ByteLevel\"}"
+        )
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(json))
+        assertEquals(false, tokenizer.isLoaded)
+    }
+
+    @Test
+    fun `unknown pre-tokenizer type fails load`() {
+        val json = unigramJson.replace(
+            "\"pre_tokenizer\": {\"type\": \"Metaspace\", \"replacement\": \"▁\", \"prepend_scheme\": \"always\"}",
+            "\"pre_tokenizer\": {\"type\": \"Split\", \"pattern\": \"(\\\\p{L}+)\"}"
+        )
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(json))
+        assertEquals(false, tokenizer.isLoaded)
+    }
+
+    @Test
+    fun `missing pre-tokenizer section keeps default metaspace`() {
+        val json = unigramJson.replace(
+            ",\n          \"pre_tokenizer\": {\"type\": \"Metaspace\", \"replacement\": \"▁\", \"prepend_scheme\": \"always\"}",
+            ""
+        )
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(json))
+        assertEquals(true, tokenizer.isLoaded)
+        assertEquals(listOf(0, 1, 2), tokenizer.encode("hello"))
+    }
+
     private fun writeTempTokenizer(content: String): String {
         val file = Files.createTempFile("tokenizer", ".json")
         file.toFile().deleteOnExit()

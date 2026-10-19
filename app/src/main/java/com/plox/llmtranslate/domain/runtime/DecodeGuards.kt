@@ -32,11 +32,20 @@ private const val CYCLE_REPEATS = 4
  *
  * Чистая функция на [FloatArray] — тестируется на JVM без ORT.
  *
- * @param logits логи последней позиции (мутируются на месте).
+ * @param logits logits последней позиции (мутируются на месте).
  * @param generated уже сгенерированные id (включая decoder-start).
  * @param n размер запрещаемого n-грамма (n >= 1; при n <= 0 — no-op).
+ * @param eosTokenId токен конца последовательности — стоп-токены всегда
+ *        разрешены и под маску НЕ попадают (иначе запрет последнего
+ *        n-грамма заблокировал бы завершение перевода, ревью #79);
+ *        -1 — стоп-токен не задавать.
  */
-internal fun maskRepeatingNgrams(logits: FloatArray, generated: List<Int>, n: Int) {
+internal fun maskRepeatingNgrams(
+    logits: FloatArray,
+    generated: List<Int>,
+    n: Int,
+    eosTokenId: Int = -1
+) {
     if (n <= 0 || generated.isEmpty() || logits.isEmpty()) return
     val ctxSize = n - 1
     val size = generated.size
@@ -54,7 +63,7 @@ internal fun maskRepeatingNgrams(logits: FloatArray, generated: List<Int>, n: In
         }
         if (matches) {
             val forbidden = generated[i + ctxSize]
-            if (forbidden in logits.indices) {
+            if (forbidden != eosTokenId && forbidden in logits.indices) {
                 logits[forbidden] = FORBIDDEN_LOGIT
             }
         }
@@ -69,17 +78,20 @@ internal fun maskRepeatingNgrams(logits: FloatArray, generated: List<Int>, n: In
  * @param result результат шага декодера (ORT).
  * @param generated уже сгенерированные id.
  * @param noRepeatNgramSize размер запрещаемого n-грамма (0 — без маски).
+ * @param eosTokenId стоп-токен — всегда разрешён к выбору при маске
+ *        (см. [maskRepeatingNgrams]).
  * @throws IllegalStateException при полностью некорректных logits (шаг
  *         описывается числом уже сгенерированных токенов).
  */
 internal fun pickGreedyTokenSafe(
     result: OrtSession.Result,
     generated: List<Int>,
-    noRepeatNgramSize: Int
+    noRepeatNgramSize: Int,
+    eosTokenId: Int
 ): Int {
     val logits = logitsLastPosition(result)
     if (noRepeatNgramSize > 0) {
-        maskRepeatingNgrams(logits, generated, noRepeatNgramSize)
+        maskRepeatingNgrams(logits, generated, noRepeatNgramSize, eosTokenId)
     }
     return argMaxSafe(logits, "после ${generated.size} сгенерированных токенов")
 }

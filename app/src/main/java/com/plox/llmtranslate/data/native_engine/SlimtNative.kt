@@ -42,9 +42,18 @@ object SlimtNative {
      */
     external fun nativePoll(handle: Long): Int
 
-    external fun nativeTakeResult(handle: Long): String
+    /**
+     * Забрать текст завершённого перевода. null — только при некорректном
+     * handle (с выброшенным [IllegalStateException]); пустая строка —
+     * легитимный пустой результат.
+     */
+    external fun nativeTakeResult(handle: Long): String?
 
-    external fun nativeTakeError(handle: Long): String
+    /**
+     * Забрать текст ошибки последней операции. null — только при
+     * некорректном handle (с выброшенным [IllegalStateException]).
+     */
+    external fun nativeTakeError(handle: Long): String?
 
     external fun nativeCancel(handle: Long)
 }
