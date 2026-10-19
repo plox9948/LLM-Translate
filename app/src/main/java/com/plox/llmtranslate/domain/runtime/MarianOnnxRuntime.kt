@@ -188,6 +188,16 @@ class MarianOnnxRuntime @Inject constructor(
                         )
                     }
 
+                    // Эвикция по байтовому бюджету ДО создания сессий
+                    // (регресс-ревью #83): eldest выгружается заранее с
+                    // оценкой веса графов той же estimateGraphBytes, что
+                    // попадёт в weightBytes, — иначе пик ОЗУ = прежние
+                    // пучки + новый набор сессий одновременно.
+                    engineCache.reserveByteBudgetUnlocked(
+                        modelInfo.id,
+                        estimateGraphBytes(listOf(encoderFile, decoderFile, decoderPastFile))
+                    )
+
                     val sessions = createEncoderDecoderSessions(
                         "Marian", ortEnv, encoderFile, decoderFile, decoderPastFile
                     )

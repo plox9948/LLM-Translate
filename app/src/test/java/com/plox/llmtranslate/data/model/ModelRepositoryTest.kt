@@ -63,6 +63,19 @@ class ModelRepositoryTest {
             return 1
         }
 
+        override suspend fun markStaleDownloadingById(
+            id: String,
+            status: String,
+            updatedAt: Long
+        ): Int {
+            val existing = store[id] ?: return 0
+            // Гейт того же SQL-запроса Room (регресс-ревью #83, п.2):
+            // UPDATE ... WHERE id = :id AND status = 'DOWNLOADING'.
+            if (existing.status != ModelStatus.DOWNLOADING.name) return 0
+            store[id] = existing.copy(status = status, updatedAt = updatedAt)
+            return 1
+        }
+
         override suspend fun updateProgressById(
             id: String,
             status: String,
@@ -493,5 +506,31 @@ class ModelRepositoryTest {
 
         // Повторный вызов — никого не дублирует (stale уже ERROR).
         assertEquals(emptyList<String>(), repo.markStaleDownloadingRecords { it == "live" })
+    }
+
+    @Test
+    fun `markStaleDownloadingRecords does not overwrite rows finalized between snapshot and update`() = runTest {
+        // Регресс-ревью issue #83, п.2: финализирующий воркер мог перевести
+        // запись в READY между снимком DOWNLOADING-списка и UPDATE —
+        // gated-UPDATE (WHERE status = 'DOWNLOADING') не затирает её, и id
+        // не возвращается как лечёный. Гонка смоделирована предикатом:
+        // он вызывается уже по снимку и переводит строку в READY до DAO-гейта.
+        val dao = FakeDao()
+        dao.upsert(entity(id = "racing", status = ModelStatus.DOWNLOADING.name, filePath = null))
+        dao.upsert(entity(id = "stale", status = ModelStatus.DOWNLOADING.name, filePath = null))
+        val repo = ModelRepository(dao)
+
+        val repaired = repo.markStaleDownloadingRecords { modelId ->
+            if (modelId == "racing") {
+                dao.store["racing"] = dao.store.getValue("racing")
+                    .copy(status = ModelStatus.READY.name)
+            }
+            false
+        }
+
+        // Gated-UPDATE: залечена только реально DOWNLOADING-запись.
+        assertEquals(listOf("stale"), repaired)
+        assertEquals(ModelStatus.READY.name, dao.store.getValue("racing").status)
+        assertEquals(ModelStatus.ERROR.name, dao.store.getValue("stale").status)
     }
 }

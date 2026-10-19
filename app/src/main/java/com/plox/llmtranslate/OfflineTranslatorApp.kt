@@ -140,7 +140,15 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
      */
     private suspend fun repairStaleDownloadingRecords() {
         try {
-            val repaired = modelRepository.markStaleDownloadingRecords(::hasLiveDownloadWork)
+            // Регресс-ревью issue #83: суммарный дедлайн на всю сверку
+            // вместо блокирующего get по 5 с на каждую запись (N×5 с на
+            // старте при подвешенном WorkManager). Записи после исчерпания
+            // бюджета считаются живыми — ложный ERROR хуже перепроверки на
+            // следующем старте.
+            val deadline = System.currentTimeMillis() + WORK_REPAIR_TOTAL_BUDGET_MS
+            val repaired = modelRepository.markStaleDownloadingRecords { modelId ->
+                hasLiveDownloadWork(modelId, deadline)
+            }
             if (repaired.isNotEmpty()) {
                 Timber.w("Залипших DOWNLOADING-записей без работы переведено в ERROR: ${repaired.size}")
             }
@@ -153,20 +161,29 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
      * Живая скачивающая unique-работа модели (ENQUEUED/RUNNING/BLOCKED).
      * false — работы нет (завершена/отменена/не создана); при сбое запроса
      * WorkManager возвращаем true — запись считается живой и не трогается
-     * (см. [repairStaleDownloadingRecords]).
+     * (см. [repairStaleDownloadingRecords]). [deadlineMs] — суммарный дедлайн
+     * всех запросов сверки (регресс-ревью issue #83): при его исчерпании
+     * запрос не выполняется и запись также считается живой.
      */
-    private fun hasLiveDownloadWork(modelId: String): Boolean = try {
-        val states = WorkManager.getInstance(this)
-            .getWorkInfosForUniqueWork(ModelDownloadWorker.workName(modelId))
-            .get(WORK_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            .map { it.state }
-        states.any {
-            it == WorkInfo.State.ENQUEUED || it == WorkInfo.State.RUNNING ||
-                it == WorkInfo.State.BLOCKED
+    private fun hasLiveDownloadWork(modelId: String, deadlineMs: Long): Boolean {
+        val remainingMs = deadlineMs - System.currentTimeMillis()
+        if (remainingMs <= 0L) {
+            Timber.w("Бюджет сверки WorkManager исчерпан — DOWNLOADING $modelId не трогаем")
+            return true
         }
-    } catch (e: Exception) {
-        Timber.w(e, "WorkManager недоступен для $modelId — DOWNLOADING не трогаем")
-        true
+        return try {
+            val states = WorkManager.getInstance(this)
+                .getWorkInfosForUniqueWork(ModelDownloadWorker.workName(modelId))
+                .get(remainingMs, TimeUnit.MILLISECONDS)
+                .map { it.state }
+            states.any {
+                it == WorkInfo.State.ENQUEUED || it == WorkInfo.State.RUNNING ||
+                    it == WorkInfo.State.BLOCKED
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "WorkManager недоступен для $modelId — DOWNLOADING не трогаем")
+            true
+        }
     }
 
     /**
@@ -245,4 +262,9 @@ internal fun fileSnapshotOf(path: String): FileSnapshot? {
     }
 }
 
-private const val WORK_QUERY_TIMEOUT_MS = 5_000L
+/**
+ * Суммарный бюджет блокирующих запросов WorkManager на одну сверку
+ * DOWNLOADING-записей при старте (регресс-ревью issue #83): раньше —
+ * по 5 с на каждую запись (N×5 с при подвешенном WorkManager).
+ */
+private const val WORK_REPAIR_TOTAL_BUDGET_MS = 5_000L

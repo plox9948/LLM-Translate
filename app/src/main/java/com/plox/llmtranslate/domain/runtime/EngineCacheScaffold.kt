@@ -137,6 +137,23 @@ internal class EngineCacheScaffold<T>(
     }
 
     /**
+     * Резерв байтового бюджета ДО создания нативных ресурсов нового пучка
+     * (регресс-ревью #83: байтовая эвикция происходила только после put —
+     * в пике загрузки resident-память удерживала прежние пучки И новую
+     * сессию одновременно). Выгружает eldest заранее с учётом ожидаемого
+     * размера нового пучка [incomingBytes]; новый id [modelId] защищён от
+     * вытеснения. Эвикция в [publishActiveUnlocked] остаётся страховкой.
+     * Вызывать только под [sessionMutex].
+     */
+    fun reserveByteBudgetUnlocked(modelId: String, incomingBytes: Long) {
+        cache.evictOverByteBudget(protect = setOf(modelId), reserveBytes = incomingBytes)
+            .forEach { (evictedId, bundle) ->
+                Timber.d("$logLabel: вытеснена по байтовому бюджету до загрузки модель $evictedId")
+                releaseBundle(bundle)
+            }
+    }
+
+    /**
      * Зафиксировать только что положенный в кэш пучок [modelId] как активный:
      * вытеснить пучки сверх ёмкости и опубликовать список. Вызывать только
      * под [sessionMutex] (пучок уже в [cache]).
@@ -149,9 +166,11 @@ internal class EngineCacheScaffold<T>(
             Timber.d("$logLabel: вытеснена из кэша модель $evictedId")
             releaseBundle(bundle)
         }
-        // Байтовый бюджет (ревью #83): после размещения нового пучка
-        // выгружаем eldest до возврата в бюджет; сам новый активный
-        // пучок [modelId] от вытеснения защищён.
+        // Байтовый бюджет (ревью #83) — страховка: основная эвикция
+        // выполнена ДО создания сессий в [reserveByteBudgetUnlocked]
+        // (регресс-ревью #83); здесь выгружаем eldest до возврата в
+        // бюджет, если резерва не хватило; сам новый активный пучок
+        // [modelId] от вытеснения защищён.
         cache.evictOverByteBudget(protect = setOf(modelId)).forEach { (evictedId, bundle) ->
             Timber.d("$logLabel: вытеснена по байтовому бюджету модель $evictedId")
             releaseBundle(bundle)

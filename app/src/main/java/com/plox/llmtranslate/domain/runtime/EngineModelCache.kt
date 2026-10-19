@@ -85,18 +85,26 @@ class EngineModelCache<T>(
 
     /**
      * Вытеснять наименее давно использованные записи, пока суммарный
-     * размер не вернётся в [byteBudget] (ревью #83 — ORT-пучки стоят
-     * сотни МБ, одного count-LRU мало). Ключи из [protect] (активный
+     * размер не вернётся в [byteBudget] с учётом резерва [reserveBytes]
+     * (ревью #83 — ORT-пучки стоят сотни МБ, одного count-LRU мало).
+     * Регресс-ревью #83: [reserveBytes] = размер ЕЩЁ не созданного пучка —
+     * eldest выгружается заранее, до аллокации его native-ресурсов, а не
+     * только постфактум после put. При [reserveBytes] == 0 — прежнее
+     * поведение возврата в бюджет. Ключи из [protect] (активный
      * пучок) не вытесняются; если после обхода бюджет всё ещё превышен —
      * остались только защищённые/единственный массивный пучок, это
      * допустимо (иначе кэш было бы нельзя использовать вовсе).
      * @return вытесненные пары (id, значение) в порядке вытеснения.
      */
-    fun evictOverByteBudget(protect: Set<String> = emptySet()): List<Pair<String, T>> {
-        if (storedBytes <= byteBudget) return emptyList()
+    fun evictOverByteBudget(
+        protect: Set<String> = emptySet(),
+        reserveBytes: Long = 0L,
+    ): List<Pair<String, T>> {
+        val limitBytes = byteBudget - reserveBytes
+        if (storedBytes <= limitBytes) return emptyList()
         val evicted = ArrayList<Pair<String, T>>()
         val iterator = map.entries.iterator()
-        while (storedBytes > byteBudget && iterator.hasNext()) {
+        while (storedBytes > limitBytes && iterator.hasNext()) {
             val entry = iterator.next()
             if (entry.key in protect) continue
             evicted += entry.key to entry.value

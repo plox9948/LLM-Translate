@@ -67,6 +67,22 @@ interface ModelDao {
     suspend fun updateStatusById(id: String, status: String, updatedAt: Long): Int
 
     /**
+     * Точечный перевод залипшей DOWNLOADING-записи в ERROR (лечение при
+     * старте процесса, issue #83, п.2). Гейт `AND status = 'DOWNLOADING'`
+     * по образцу [finalizeDownloadById] (регресс-ревью #83): финализирующий
+     * воркер, успевший выставить READY между снимком списка и этим UPDATE,
+     * не затирается — в отличие от [updateStatusById] без гейта.
+     *
+     * @return число обновлённых строк (0 — запись удалена или уже не в
+     *         DOWNLOADING).
+     */
+    @Query(
+        "UPDATE models SET status = :status, updated_at = :updatedAt " +
+            "WHERE id = :id AND status = 'DOWNLOADING'"
+    )
+    suspend fun markStaleDownloadingById(id: String, status: String, updatedAt: Long): Int
+
+    /**
      * Точечное обновление статуса и процента скачивания (без file_path/
      * bytes_done — они пишутся только при завершении). Каталогные поля не
      * затрагиваются, см. [updateStatusById].

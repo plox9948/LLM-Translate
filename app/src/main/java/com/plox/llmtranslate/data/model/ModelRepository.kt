@@ -150,14 +150,21 @@ class ModelRepository @Inject constructor(
         val stale = dao.observeAll().first()
             .filter { it.status == ModelStatus.DOWNLOADING.name }
             .filter { !hasLiveWork(it.id) }
-        stale.forEach { dao.updateStatusById(it.id, ModelStatus.ERROR.name, now) }
-        if (stale.isNotEmpty()) {
+        // Регресс-ревью issue #83: UPDATE с гейтом status='DOWNLOADING'
+        // (см. ModelDao.markStaleDownloadingById) — иначе гонка с
+        // финализирующим воркером между снимком списка и UPDATE переводит
+        // уже READY-запись в ERROR. Возвращаются только реально
+        // обновлённые id.
+        val repaired = stale.filter {
+            dao.markStaleDownloadingById(it.id, ModelStatus.ERROR.name, now) > 0
+        }
+        if (repaired.isNotEmpty()) {
             Timber.w(
                 "DOWNLOADING-записи без живой работы скачивания переведены в ERROR: " +
-                    stale.joinToString { it.id }
+                    repaired.joinToString { it.id }
             )
         }
-        return stale.map { it.id }
+        return repaired.map { it.id }
     }
     /**
      * Синхронизация полей ram_required_mb/recommended_ram_mb у существующих

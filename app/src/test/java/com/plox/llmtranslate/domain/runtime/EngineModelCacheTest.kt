@@ -231,4 +231,23 @@ class EngineModelCacheTest {
         assertEquals(0, cache.currentBytes)
         assertTrue(cache.evictOverByteBudget().isEmpty())
     }
+
+    @Test
+    fun `reserveBytes evicts eldest ahead of the incoming bundle`() {
+        // Регресс-ревью #83: eldest выгружается ДО создания native-ресурсов
+        // нового пучка — бюджет учитывает размер ещё не положенного пучка.
+        val cache = EngineModelCache<String>(
+            capacity = 3, byteBudget = 12, sizeOf = { it.length.toLong() }
+        )
+        cache.put("a", "AAAAAA")
+        cache.put("b", "BBBBBB")
+        // Без резерва бюджет ровно достигнут — эвикции нет.
+        assertTrue(cache.evictOverByteBudget().isEmpty())
+        // С резервом под будущий пучок 6 — eldest "a" выгружается заранее.
+        assertEquals(
+            listOf("a" to "AAAAAA"),
+            cache.evictOverByteBudget(protect = setOf("incoming"), reserveBytes = 6L)
+        )
+        assertEquals(6, cache.currentBytes)
+    }
 }

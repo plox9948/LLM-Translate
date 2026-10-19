@@ -190,6 +190,30 @@ internal fun dirHintFromDocumentId(docId: String?, externalRoot: File?): File? {
     }
 }
 /**
+ * Наблюдение состояния живой скачивающей работы при импорте бэкапа
+ * (регресс-ревью issue #83, п.4): QUERY_FAILED — запрос WorkManager не
+ * выполнен (таймаут/сбой), живость работы НЕ подтверждена ни в одну
+ * сторону.
+ */
+internal enum class ImportWorkObservation {
+    LIVE,
+    NOT_LIVE,
+    QUERY_FAILED
+}
+
+/**
+ * Политика подмены файлов модели при импорте бэкапа (регресс-ревью
+ * issue #83, п.4): подмену разрешаем только при ПОДТВЕРЖДЁННОМ отсутствии
+ * живой работы (терминальные статусы воркера). QUERY_FAILED означает, что
+ * живой воркер не распознан: он позже завершится и cleanupCancelledModel
+ * сотрёт восстановленный бандл, поэтому такую работу считаем живой и
+ * подмену этой id пропускаем (скип с логом у вызывающего). internal —
+ * политика покрыта unit-тестом без Android.
+ */
+internal fun importSwapAllowed(observation: ImportWorkObservation): Boolean =
+    observation == ImportWorkObservation.NOT_LIVE
+
+/**
  * Менеджер резервного копирования моделей и настроек.
  *
  * Формат архива:
@@ -509,6 +533,21 @@ class ModelBackupManager @Inject constructor(
             val manifestData = manifest
                 ?: return ImportResult(0, 0, false, "Нет манифеста в архиве")
 
+            // tempDir создаётся ДО гейта места (регресс-ревью issue #83):
+            // StatFs на ещё не существующем пути бросает исключение, и гейт
+            // формально «пропускался» всегда. mkdirs() сам файлов моделей не
+            // пишет — гарантию двухпроходности (гейт ДО появления записей
+            // models/ в temp) это не нарушает.
+            if (!tempDir.mkdirs() && !tempDir.isDirectory) {
+                Timber.e(
+                    "Не удалось создать временный каталог распаковки: ${tempDir.absolutePath}"
+                )
+                return ImportResult(
+                    0, 0, false,
+                    "Не удалось создать временный каталог распаковки бэкапа"
+                )
+            }
+
             // StatFs-гейт ПОСЛЕ чтения манифеста и ДО записи файлов моделей
             // (двухпроходность, issue #83, п.5): sizeBytes манифеста — размер
             // СКАЧИВАЕМЫХ артефактов, а на диск ложится распакованное
@@ -532,7 +571,6 @@ class ModelBackupManager @Inject constructor(
                     "Недостаточно свободного места для распаковки бэкапа"
                 )
             }
-            tempDir.mkdirs()
 
             // --- Проход 2: только файлы моделей. ---
             val filesInput = context.contentResolver.openInputStream(sourceUri)
@@ -632,7 +670,14 @@ class ModelBackupManager @Inject constructor(
                 // той же id — иначе WorkManager-воркер дописывает .part и
                 // переименовывает цели раскладки поверх восстановленного пучка
                 // (гейт finalizeDownload по статусу защищает только запись БД).
-                cancelLiveDownloadForImport(entry.id)
+                // Регресс-ревью #83: если состояние работы подтвердить не удалось
+                // (таймаут/сбой запроса WorkManager), воркер считается живым и
+                // подмена этой id пропускается — иначе cleanupCancelledModel
+                // воркера позже удаляет уже восстановленный бандл.
+                if (!cancelLiveDownloadForImport(entry.id)) {
+                    skipped++
+                    return@forEach
+                }
 
                 // Issue #70: импорт подменяет файлы модели той же id — eviction
                 // кэша движков по образцу promoteExtractedDir (#69) ДО подмены:
@@ -677,44 +722,79 @@ class ModelBackupManager @Inject constructor(
      * раскладки этой id поверх восстановленного пучка. После cancel ждём
      * терминального статуса — отменённый, но ещё не прерванный воркер иначе
      * дописывает файлы уже после moveToTarget. Части докачки (.part/.part.meta)
-     * чистит сам воркер в cleanupCancelledModel при отмене. Неинициализированный
-     * WorkManager (unit-test JVM) — живой работы нет.
+     * чистит сам воркер в cleanupCancelledModel при отмене.
+     *
+     * Регресс-ревью #83, п.4: если состояние работы подтвердить нельзя
+     * (таймаут/сбой запроса WorkManager при живой работе), воркер считается
+     * ЖИВЫМ и подмена файлов этой id пропускается ([importSwapAllowed]) —
+     * вслепую восстановленный бандл был уничтожен поздним
+     * cleanupCancelledModel отменённого воркера.
+     *
+     * @return true, если подмену файлов выполнять можно (живой работы не
+     *         было, либо она отменена и достигла терминального статуса,
+     *         либо отменённый воркер не дождался терминала — прежний путь).
      */
-    private suspend fun cancelLiveDownloadForImport(modelId: String) {
-        if (!isImportWorkLive(modelId)) return
-        ModelDownloadWorker.cancel(context, modelId)
-        val deadline = System.currentTimeMillis() + CANCEL_TERMINAL_TIMEOUT_MS
-        while (isImportWorkLive(modelId)) {
-            if (System.currentTimeMillis() >= deadline) {
-                Timber.w(
-                    "Воркер загрузки $modelId не достиг терминального статуса " +
-                        "через $CANCEL_TERMINAL_TIMEOUT_MS мс после отмены"
-                )
-                return
+    private suspend fun cancelLiveDownloadForImport(modelId: String): Boolean {
+        var observation = queryImportWorkObservation(modelId)
+        val wasLive = observation == ImportWorkObservation.LIVE
+        if (wasLive) {
+            ModelDownloadWorker.cancel(context, modelId)
+            val deadline = System.currentTimeMillis() + CANCEL_TERMINAL_TIMEOUT_MS
+            observation = queryImportWorkObservation(modelId)
+            while (observation == ImportWorkObservation.LIVE) {
+                if (System.currentTimeMillis() >= deadline) {
+                    Timber.w(
+                        "Воркер загрузки $modelId не достиг терминального статуса " +
+                            "через $CANCEL_TERMINAL_TIMEOUT_MS мс после отмены"
+                    )
+                    return true
+                }
+                delay(CANCEL_POLL_INTERVAL_MS)
+                observation = queryImportWorkObservation(modelId)
             }
-            delay(CANCEL_POLL_INTERVAL_MS)
         }
-        Timber.d("Живая загрузка $modelId отменена перед импортом бэкапа")
+        if (!importSwapAllowed(observation)) {
+            Timber.w(
+                "Подмена файлов $modelId пропущена: состояние живой загрузки " +
+                    "подтвердить не удалось — работа считается живой"
+            )
+            return false
+        }
+        if (wasLive) {
+            Timber.d("Живая загрузка $modelId отменена перед импортом бэкапа")
+        }
+        return true
     }
 
     /**
-     * Живая unique-работа [ModelDownloadWorker] модели (ENQUEUED/RUNNING/
-     * BLOCKED; см. ModelManagerImpl.isWorkLive). При сбое запроса WorkManager —
-     * false («живой работы нет»»: ложная приостановка импорта хуже остаточной
-     * гонки, закрываемой самовосстановлением сверки READY-записей с диском).
+     * Наблюдение unique-работы [ModelDownloadWorker] модели (ENQUEUED/RUNNING/
+     * BLOCKED — LIVE; см. ModelManagerImpl.isWorkLive). Таймаут/сбой запроса
+     * к инициализированному WorkManager — QUERY_FAILED: состояние не
+     * подтверждено, решение о подмене принимает [importSwapAllowed]
+     * (регресс-ревью #83, п.4). Неинициализированный в этом процессе
+     * WorkManager (IllegalStateException — unit-test JVM) — NOT_LIVE:
+     * живая работа без WorkManager в этом процессе невозможна.
      */
-    private fun isImportWorkLive(modelId: String): Boolean = try {
-        WorkManager.getInstance(context)
+    private fun queryImportWorkObservation(modelId: String): ImportWorkObservation = try {
+        val infos = WorkManager.getInstance(context)
             .getWorkInfosForUniqueWork(ModelDownloadWorker.workName(modelId))
             .get(WORK_QUERY_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .any { info ->
+        if (infos.any { info ->
                 info.state == WorkInfo.State.ENQUEUED ||
                     info.state == WorkInfo.State.RUNNING ||
                     info.state == WorkInfo.State.BLOCKED
             }
+        ) {
+            ImportWorkObservation.LIVE
+        } else {
+            ImportWorkObservation.NOT_LIVE
+        }
+    } catch (e: IllegalStateException) {
+        Timber.d("WorkManager не инициализирован — живой загрузки $modelId в этом процессе нет")
+        ImportWorkObservation.NOT_LIVE
     } catch (e: Exception) {
-        Timber.w(e, "WorkManager недоступен при проверке живой загрузки $modelId — живой работы нет")
-        false
+        Timber.w(e, "WorkManager недоступен при проверке живой загрузки $modelId")
+        ImportWorkObservation.QUERY_FAILED
     }
     /**
      * Пары «запись БД <-> запись манифеста» (issue #83, п.8): запись файлов
