@@ -53,11 +53,16 @@ offline.
 
 - "Download" — fetch a model from the catalog; while downloading, a "Cancel"
   button is available.
+- If a download fails, the card gets a "Download error" label and the
+  "Download" button turns into "Retry": it re-downloads the model without
+  deleting it first; while the model is in error it cannot translate.
 - "Export" / "Delete" — on the card of an installed model.
 - "Import" — on the card of a not-yet-downloaded model: unpack a model from a
   ZIP file received from another phone, without downloading. A ZIP export made
   by this same app keeps the model whole: its type and languages are restored
-  automatically on import.
+  automatically on import. A broken or tampered archive is rejected on import
+  (its contents are checked against the model's checksums) — and an already
+  installed model is left untouched.
 - "Select" — only on TTS engine cards; the translation model is picked
   automatically by direction, and a recognition model is assigned with the
   "Speech recognition language:" chips on the STT model cards.
@@ -76,7 +81,11 @@ How much phone memory you need:
 
 If memory or free storage is not enough, the app shows a warning on the
 "Models" screen — the space estimate also accounts for unpacking (installing a
-model needs room for both the downloaded file and its unpacked contents).
+model needs room for both the downloaded file and its unpacked contents). If
+the storage runs out during the download or unpacking itself, the download
+stops right away with a clear message instead of re-downloading the model over
+and over; what has already been downloaded is kept — once you free up space,
+"Retry" resumes from where it stopped.
 Deleting a model ("Delete") frees space — the model can be
 downloaded again or imported. The "Loaded into memory" card on the "Models"
 screen lists the models currently held in RAM (including loaded Piper voice
@@ -100,8 +109,12 @@ models) together with an estimated memory consumption.
   translation is automatically placed into the input field, so you can check
   the translation both ways without copying it manually.
 - Type text into the field ("Enter text to translate…") and press "Translate".
-  During a long translation a "Cancel" button appears. "Clear" empties both
-  fields.
+  While a translation is running the input field is locked (so the text cannot
+  drift away from its result); "Cancel" or a finished translation unlocks it.
+  "Clear" empties both fields.
+- The typed text and its translation survive the app being closed or the
+  system killing its process: reopening "Translate" restores both fields
+  (up to 10,000 characters each, longer texts are trimmed).
 - The screen scrolls: long input and long translations are fully visible, the
   input field grows with the text instead of cutting it off.
 - In the input field header, next to the microphone, there is a "Copy source
@@ -118,7 +131,11 @@ models) together with an estimated memory consumption.
   or returning to the tab, a non-matching result is hidden (your input text is
   kept) and "Read aloud" never reads text in the wrong language.
 - Above the result: "Copy translation" (to the clipboard), "Read aloud"
-  (loudspeaker button) and the "Add to favorites" star.
+  (loudspeaker button) and the "Add to favorites" star. The star is bound to
+  the translation together with the input text as it was at translation time:
+  editing the input field afterwards does not change the star state and does
+  not break the pair — a saved favorite keeps its original text and
+  translation.
 - The microphone in the input field ("Record audio"): one tap starts recording
   ("● Recording… Tap the microphone to stop" — an elapsed-time counter ticks
   next to it), the second tap stops it and recognizes the speech into text.
@@ -131,9 +148,12 @@ models) together with an estimated memory consumption.
 - "History" — your latest translations. Tapping a card loads its text and
   direction back onto the "Translate" screen without re-downloading models.
   The star on a card adds the translation to favorites, the cross removes the
-  entry from history, and "Clear" erases the whole history.
+  entry from history, and "Clear" erases the whole history — after asking for
+  confirmation ("Clear history?" with "Clear" and "Cancel" buttons), so one
+  accidental tap cannot lose it.
 - "Favorites" — saved translations. The "Search favorites" field searches the
-  source text and the translation (case-insensitive). Cards have "Read source
+  source text and the translation (case-insensitive); the search query is kept
+  when you leave the tab and come back. Cards have "Read source
   aloud" and "Read translation aloud" buttons; the star removes the entry from
   favorites; tapping a card goes back to "Translate".
 - If an operation on entries fails (saving, deleting, clearing, adding to
@@ -262,6 +282,17 @@ If the model file (language pack) is damaged or does not fit the app, the app no
 reports a loading error instead of producing nonsense text. Delete such a model
 on the "Models" screen and download or import it again (for example, from a
 backup made on another device).
+
+**I deleted model files by hand (or a file manager cleaned them up).**
+On launch the app checks installed models against the files on the phone, and a
+model whose files are gone shows a "Download error" label on its "Models" card.
+Tap "Retry" to re-download it; alternatively import it or restore it from a
+backup.
+
+**The app said there was not enough free space.** The download stops with that
+message right away instead of re-downloading the model over and over. Remember
+that a model needs room for unpacking as well (see the table above). Free up
+space and tap "Retry" — the download resumes from where it stopped.
 
 **The app showed a "Failed to…" message — what should I do?** Error messages are
 uniform and appear in the interface language (Russian, English, Nepali) and say
