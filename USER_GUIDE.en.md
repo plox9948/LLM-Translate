@@ -102,6 +102,14 @@ models) together with an estimated memory consumption.
 - Type text into the field ("Enter text to translate…") and press "Translate".
   During a long translation a "Cancel" button appears. "Clear" empties both
   fields.
+- In the input field header, next to the microphone, there is a "Copy source
+  text" button — it puts the typed text into the clipboard (available while the
+  field is not empty).
+- If your input does not end with punctuation, a period is added automatically
+  before translating: without it the models translate short phrases worse and
+  distort them when translating back (for example, in the
+  Russian → Nepali → Russian chain). The fields and the history still keep your
+  original text without the added period.
 - The result keeps the line breaks of the source text: paragraphs and
   multi-line formatting stay exactly as in the original.
 - The result is bound to the translation direction: after changing direction
