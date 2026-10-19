@@ -271,8 +271,15 @@ class ModelDownloadWorker @AssistedInject constructor(
 
         /**
          * Запланировать скачивание модели. Повторный вызов не дублирует работу.
+         * @param existingPolicy политика существующей unique-работы: по умолчанию
+         * KEEP (живая загрузка сохраняется); REPLACE — при перепостановке
+         * умирающей/терминальной работы (ревью повт. аудита, п.7).
          */
-        fun schedule(context: Context, model: InstalledModel) {
+        fun schedule(
+            context: Context,
+            model: InstalledModel,
+            existingPolicy: ExistingWorkPolicy = ExistingWorkPolicy.KEEP
+        ) {
             val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()
                 .setInputData(
                     workDataOf(
@@ -300,7 +307,7 @@ class ModelDownloadWorker @AssistedInject constructor(
 
             WorkManager.getInstance(context).enqueueUniqueWork(
                 workName(model.id),
-                ExistingWorkPolicy.KEEP,
+                existingPolicy,
                 request
             )
         }

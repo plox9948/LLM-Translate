@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -503,10 +504,16 @@ class AudioRecorder @Inject constructor(
                             _recordingElapsedMs.value = elapsedMs
                         }
                     } else if (read < 0) {
-                        // Ошибка чтения: continue превратился бы в busy-spin
-                        // (read возвращает <0 немедленно). Завершаем цикл чтения;
-                        // остановка и сохранение — как обычно через stopRecording().
-                        Timber.e("AudioRecord.read() вернул ошибку $read — цикл чтения остановлен")
+                        // Ошибка чтения (перехват микрофона звонком на Android 9,
+                        // сбой AudioRecord): continue превратился бы в busy-spin
+                        // (read возвращает <0 немедленно). Сцена остановки
+                        // запускается прямо здесь: без неё индикатор залипал бы
+                        // (_recordingFlow остался true), а AudioRecord —
+                        // неосвобождён до самого потолка 3 мин (ревью повт. аудита).
+                        Timber.e(
+                            "AudioRecord.read() вернул ошибку $read — запись аварийно останавливается"
+                        )
+                        finishAfterReadFailure()
                         break
                     } else {
                         // read == 0: данных в буфере нет, чтение вернулось бы
@@ -572,6 +579,38 @@ class AudioRecorder @Inject constructor(
     }
 
     /**
+     * Аварийная остановка из самого цикла чтения при ошибке read()<0
+     * (ревью повт. аудита): индикатор не должен залипаться, а микрофон —
+     * оставаться занятым. Вызывается ИЗ корутины цикла чтения, поэтому
+     * [detachStoppedScene].join собственного джоба исключён (самодjoin
+     * deadlock'нулся бы): read() уже вернулся — рекордер не занят, его
+     * можно освобождать сразу. Освобождение под NonCancellable+IO —
+     * отмена внешней корутины не должна обрывать освобождение на середине.
+     * Данные частично записанного с дефектного устройства аудио ненадёжны —
+     * WAV отбрасывается (вызывающий stopRecording() получит null).
+     */
+    private suspend fun finishAfterReadFailure() {
+        val scene = captureStopScene() ?: return
+        withContext(NonCancellable + Dispatchers.IO) {
+            // joinscene.job пропускаем: это текущая корутина.
+            synchronized(sceneLock) {
+                if (audioRecord === scene.record) {
+                    audioRecord = null
+                }
+            }
+            try {
+                scene.record?.stop()
+            } catch (e: IllegalStateException) {
+                // Рекордер мог быть уже освобождён системой — не критично.
+            }
+            scene.record?.release()
+            scene.sink?.discard()
+            _recordingElapsedMs.value = 0L
+            Timber.w("Запись аварийно остановлена: AudioRecord освобождён, WAV отброшен")
+        }
+    }
+
+    /**
      * Принудительно остановить запись без сохранения WAV (выгрузка рантаймов
      * при ON_STOP, ревью): рекордер — app-scope синглтон и без остановки
      * микрофон оставался захваченным после сворачивания приложения.
@@ -582,10 +621,14 @@ class AudioRecorder @Inject constructor(
     fun cancel() {
         val scene = captureStopScene() ?: return
         scope.launch {
+            // Сцена освобождения целиком под NonCancellable+IO (ревью повт.
+            // аудита): join цикла, stop/release и отброс WAV не должны
+            // прерываться отменой — иначе гибель корутины в этом окне
+            // оставляла бы AudioRecord unreleased (микрофон занят до GC).
             // Дожидаемся выхода цикла чтения, чтобы не освободить AudioRecord
             // посреди блокирующего read() (тот же порядок, что в stopRecording).
-            detachStoppedScene(scene)
-            withContext(Dispatchers.IO) {
+            withContext(NonCancellable + Dispatchers.IO) {
+                detachStoppedScene(scene)
                 try {
                     scene.record?.stop()
                 } catch (e: IllegalStateException) {
@@ -607,12 +650,14 @@ class AudioRecorder @Inject constructor(
      */
     suspend fun stopRecording(): String? {
         val scene = captureStopScene() ?: return null
-        // Тот же сценарий вызова, что в cancel(): новая запись, стартованная
-        // в окне join(), этим вызовом не освобождается и не сохраняется.
-        detachStoppedScene(scene)
+        // Сцена освобождения целиком под NonCancellable+IO (ревью повт.
+        // аудита): ViewModel, дождавшийся отмены, иначе уничтожался в окне
+        // join/stop/release и AudioRecord оставался unreleased (микрофон
+        // занят до GC финализатором). Новая запись, стартованная в окне
+        // join(), этим вызовом не освобождается и не сохраняется.
+        return withContext(NonCancellable + Dispatchers.IO) {
+            detachStoppedScene(scene)
 
-        // Блокирующие вызовы (AudioRecord.stop/release, закрытие и патч WAV) — на IO.
-        return withContext(Dispatchers.IO) {
             try {
                 scene.record?.stop()
             } catch (e: IllegalStateException) {

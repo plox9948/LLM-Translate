@@ -271,6 +271,15 @@ class ModelBackupManager @Inject constructor(
 
     /**
      * Импортировать модели и настройки из ZIP по Uri.
+     *
+     * Ревью повт. аудита, п.6: temp-распаковка пишется на тот же volume,
+     * что и каталог моделей ([ModelStorage.modelsRoot]) — раньше шла в
+     * context.cacheDir (внутренний /data) при моделях на внешнем разделе,
+     * поэтому [moveToTarget] всегда падал к cross-volume copy, а StatFs-гейт
+     * объёма вообще не проверялся на импорте. Temp кладётся соседом корня
+     * моделей (по образцу staging в ModelManagerImpl.promoteExtractedDir),
+     * перед распаковкой файлов модели — StatFs-гейт по суммарному размеру
+     * из манифеста (тот же порог ×1.1, что у экспорта, общий [hasFreeSpaceFor]).
      */
     suspend fun importFromUri(sourceUri: Uri): ImportResult = withContext(Dispatchers.IO) {
         var imported = 0
@@ -278,7 +287,12 @@ class ModelBackupManager @Inject constructor(
         var settingsRestored = false
         // Уникальный суффикс temp-каталога: два параллельных импорта бэкапа
         // не должны делить один каталог (каждый чистит в finally свой).
-        val tempDir = File(context.cacheDir, "backup_import_${UUID.randomUUID()}")
+        // Temp — сосед каталога моделей (тот же volume), а не cacheDir:
+        // иначе moveToTarget всегда уходит в cross-volume copy, а
+        // StatFs-гейт оценивает не тот том (ревью повт. аудита, п.6).
+        val modelsRoot = ModelStorage.modelsRoot(context)
+        val tempRoot = modelsRoot.parentFile ?: modelsRoot
+        val tempDir = File(tempRoot, "backup_import_${UUID.randomUUID()}")
 
         try {
             val input = context.contentResolver.openInputStream(sourceUri)
@@ -302,9 +316,29 @@ class ModelBackupManager @Inject constructor(
                         when {
                             name == MANIFEST_NAME -> {
                                 val content = readEntry(zip)
-                                manifest = json.decodeFromString(
+                                val parsed = json.decodeFromString(
                                     BackupManifest.serializer(), content
                                 )
+                                manifest = parsed
+                                // StatFs-гейт перед распаковкой файлов моделей
+                                // (ревью повт. аудита, п.6): суммарный размер
+                                // из манифеста с тем же запасом ×1.1, что у
+                                // экспорта; том — тот, где лежит temp (он же
+                                // том каталога моделей). Нехватка — явный
+                                // отказ до записи файлов, temp чистится finally.
+                                val neededBytes =
+                                    parsed.models.sumOf { it.sizeBytes } * 11 / 10
+                                if (!hasFreeSpaceFor(tempDir, neededBytes)) {
+                                    Timber.e(
+                                        "Недостаточно места под распаковку бэкапа: " +
+                                            "требуется ~$neededBytes байт на томе " +
+                                            "${tempDir.absolutePath}"
+                                    )
+                                    return@withContext ImportResult(
+                                        0, 0, false,
+                                        "Недостаточно свободного места для распаковки бэкапа"
+                                    )
+                                }
                             }
                             name == SETTINGS_NAME -> {
                                 val content = readEntry(zip)

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.StatFs
 import android.provider.OpenableColumns
+import androidx.work.ExistingWorkPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
@@ -240,9 +241,47 @@ class ModelManagerImpl @Inject constructor(
             // поэтому при живом unique work upsert не выполняется (строка
             // уже DOWNLOADING); если же строку успели удалить — upsert всё
             // равно создаёт её.
-            val liveWork = hasLiveDownloadWork(model.id)
+            //
+            // Ревью повт. аудита, п.7: гонка «отмена → скачать» в окне
+            // работы умирающего unique work — существующая работа уже
+            // CANCELLED/FAILED/BLOCKED (cancelDownload отменил её и
+            // пересохранить строку), а KEEP дропает новый enqueue в её
+            // пользу → залипший DOWNLOADING без воркера. Такая работа не
+            // живая, но и не освобождает unique-имя — переставляем её с
+            // REPLACE.
+            val states = uniqueWorkStates(model.id)
+            val liveWork = states.any {
+                it == WorkInfo.State.ENQUEUED || it == WorkInfo.State.RUNNING
+            }
+            val staleWork = states.any {
+                it == WorkInfo.State.CANCELLED || it == WorkInfo.State.FAILED ||
+                    it == WorkInfo.State.BLOCKED
+            }
             try {
-                ModelDownloadWorker.schedule(context, model)
+                ModelDownloadWorker.schedule(
+                    context,
+                    model,
+                    if (staleWork) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
+                )
+                if (!staleWork) {
+                    // Отмена могла случиться МЕЖДУ чтением состояний и
+                    // enqueue: KEEP оставил умирающую работу, наш запрос
+                    // дропнут. Одноразовая сверка после постановки: если
+                    // живой работы так и нет, а терминальная/умирающая
+                    // есть — перестановка с REPLACE.
+                    val after = uniqueWorkStates(model.id)
+                    if (after.isNotEmpty() &&
+                        after.none {
+                            it == WorkInfo.State.ENQUEUED || it == WorkInfo.State.RUNNING
+                        }
+                    ) {
+                        Timber.w(
+                            "Загрузка ${model.id}: enqueue под KEEP не дал живой работы " +
+                                "(${after.joinToString()}) — перестановка с REPLACE"
+                        )
+                        ModelDownloadWorker.schedule(context, model, ExistingWorkPolicy.REPLACE)
+                    }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -294,8 +333,7 @@ class ModelManagerImpl @Inject constructor(
      * локальную БД. При недоступности WorkManager бросает — вызывающий
      * сам решает fallback-семантику и логирует её.
      */
-    private fun isWorkLive(workName: String): Boolean =
-        WorkManager.getInstance(context)
+    private fun isWorkLive(workName: String): Boolean =        WorkManager.getInstance(context)
             .getWorkInfosForUniqueWork(workName)
             .get(WORK_INFO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .any { info ->
@@ -303,6 +341,22 @@ class ModelManagerImpl @Inject constructor(
                     info.state == WorkInfo.State.RUNNING ||
                     info.state == WorkInfo.State.BLOCKED
             }
+
+    /**
+     * Состояния unique-работы загрузки модели (пусто при недоступном
+     * WorkManager) — см. [startDownload], ревью повт. аудита п.7.
+     */
+    private suspend fun uniqueWorkStates(modelId: String): List<WorkInfo.State> = try {
+        WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWork(ModelDownloadWorker.workName(modelId))
+            .get(WORK_INFO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .map { info -> info.state }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.w(e, "Не удалось получить состояния unique-загрузки $modelId — считаю, что работы нет")
+        emptyList()
+    }
 
     /**
      * Есть ли живая unique-загрузка модели в WorkManager (ENQUEUED/RUNNING/

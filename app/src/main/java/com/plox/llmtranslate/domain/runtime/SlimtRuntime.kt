@@ -7,12 +7,15 @@ import com.plox.llmtranslate.domain.model.RuntimeError
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -63,6 +66,14 @@ class SlimtRuntime @Inject constructor(
         val handle: Long,
         val info: LoadedModelInfo
     )
+
+    /**
+     * Scope для «зависшего» освобождения пучков (ревью повт. аудита):
+     * nativeDestroy джойнит нативный воркер slimt и может не вернуться;
+     * такое освобождение выносится из мьютексов переводчиков fire-and-forget
+     * сюда (движок — синглтон процесса, scope живёт всё время процесса).
+     */
+    private val releaseScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
      * Каркас LRU-кэша пучков: нативные модели защищены внутренним мьютексом —
@@ -264,13 +275,20 @@ class SlimtRuntime @Inject constructor(
                             // Прерванный дренаж оставляет пучок «stale-running»:
                             // каждый последующий nativeStart давал бы ошибку, и
                             // движок оставался бы сломанным до общей разгрузки
-                            // (ревью). Выгружаем пучки движка: деструктор
-                            // slimt::Async дожидается (или убивает) воркер.
-                            // Мьютекс [engineCache] уже удерживаем этим translate —
-                            // releaseUnlocked без повторного захвата (reentrant
-                            // deadlock исключён).
-                            Timber.w("slimt: пучок после прерванного дренажа выгружается из кэша")
-                            engineCache.releaseUnlocked()
+                            // (ревью). Выгружаем пучки из кэша, НО nativeDestroy
+                            // джойнит зависший воркер — освобождение под
+                            // sessionMutex каскадно блокировало translate/mgr
+                            // (цепочка importMutex→runtimeMutex, ревью повт.
+                            // аудита). Поэтому под мьютексом пучки только
+                            // ИЗЫМАЮТСЯ (ensureLoaded их больше не переиспользует,
+                            // повторные release()/releaseModel — no-op), а сам
+                            // nativeDestroy уходит fire-and-forget в собственный
+                            // scope движка, где и дожидается зависший воркер.
+                            Timber.w(
+                                "slimt: пучок после прерванного дренажа изъят из кэша — " +
+                                    "освобождение вне мьютекса (fire-and-forget)"
+                            )
+                            scheduleDetachedRelease(engineCache.detachAllUnlocked())
                         }
                     }
                     Timber.d("slimt: перевод отменён пользователем")
@@ -289,6 +307,32 @@ class SlimtRuntime @Inject constructor(
      * дожидается воркера — вызов вне главного потока.
      */
     override suspend fun release() = engineCache.release()
+
+    /**
+     * Освободить пучки, изъятые из кэша вне общего мьютекса
+     * ([EngineCacheScaffold.detachAllUnlocked]) — fire-and-forget в
+     * [releaseScope] (ревью повт. аудита). nativeDestroy (деструктор
+     * slimt::Async) дожидается зависшего воркера и может не вернуться
+     * вовсе; блокировать им translate/mgr недопустимо, а отменять сам
+     * деструктор нативный слой не умеет — поэтому без withTimeoutOrNull,
+     * просто запуск на освобождение. Уничтожение каждого handle ровно
+     * единожды: пучки изъяты из кэша, повторные release()/releaseModel
+     * на них не сработают (use-after-free исключён).
+     */
+    private fun scheduleDetachedRelease(detached: List<ModelBundle>) {
+        if (detached.isEmpty()) return
+        releaseScope.launch(NonCancellable) {
+            detached.forEach { bundle ->
+                if (bundle.handle != 0L) {
+                    try {
+                        SlimtNative.nativeDestroy(bundle.handle)
+                    } catch (e: Exception) {
+                        Timber.e(e, "slimt: ошибка отложенного nativeDestroy")
+                    }
+                }
+            }
+        }
+    }
 
     /**
      * Извлечь и уничтожить пучок модели [modelId] (удаление модели, issue #40).

@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import timber.log.Timber
 
 /**
  * Единственная активность: хост для Compose-экранов.
@@ -112,6 +113,16 @@ class MainActivity : ComponentActivity() {
     /** Последний применённый язык: защита от повторного apply и цикла recreate. */
     private var appliedUiLanguage: String? = null
 
+    /**
+     * Стартовое значение языка получено фолбэком (таймаут ожидания кэша или
+     * сбой чтения DataStore) и НЕ считается окончательным: первая эмиссия
+     * коллектора из реально дождавшегося кэша применяет сохранённый язык
+     * напрямую, без recreate (иначе дефолт «system», записанный в
+     * appliedUiLanguage, давал бы внеплановый recreate-мигание на каждом
+     * холодном старте, ревью повторного аудита).
+     */
+    private var uiLanguageFallbackPending = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -127,12 +138,29 @@ class MainActivity : ComponentActivity() {
         // главная нить не блокируется на IO.DataStore. Ограничение ожидания
         // таймаутом (ревью #65): при незавершённом prefetch главная нить не
         // встаёт на IO неограниченно — по таймауту значение по умолчанию.
-        val savedLanguage = runBlocking {
-            withTimeoutOrNull(UI_LANGUAGE_CACHE_TIMEOUT_MS) {
-                preferences.awaitUiLanguageCache()
-            } ?: ModelPreferences.DEFAULT_UI_LANGUAGE
+        // try/catch: первый же сбой чтения DataStore (битый journal —
+        // IOException) иначе ронял активность до композиции и приложение
+        // уходило в crash-loop при старте (ревью повторного аудита).
+        // Таймаут внутри withTimeoutOrNull не бросает — он даёт null.
+        val savedLanguage = try {
+            runBlocking {
+                withTimeoutOrNull(UI_LANGUAGE_CACHE_TIMEOUT_MS) {
+                    preferences.awaitUiLanguageCache()
+                }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Не удалось прочитать сохранённый язык UI — фолбэк на значение по умолчанию")
+            null
         }
-        applyUiLanguage(savedLanguage)
+        if (savedLanguage == null) {
+            // Фолбэк (таймаут или сбой DataStore): дефолт применяется только
+            // для первого кадра и не помечается окончательным — коллектор
+            // после прогрева кэша применит сохранённый язык без recreate.
+            uiLanguageFallbackPending = true
+            applyUiLanguage(ModelPreferences.DEFAULT_UI_LANGUAGE)
+        } else {
+            applyUiLanguage(savedLanguage)
+        }
 
         // Смена языка вне композиции: пересоздаём активность, чтобы все
         // ресурсы перечитались. Сравнение с appliedUiLanguage защищает от
@@ -141,7 +169,13 @@ class MainActivity : ComponentActivity() {
             preferences.uiLanguage
                 .distinctUntilChanged()
                 .collect { lang ->
-                    if (lang != appliedUiLanguage) recreate()
+                    if (uiLanguageFallbackPending) {
+                        // Первая эмиссия после старта-фолбэка: это реально
+                        // сохранённый язык из дождавшегося кэша — применяем
+                        // его конфигурацией сразу, без recreate-мигания.
+                        uiLanguageFallbackPending = false
+                        applyUiLanguage(lang)
+                    } else if (lang != appliedUiLanguage) recreate()
                 }
         }
 

@@ -175,6 +175,22 @@ internal class EngineCacheScaffold<T>(
     }
 
     /**
+     * Изъять из кэша ВСЕ пучки БЕЗ освобождения их нативных ресурсов
+     * (ревью повт. аудита): освобождающий колбэк может зависнуть (nativeDestroy
+     * джойнит зависший воркер) и не должен выполняться под [sessionMutex].
+     * Кэш при этом сразу пуст и активный id сброшен — [reuseCachedUnlocked]
+     * не переиспользует битый пучок, а повторные [release]/[releaseModel]
+     * на изъятых пучках — no-op. Освобождение возвращённых пучков — обязанность
+     * вызывающего (вне мьютекса). Вызывать только под [sessionMutex].
+     */
+    fun detachAllUnlocked(): List<T> {
+        val detached = cache.clear().map { (_, bundle) -> bundle }
+        activeId = null
+        _loadedModels.value = emptyList()
+        return detached
+    }
+
+    /**
      * Опубликовать список загруженных моделей (активная — первой).
      * Вызывать только под [sessionMutex].
      */
