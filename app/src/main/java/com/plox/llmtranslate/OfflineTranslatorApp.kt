@@ -7,7 +7,9 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
 import com.plox.llmtranslate.BuildConfig
+import com.plox.llmtranslate.data.backup.cleanupOrphanBackupTemp
 import com.plox.llmtranslate.data.catalog.RemoteCatalogProvider
+import com.plox.llmtranslate.data.storage.ModelStorage
 import com.plox.llmtranslate.data.model.FileSnapshot
 import com.plox.llmtranslate.data.download.ModelDownloadWorker
 import com.plox.llmtranslate.data.model.ModelRepository
@@ -78,6 +80,7 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
         appScope.launch {
             try {
                 cleanupAudioRecords()
+                cleanupBackupTempArtifacts()
                 val obsoletePaths = modelRepository.cleanObsoleteRuntimes().toMutableList()
                 // last(): flow сначала отдаёт assets, затем (при наличии) объединение
                 // с удалённым каталогом — берём итоговый список.
@@ -205,6 +208,20 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
             legacyAudioDir.deleteRecursively()
             Timber.i("Удалён relic-каталог записей ранних версий: ${legacyAudioDir.absolutePath}")
         }
+    }
+
+    /**
+     * Стартовая очистка osиротевших temp-артефактов бэкапа (issue #83, п.6):
+     * каталоги backup_import_* (сосед корня моделей) и файлы backup_export_*
+     * (внешний кэш/cacheDir), оставленные процессами импорта/экспорта, убитыми
+     * до finally-очистки. Порог — суточный (моложе — возможная живая работа);
+     * логика в одном месте — [cleanupOrphanBackupTemp], по образцу очистки
+     * osиротевших записей AudioRecorder.
+     */
+    private fun cleanupBackupTempArtifacts() {
+        val importTempRoot = ModelStorage.modelsRoot(this).parentFile
+        val exportTempRoot = externalCacheDir?.takeIf { it.exists() || it.mkdirs() } ?: cacheDir
+        cleanupOrphanBackupTemp(listOf(importTempRoot, exportTempRoot))
     }
 }
 

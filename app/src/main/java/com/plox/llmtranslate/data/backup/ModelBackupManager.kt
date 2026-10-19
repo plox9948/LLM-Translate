@@ -2,9 +2,13 @@ package com.plox.llmtranslate.data.backup
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.os.StatFs
 import android.provider.DocumentsContract
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.plox.llmtranslate.data.download.DownloadLayout
+import com.plox.llmtranslate.data.download.ModelDownloadWorker
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.data.storage.ModelStorage
@@ -20,12 +24,15 @@ import com.plox.llmtranslate.util.isFileInsideDir
 import com.plox.llmtranslate.util.sha256Hex
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import timber.log.Timber
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -99,12 +106,12 @@ private fun bundleShaOk(entry: BackupModelEntry, dir: File): Boolean {
 /**
  * Оценка места под установку записи бэкапа (ревью раунда 3): sizeBytes
  * манифеста — размер скачиваемых артефактов, без раздувания распаковки
- * archive (.tar.gz/.zip/.tar.bz2 → ×2) и gz-артефактов slimt (gunzip → ×1.8).
+ * archive (.tar.gz/.zip/.tar.bz2 -> x2) и gz-артефактов slimt (gunzip -> x1.8).
  * Тип раскладки определяется единой классификацией гейта скачивания
  * [InstallCheckLogic.urlLayoutFlags] (те же имена URL, что в UI-подсказке и
  * гейте ModelDownloadWorker; archive/gz-имена — [ArchiveFormats]), требуемый
  * объём — единой функцией [InstallCheckLogic.requiredDownloadFreeBytes]
- * (для одиночных файлов её запас 1.2x заменяет прежний ×1.1 гейта импорта).
+ * (для одиночных файлов её запас 1.2x заменяет прежний x1.1 гейта импорта).
  * Пустые urls (импортированные модели) — одиночная раскладка.
  */
 internal fun backupInstallRequiredBytes(entry: BackupModelEntry): Long {
@@ -114,6 +121,74 @@ internal fun backupInstallRequiredBytes(entry: BackupModelEntry): Long {
     )
 }
 
+/**
+ * Префикс temp-каталога импорта бэкапа (соседствует с корнем моделей) и
+ * temp-файла экспорта (кэш). Используются и генерацией, и стартовым GC
+ * [cleanupOrphanBackupTemp] (issue #83, п.6).
+ */
+internal const val BACKUP_IMPORT_TEMP_PREFIX = "backup_import_"
+internal const val BACKUP_EXPORT_TEMP_PREFIX = "backup_export_"
+
+/**
+ * Возраст осиротевших temp-артефактов бэкапа, удаляемых при старте
+ * приложения (issue #83, п.6, по образцу осиротевших записей
+ * AudioRecorder.cleanupOrphanRecordings): моложе порога — возможная живая
+ * работа текущей сессии, не трогаем.
+ */
+internal const val BACKUP_TEMP_TTL_MS = 24 * 60 * 60 * 1000L
+
+/**
+ * Стартовый GC осиротевших temp-артефактов бэкапа (issue #83, п.6): каталоги
+ * backup_import_* и файлы backup_export_*.zip, оставленные процессами
+ * импорта/экспорта, убитыми до finally-очистки. [dirs] — каталоги-родители
+ * (сосед корня моделей и кэш экспорта); отсутствующий/недоступный каталог
+ * пропускается.
+ * @return число удалённых артефактов. internal — покрыто unit-тестом на
+ * временных файлах без Android.
+ */
+internal fun cleanupOrphanBackupTemp(
+    dirs: List<File?>,
+    ttlMs: Long = BACKUP_TEMP_TTL_MS,
+    now: Long = System.currentTimeMillis()
+): Int {
+    var removed = 0
+    for (dir in dirs) {
+        val stale = dir?.listFiles()?.filter { f ->
+            val name = f.name
+            (name.startsWith(BACKUP_IMPORT_TEMP_PREFIX) ||
+                name.startsWith(BACKUP_EXPORT_TEMP_PREFIX)) &&
+                f.lastModified() < now - ttlMs
+        } ?: continue
+        for (f in stale) {
+            if (f.deleteRecursively()) removed++
+            else Timber.w("Не удалось удалить осиротевший temp-артефакт бэкапа: ${f.path}")
+        }
+    }
+    if (removed > 0) {
+        Timber.d("Удалено осиротевших temp-артефактов бэкапа: $removed")
+    }
+    return removed
+}
+
+/**
+ * Best-effort каталог файловой системы, содержащий целевой SAF-документ,
+ * по его document id — для StatFs-гейта места ДО усечения существующего
+ * документа (issue #83, п.4). Поддержаны форматы ids провайдера внешнего
+ * хранилища: "raw:<абсолютный путь>" и "primary:<путь относительно корня
+ * тома>". Прочие провайдеры/форматы — null: оценить том произвольного
+ * SAF-провайдера нельзя, но и отказывать экспорту из-за этого нельзя
+ * (гейт пропускается с логом). internal — unit-тест без Android.
+ */
+internal fun dirHintFromDocumentId(docId: String?, externalRoot: File?): File? {
+    docId ?: return null
+    return when {
+        docId.startsWith("raw:") ->
+            File(docId.removePrefix("raw:")).takeIf { it.isAbsolute }?.parentFile
+        docId.startsWith("primary:") ->
+            externalRoot?.let { File(it, docId.removePrefix("primary:")).parentFile }
+        else -> null
+    }
+}
 /**
  * Менеджер резервного копирования моделей и настроек.
  *
@@ -135,6 +210,15 @@ class ModelBackupManager @Inject constructor(
         const val MANIFEST_NAME = "manifest.json"
         const val SETTINGS_NAME = "settings.json"
         const val MODELS_PREFIX = "models/"
+
+        /** Таймаут запроса состояний unique-работы WorkManager, с. */
+        private const val WORK_QUERY_TIMEOUT_SECONDS = 5L
+
+        /** Интервал опроса терминального статуса после отмены загрузки, мс. */
+        private const val CANCEL_POLL_INTERVAL_MS = 250L
+
+        /** Предел ожидания терминального статуса отменённого воркера, мс. */
+        private const val CANCEL_TERMINAL_TIMEOUT_MS = 10_000L
     }
 
     /**
@@ -151,13 +235,25 @@ class ModelBackupManager @Inject constructor(
      * Экспортировать все модели и настройки в ZIP по Uri.
      *
      * Ревью #4: архив сначала собирается целиком во временный файл, и только
-     * готовый копируется в выходной Uri — обрыв SAF-потока или ENOSPC при
-     * записи ZIP не оставляет пользователю битый архив (неполный документ).
-     * Ревью (раунд повторный): temp пишется в getExternalCacheDir() (фолбэк
-     * cacheDir) — пик «модели + ZIP» не должен целиком ложиться на /data;
-     * перед сборкой — StatFs-гейт тома temp (суммарный размер включаемых
-     * файлов ×1.1); при обрыве уже начатого копирования в Uri недописанный
-     * SAF-документ удаляется. Временный файл удаляется в любом случае.
+     * готовый копируется в выходной Uri ОДНИМ потоком copy — ошибка сериализации
+     * ZIP не оставляет в целевом документе полусжатый поток, и обрыв SAF-потока
+     * или ENOSPC не оставляет пользователю «полусжатый» архив от потоковой
+     * сборки. Ревью (раунд повторный): temp пишется в getExternalCacheDir()
+     * (фолбэк cacheDir) — пик «модели + ZIP» не должен целиком ложиться на
+     * /data; перед сборкой — StatFs-гейт тома temp (суммарный размер
+     * включаемых файлов x1.1). Временный файл удаляется в любом случае.
+     *
+     * Issue #83, п.4 (ограничение SAF — фиксируем поведение явно):
+     * openOutputStream УСЕКАЕТ уже существующий документ до записи — SAF не
+     * даёт атомарно подменить документ целиком, поэтому «старый рабочий
+     * архив» при обрыве копирования полностью сохранить нельзя. Минимум
+     * надёжности ДО усечения: StatFs-гейт свободного места на целевом volume
+     * ([targetVolumeDir]/[dirHintFromDocumentId], аналог [hasFreeSpaceFor]) —
+     * если место заведомо кончится, экспорт отказывает, не трогая старый
+     * архив; для провайдера, чей том оценить нельзя, гейт пропускается с
+     * предупреждением. При обрыве уже начатого копирования недописанный
+     * документ удаляется ПОСЛЕ попытки удаления с логом результата
+     * ([deleteFailedDocument]) — не молча.
      * @return true при успехе.
      */
     suspend fun exportToUri(targetUri: Uri): Boolean = withContext(Dispatchers.IO) {
@@ -166,7 +262,7 @@ class ModelBackupManager @Inject constructor(
         val tempRoot = context.externalCacheDir?.takeIf { it.exists() || it.mkdirs() }
             ?: context.cacheDir
         // Уникальный суффикс: параллельные экспорты не затирают общий temp.
-        val tempZip = File(tempRoot, "backup_export_${UUID.randomUUID()}.zip")
+        val tempZip = File(tempRoot, BACKUP_EXPORT_TEMP_PREFIX + UUID.randomUUID() + ".zip")
         // Копирование в Uri уже началось — по исключению документ обрезан.
         var outputOpened = false
         try {
@@ -178,7 +274,7 @@ class ModelBackupManager @Inject constructor(
 
             // Гейт свободного объёма под temp-ZIP до сборки: ZIP почти не
             // сжимает бинарные модели, требуется ~суммарный размер файлов
-            // (×1.1 запас); нехватка — понятный отказ до начала записи.
+            // (x1.1 запас); нехватка — понятный отказ до начала записи.
             val neededBytes = includedContentBytes(models) * 11 / 10
             if (!hasFreeSpaceFor(tempRoot, neededBytes)) {
                 Timber.e(
@@ -188,7 +284,12 @@ class ModelBackupManager @Inject constructor(
                 return@withContext false
             }
 
-            val manifest = buildManifest(models)
+            val sources = buildManifestEntries(models)
+            val manifest = BackupManifest(
+                version = 1,
+                exportedAt = System.currentTimeMillis(),
+                models = sources.map { it.entry }
+            )
 
             tempZip.outputStream().buffered().use { out ->
                 ZipOutputStream(out).use { zip ->
@@ -203,19 +304,39 @@ class ModelBackupManager @Inject constructor(
                     zip.write(json.encodeToString(BackupSettings.serializer(), settings).toByteArray())
                     zip.closeEntry()
 
-                    // 3. Файлы моделей — по относительным путям из манифеста
-                    // (после дедуппликации путей, ревью #2) — иначе ZIP-запись
-                    // и манифест могут разойтись.
-                    manifest.models.forEachIndexed { index, entry ->
-                        val file = models[index].filePath?.let(::File) ?: return@forEachIndexed
-                        if (!file.exists()) return@forEachIndexed
+                    // 3. Файлы моделей — по парам «запись БД <-> запись
+                    // манифеста» (issue #83, п.8: раньше связь держалась
+                    // индексом forEachIndexed; после дедупликации путей,
+                    // ревью #2) — иначе ZIP-запись и манифест могут разойтись.
+                    sources.forEach { source ->
+                        val file = source.model.filePath?.let(::File) ?: return@forEach
+                        if (!file.exists()) return@forEach
                         if (file.isDirectory) {
-                            writeDirectoryToZip(zip, file, entry.relativePath)
+                            writeDirectoryToZip(zip, file, source.entry.relativePath)
                         } else {
-                            writeFileToZip(zip, file, entry.relativePath)
+                            writeFileToZip(zip, file, source.entry.relativePath)
                         }
                     }
                 }
+            }
+
+            // Гейт целевого volume ДО открытия выходного потока (issue #83,
+            // п.4): openOutputStream усечёт существующий SAF-документ — если
+            // на целевом томе не хватит места даже для готового архива,
+            // старый рабочий архив был бы уничтожен зря.
+            val archiveBytes = tempZip.length()
+            val targetDir = targetVolumeDir(targetUri)
+            if (targetDir == null) {
+                Timber.w(
+                    "Том целевого документа бэкапа не определим — гейт места перед " +
+                        "усечением существующего документа пропущен: $targetUri"
+                )
+            } else if (!hasFreeSpaceFor(targetDir, archiveBytes)) {
+                Timber.e(
+                    "Недостаточно места на томе целевого документа: требуется ~$archiveBytes " +
+                        "байт на ${targetDir.absolutePath} — отказ до усечения документа"
+                )
+                return@withContext false
             }
 
             val output = context.contentResolver.openOutputStream(targetUri)
@@ -226,8 +347,10 @@ class ModelBackupManager @Inject constructor(
                     tempZip.inputStream().use { it.copyTo(out) }
                 }
             } catch (e: Exception) {
-                // Обрыв copyTo: в Uri остался усечённый документ — удаляем его,
-                // иначе пользователь получит «битый архив» вместо отсутствия файла.
+                // Обрыв copyTo: в Uri остался усечённый документ — удаляем его
+                // с логом (не молча), иначе пользователь получит «битый архив»
+                // вместо отсутствия файла. Прежний архив при этом уже потерян:
+                // SAF усекает документ при открытии потока, см. KDoc метода.
                 Timber.e(e, "Обрыв копирования бэкапа в $targetUri — удаляем недописанный документ")
                 if (outputOpened) deleteFailedDocument(targetUri)
                 throw e
@@ -241,6 +364,27 @@ class ModelBackupManager @Inject constructor(
         } finally {
             tempZip.delete()
         }
+    }
+
+    /**
+     * Каталог тома, на котором лежит целевой документ (для гейта места до
+     * усечения, issue #83, п.4). file:// — путь напрямую; content:// —
+     * best-effort разбор document id внешнего хранилища
+     * ([dirHintFromDocumentId]); прочие провайдеры и сбои — null (гейт
+     * пропускается с логом в вызывающем).
+     */
+    private fun targetVolumeDir(uri: Uri): File? = try {
+        when (uri.scheme) {
+            "file" -> uri.path?.let { File(it).parentFile }
+            "content" -> dirHintFromDocumentId(
+                DocumentsContract.getDocumentId(uri),
+                Environment.getExternalStorageDirectory()
+            )
+            else -> null
+        }
+    } catch (e: Exception) {
+        Timber.w(e, "Не удалось определить том целевого документа бэкапа: $uri")
+        null
     }
 
     /** Суммарный размер файлов, попадающих в ZIP (кандидат гейта temp-объёма). */
@@ -264,7 +408,7 @@ class ModelBackupManager @Inject constructor(
         val stat = StatFs(dir.absolutePath)
         stat.availableBlocksLong * stat.blockSizeLong >= neededBytes
     } catch (e: Exception) {
-        Timber.w(e, "Не удалось оценить свободное место под temp-архив бэкапа — гейт пропущен")
+        Timber.w(e, "Не удалось оценить свободное место под архив бэкапа — гейт пропущен")
         true
     }
 
@@ -282,22 +426,46 @@ class ModelBackupManager @Inject constructor(
             Timber.w(e, "Не удалось удалить недописанный SAF-документ бэкапа: $targetUri")
         }
     }
-
     /**
      * Импортировать модели и настройки из ZIP по Uri.
+     *
+     * Issue #83, п.1: всё тело импорта под общим [ModelImportLock] — тем же,
+     * под которым ModelManagerImpl выполняет одиночный/ZIP-импорт, удаление и
+     * отмену скачивания. Без него импорт бэкапа гонял moveToTarget/upsert с
+     * живым [ModelDownloadWorker] или параллельным импортом той же id, порча
+     * восстановленную READY-запись. Перед подменой файлов каждой id из
+     * манифеста её живая загрузка отменяется и ожидается терминальный статус
+     * воркера ([cancelLiveDownloadForImport], по образцу
+     * ModelManagerImpl.cancelSupersededDownload).
+     *
+     * Issue #83, п.5: распаковка ДВУХПРОХОДНАЯ. Первый проход читает из архива
+     * только manifest.json/settings.json, НИЧЕГО не записывая, поэтому
+     * StatFs-гейт места по оценке манифеста гарантированно выполняется ДО
+     * появления файлов models/ в temp (раньше при манифесте в конце архива
+     * файлы уже писались, и при отказе места оставались до finally; а при
+     * манифесте с путями внутри models/ фолбэк [findExtractedEntry] мог
+     * резолвить пучок в сырой файл архивной раскладки). Второй проход
+     * (повторное открытие Uri — SAF это разрешает) извлекает только записи
+     * models/.
      *
      * Ревью повт. аудита, п.6: temp-распаковка пишется на тот же volume,
      * что и каталог моделей ([ModelStorage.modelsRoot]) — раньше шла в
      * context.cacheDir (внутренний /data) при моделях на внешнем разделе,
      * поэтому [moveToTarget] всегда падал к cross-volume copy, а StatFs-гейт
      * объёма вообще не проверялся на импорте. Temp кладётся соседом корня
-     * моделей (по образцу staging в ModelManagerImpl.promoteExtractedDir),
-     * перед распаковкой файлов модели — StatFs-гейт по оценке из манифеста
-     * (общий [hasFreeSpaceFor]); оценка учитывает раздувание распаковки
-     * archive/gz-раскладок той же формулой, что гейт скачивания
-     * (ревью раунда 3), а не только размер скачиваемых артефактов.
+     * моделей (по образцу staging в ModelManagerImpl.promoteExtractedDir);
+     * оценка гейта учитывает раздувание распаковки archive/gz-раскладок
+     * той же формулой, что гейт скачивания (ревью раунда 3),
+     * [backupInstallRequiredBytes]. Осиротевшие от убитого процесса
+     * temp-каталоги чистит стартовый GC [cleanupOrphanBackupTemp].
      */
-    suspend fun importFromUri(sourceUri: Uri): ImportResult = withContext(Dispatchers.IO) {
+    suspend fun importFromUri(sourceUri: Uri): ImportResult =
+        ModelImportLock.mutex.withLock {
+            withContext(Dispatchers.IO) { importLocked(sourceUri) }
+        }
+
+    /** Тело импорта под [ModelImportLock] — см. [importFromUri]. */
+    private suspend fun importLocked(sourceUri: Uri): ImportResult {
         var imported = 0
         var skipped = 0
         var settingsRestored = false
@@ -308,82 +476,29 @@ class ModelBackupManager @Inject constructor(
         // StatFs-гейт оценивает не тот том (ревью повт. аудита, п.6).
         val modelsRoot = ModelStorage.modelsRoot(context)
         val tempRoot = modelsRoot.parentFile ?: modelsRoot
-        val tempDir = File(tempRoot, "backup_import_${UUID.randomUUID()}")
+        val tempDir = File(tempRoot, BACKUP_IMPORT_TEMP_PREFIX + UUID.randomUUID())
 
         try {
-            val input = context.contentResolver.openInputStream(sourceUri)
-                ?: return@withContext ImportResult(0, 0, false, "Не удалось открыть архив")
-
+            // --- Проход 1: только метаданные (manifest + settings), файлов
+            // models/ не касаемся (issue #83, п.5). ---
             var manifest: BackupManifest? = null
             var settings: BackupSettings? = null
-            tempDir.mkdirs()
-
-            input.use { ins ->
+            val metaInput = context.contentResolver.openInputStream(sourceUri)
+                ?: return ImportResult(0, 0, false, "Не удалось открыть архив")
+            metaInput.use { ins ->
                 ZipInputStream(ins.buffered()).use { zip ->
                     var entry = zip.nextEntry
                     while (entry != null) {
-                        val name = entry.name
-                        if (entry.isDirectory) {
-                            zip.closeEntry()
-                            entry = zip.nextEntry
-                            continue
-                        }
-
                         when {
-                            name == MANIFEST_NAME -> {
-                                val content = readEntry(zip)
-                                val parsed = json.decodeFromString(
-                                    BackupManifest.serializer(), content
+                            entry.isDirectory -> Unit
+                            entry.name == MANIFEST_NAME ->
+                                manifest = json.decodeFromString(
+                                    BackupManifest.serializer(), readEntry(zip)
                                 )
-                                manifest = parsed
-                                // StatFs-гейт перед распаковкой файлов моделей
-                                // (ревью повт. аудита, п.6 + ревью раунда 3):
-                                // sizeBytes манифеста — размер СКАЧИВАЕМЫХ
-                                // артефактов, а на диск ложится распакованное
-                                // содержимое archive (×2) и gz (×1.8)
-                                // раскладок. Оценка — единой формулой гейта
-                                // скачивания InstallCheckLogic.
-                                // requiredDownloadFreeBytes по типу раскладки
-                                // каждой записи (архивные/gz имена — те же
-                                // ArchiveFormats и DownloadLayout, что в
-                                // bundleShaOk); том — тот, где лежит temp
-                                // (он же том каталога моделей). Нехватка —
-                                // явный отказ до записи файлов, temp чистится
-                                // finally.
-                                val neededBytes =
-                                    parsed.models.sumOf { entry ->
-                                        backupInstallRequiredBytes(entry)
-                                    }
-                                if (!hasFreeSpaceFor(tempDir, neededBytes)) {
-                                    Timber.e(
-                                        "Недостаточно места под распаковку бэкапа: " +
-                                            "требуется ~$neededBytes байт на томе " +
-                                            "${tempDir.absolutePath}"
-                                    )
-                                    return@withContext ImportResult(
-                                        0, 0, false,
-                                        "Недостаточно свободного места для распаковки бэкапа"
-                                    )
-                                }
-                            }
-                            name == SETTINGS_NAME -> {
-                                val content = readEntry(zip)
+                            entry.name == SETTINGS_NAME ->
                                 settings = json.decodeFromString(
-                                    BackupSettings.serializer(), content
+                                    BackupSettings.serializer(), readEntry(zip)
                                 )
-                            }
-                            name.startsWith(MODELS_PREFIX) -> {
-                                // Сохраняем файл во временный каталог.
-                                val outFile = File(tempDir, name)
-                                // Защита от zip-slip: файл не должен выходить
-                                // за пределы временного каталога.
-                                if (!isFileInsideDir(tempDir, outFile)) {
-                                    Timber.w("ZIP-запись вне каталога, пропущена: $name")
-                                } else {
-                                    outFile.parentFile?.mkdirs()
-                                    outFile.outputStream().use { zip.copyTo(it) }
-                                }
-                            }
                         }
                         zip.closeEntry()
                         entry = zip.nextEntry
@@ -392,7 +507,58 @@ class ModelBackupManager @Inject constructor(
             }
 
             val manifestData = manifest
-                ?: return@withContext ImportResult(0, 0, false, "Нет манифеста в архиве")
+                ?: return ImportResult(0, 0, false, "Нет манифеста в архиве")
+
+            // StatFs-гейт ПОСЛЕ чтения манифеста и ДО записи файлов моделей
+            // (двухпроходность, issue #83, п.5): sizeBytes манифеста — размер
+            // СКАЧИВАЕМЫХ артефактов, а на диск ложится распакованное
+            // содержимое archive (x2) и gz (x1.8) раскладок. Оценка — единой
+            // формулой гейта скачивания InstallCheckLogic
+            // ([backupInstallRequiredBytes]; архивные/gz имена — те же
+            // ArchiveFormats и DownloadLayout, что в bundleShaOk); том — тот,
+            // где лежит temp (он же том каталога моделей). Нехватка — явный
+            // отказ до записи файла модели.
+            val neededBytes = manifestData.models.sumOf { entry ->
+                backupInstallRequiredBytes(entry)
+            }
+            if (!hasFreeSpaceFor(tempDir, neededBytes)) {
+                Timber.e(
+                    "Недостаточно места под распаковку бэкапа: " +
+                        "требуется ~$neededBytes байт на томе " +
+                        "${tempDir.absolutePath}"
+                )
+                return ImportResult(
+                    0, 0, false,
+                    "Недостаточно свободного места для распаковки бэкапа"
+                )
+            }
+            tempDir.mkdirs()
+
+            // --- Проход 2: только файлы моделей. ---
+            val filesInput = context.contentResolver.openInputStream(sourceUri)
+                ?: return ImportResult(0, 0, false, "Не удалось повторно открыть архив для файлов моделей")
+            filesInput.use { ins ->
+                ZipInputStream(ins.buffered()).use { zip ->
+                    var entry = zip.nextEntry
+                    while (entry != null) {
+                        val name = entry.name
+                        if (!entry.isDirectory && name.startsWith(MODELS_PREFIX)) {
+                            // Сохраняем файл во временный каталог.
+                            val outFile = File(tempDir, name)
+                            // Защита от zip-slip: файл не должен выходить
+                            // за пределы временного каталога.
+                            if (!isFileInsideDir(tempDir, outFile)) {
+                                Timber.w("ZIP-запись вне каталога, пропущена: $name")
+                            } else {
+                                outFile.parentFile?.mkdirs()
+                                outFile.outputStream().use { zip.copyTo(it) }
+                            }
+                        }
+                        zip.closeEntry()
+                        entry = zip.nextEntry
+                    }
+                }
+            }
 
             // Создаём записи моделей.
             val restoredIds = mutableSetOf<String>()
@@ -462,6 +628,12 @@ class ModelBackupManager @Inject constructor(
                     return@forEach
                 }
 
+                // Issue #83, п.1: перед подменой файлов отменяем живую загрузку
+                // той же id — иначе WorkManager-воркер дописывает .part и
+                // переименовывает цели раскладки поверх восстановленного пучка
+                // (гейт finalizeDownload по статусу защищает только запись БД).
+                cancelLiveDownloadForImport(entry.id)
+
                 // Issue #70: импорт подменяет файлы модели той же id — eviction
                 // кэша движков по образцу promoteExtractedDir (#69) ДО подмены:
                 // иначе LRU-кэш по id продолжает инференс старым нативным
@@ -486,18 +658,68 @@ class ModelBackupManager @Inject constructor(
                 settingsRestored = true
             }
 
-            ImportResult(imported, skipped, settingsRestored)
+            return ImportResult(imported, skipped, settingsRestored)
         } catch (e: Exception) {
             Timber.e(e, "Ошибка импорта бэкапа")
-            ImportResult(imported, skipped, settingsRestored, e.message ?: "Ошибка импорта")
+            return ImportResult(imported, skipped, settingsRestored, e.message ?: "Ошибка импорта")
         } finally {
-            // Временный каталог удаляется в любом случае.
+            // Временный каталог удаляется в любом случае; осиротевшие от
+            // убитого процесса каталоги чистит стартовый GC (issue #83, п.6).
             tempDir.deleteRecursively()
         }
     }
 
     /**
-     * Построить манифест из моделей.
+     * Отменить живую загрузку модели [modelId] перед подменой её файлов из
+     * бэкапа (issue #83, п.1, по образцу
+     * ModelManagerImpl.cancelSupersededDownload): живой unique-воркер после
+     * upsert продолжил бы дописывать .part и переименовывать целевые файлы
+     * раскладки этой id поверх восстановленного пучка. После cancel ждём
+     * терминального статуса — отменённый, но ещё не прерванный воркер иначе
+     * дописывает файлы уже после moveToTarget. Части докачки (.part/.part.meta)
+     * чистит сам воркер в cleanupCancelledModel при отмене. Неинициализированный
+     * WorkManager (unit-test JVM) — живой работы нет.
+     */
+    private suspend fun cancelLiveDownloadForImport(modelId: String) {
+        if (!isImportWorkLive(modelId)) return
+        ModelDownloadWorker.cancel(context, modelId)
+        val deadline = System.currentTimeMillis() + CANCEL_TERMINAL_TIMEOUT_MS
+        while (isImportWorkLive(modelId)) {
+            if (System.currentTimeMillis() >= deadline) {
+                Timber.w(
+                    "Воркер загрузки $modelId не достиг терминального статуса " +
+                        "через $CANCEL_TERMINAL_TIMEOUT_MS мс после отмены"
+                )
+                return
+            }
+            delay(CANCEL_POLL_INTERVAL_MS)
+        }
+        Timber.d("Живая загрузка $modelId отменена перед импортом бэкапа")
+    }
+
+    /**
+     * Живая unique-работа [ModelDownloadWorker] модели (ENQUEUED/RUNNING/
+     * BLOCKED; см. ModelManagerImpl.isWorkLive). При сбое запроса WorkManager —
+     * false («живой работы нет»»: ложная приостановка импорта хуже остаточной
+     * гонки, закрываемой самовосстановлением сверки READY-записей с диском).
+     */
+    private fun isImportWorkLive(modelId: String): Boolean = try {
+        WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWork(ModelDownloadWorker.workName(modelId))
+            .get(WORK_QUERY_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .any { info ->
+                info.state == WorkInfo.State.ENQUEUED ||
+                    info.state == WorkInfo.State.RUNNING ||
+                    info.state == WorkInfo.State.BLOCKED
+            }
+    } catch (e: Exception) {
+        Timber.w(e, "WorkManager недоступен при проверке живой загрузки $modelId — живой работы нет")
+        false
+    }
+    /**
+     * Пары «запись БД <-> запись манифеста» (issue #83, п.8): запись файлов
+     * в ZIP идёт по этим парам, а не по индексу forEachIndexed — раньше
+     * параллельный сдвиг составов manifest.models и models молча разъезжался.
      *
      * Ревью #2: фолбэк [toRelativePath] для файлов вне корня моделей теряет
      * структуру каталога — одноимённые файлы разных моделей (например
@@ -506,9 +728,9 @@ class ModelBackupManager @Inject constructor(
      * один файл. Коллизию разрешаем уникальным путём с id модели (id
      * уникален в БД), о чём пишем в лог.
      */
-    private fun buildManifest(models: List<InstalledModel>): BackupManifest {
+    private fun buildManifestEntries(models: List<InstalledModel>): List<ManifestSource> {
         val usedPaths = mutableSetOf<String>()
-        val entries = models.map { model ->
+        return models.map { model ->
             val basePath = toRelativePath(model)
             val relativePath = when {
                 basePath.isBlank() || usedPaths.add(basePath) -> basePath
@@ -519,34 +741,35 @@ class ModelBackupManager @Inject constructor(
                     unique
                 }
             }
-            BackupModelEntry(
-                id = model.id,
-                category = model.category.name,
-                displayName = model.displayName,
-                description = model.description,
-                runtime = model.runtime.name,
-                sizeBytes = model.sizeBytes,
-                ramRequiredMb = model.ramRequiredMb,
-                languages = model.languages,
-                quality = model.quality,
-                speed = model.speed,
-                url = model.url,
-                urls = model.urls,
-                sha256 = model.sha256,
-                sha256s = model.sha256s,
-                license = model.license,
-                minAndroidSdk = model.minAndroidSdk,
-                recommendedRamMb = model.recommendedRamMb,
-                relativePath = relativePath,
-                isBuiltin = model.isBuiltin
+            ManifestSource(
+                model = model,
+                entry = BackupModelEntry(
+                    id = model.id,
+                    category = model.category.name,
+                    displayName = model.displayName,
+                    description = model.description,
+                    runtime = model.runtime.name,
+                    sizeBytes = model.sizeBytes,
+                    ramRequiredMb = model.ramRequiredMb,
+                    languages = model.languages,
+                    quality = model.quality,
+                    speed = model.speed,
+                    url = model.url,
+                    urls = model.urls,
+                    sha256 = model.sha256,
+                    sha256s = model.sha256s,
+                    license = model.license,
+                    minAndroidSdk = model.minAndroidSdk,
+                    recommendedRamMb = model.recommendedRamMb,
+                    relativePath = relativePath,
+                    isBuiltin = model.isBuiltin
+                )
             )
         }
-        return BackupManifest(
-            version = 1,
-            exportedAt = System.currentTimeMillis(),
-            models = entries
-        )
     }
+
+    /** Пара «запись БД <-> запись манифеста» (issue #83, п.8). */
+    private data class ManifestSource(val model: InstalledModel, val entry: BackupModelEntry)
 
     /**
      * Построить настройки (ревью #53: полные поязыковые назначения, тайм-аут
@@ -688,13 +911,27 @@ class ModelBackupManager @Inject constructor(
      * [ModelStorage.modelsRoot] (с фолбэком на filesDir), а не прямым
      * вызовом getExternalFilesDir — иначе при недоступном external storage
      * экспорт теряет подпуть, а импорт возвращает null для всех записей.
+     * Issue #83, п.7: принадлежность корню проверяется ГРАНИЦЕЙ РАЗДЕЛИТЕЛЯ
+     * ([isFileInsideDir], канонические пути) — раньше startsWith по
+     * absolutePath без границы матчил соседний каталог /data/models_x как
+     * внутренний /data/models, и модель получала изуродованный путь вида
+     * "_x/файл". Файл вне корня — путь по имени, чтобы путь не менялся
+     * после импорта.
      */
     private fun toRelativePath(model: InstalledModel): String {
         val path = model.filePath ?: return ""
         val file = File(path)
         val modelsRoot = ModelStorage.modelsRoot(context)
-        return if (file.absolutePath.startsWith(modelsRoot.absolutePath)) {
-            MODELS_PREFIX + file.absolutePath.removePrefix(modelsRoot.absolutePath).removePrefix(File.separator)
+        val inside = try {
+            isFileInsideDir(modelsRoot, file)
+        } catch (e: Exception) {
+            Timber.w(e, "Не удалось канонализировать путь модели: $path")
+            false
+        }
+        return if (inside) {
+            MODELS_PREFIX + file.canonicalPath
+                .removePrefix(modelsRoot.canonicalPath)
+                .removePrefix(File.separator)
         } else {
             // Используем имя файла (с расширением), чтобы путь не менялся после импорта.
             MODELS_PREFIX + file.name
@@ -787,5 +1024,3 @@ class ModelBackupManager @Inject constructor(
     private fun readEntry(zip: ZipInputStream): String =
         String(zip.readBytes(), Charsets.UTF_8)
 }
-
-

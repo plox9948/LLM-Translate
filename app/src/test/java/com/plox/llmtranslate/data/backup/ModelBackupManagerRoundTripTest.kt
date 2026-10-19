@@ -590,4 +590,82 @@ class ModelBackupManagerRoundTripTest {
 
     // Independent SHA-256 for the test is provided by
     // com.plox.llmtranslate.testutil.sha256HexOf.
+
+    // -----------------------------------------------------------------
+    // Issue #83, п.5: двухпроходная распаковка — записи models/ из архива
+    // извлекаются только после чтения манифеста и гейта места, поэтому
+    // порядок записей в ZIP не важен.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `import extracts models when manifest is last entry in zip`() {
+        // Файл модели идёт в архиве раньше манифеста: раньше он писался в temp
+        // до чтения манифеста; теперь проход 1 читает только метаданные,
+        // файлы извлекаются проходом 2.
+        val entry = manifestEntry(
+            id = "late1",
+            category = ModelCategory.TRANSLATION,
+            runtime = RuntimeType.MARIAN_ONNX,
+            relativePath = MODELS_PREFIX + "late1.onnx"
+        )
+        ZipOutputStream(FileOutputStream(zipFile)).use { zip ->
+            zip.putNextEntry(ZipEntry(MODELS_PREFIX + "late1.onnx"))
+            zip.write("late-bytes".toByteArray())
+            zip.closeEntry()
+            zip.putNextEntry(ZipEntry(ModelBackupManager.MANIFEST_NAME))
+            zip.write(
+                json.encodeToString(
+                    BackupManifest.serializer(),
+                    BackupManifest(version = 1, exportedAt = 0L, models = listOf(entry))
+                ).toByteArray()
+            )
+            zip.closeEntry()
+        }
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNull("Импорт не должен возвращать ошибку: ${result.error}", result.error)
+            assertEquals(1, result.importedCount)
+            assertEquals(0, result.skippedCount)
+            assertEquals("late-bytes", File(modelsRoot, "late1.onnx").readText())
+            // Temp-каталог импорта удалён полностью.
+            assertTrue(
+                modelsRoot.parentFile!!.listFiles()!!.none { it.name.startsWith("backup_import_") }
+            )
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #83, п.7: принадлежность корню моделей проверяется границей
+    // разделителя — соседний каталог "models_x" не матчится как "models".
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `model in sibling models_x directory is exported by name not by broken relative path`() {
+        val sibling = File(modelsRoot.parentFile, "models_x").apply { mkdirs() }
+        val f = File(sibling, "seg.onnx").apply { writeText("sibling-bytes") }
+        coEvery { repository.observeAll() } returns flowOf(
+            listOf(
+                readyModel(
+                    "mx", ModelCategory.TRANSLATION, RuntimeType.MARIAN_ONNX,
+                    f.absolutePath
+                )
+            )
+        )
+        val upserted = mutableListOf<InstalledModel>()
+        coEvery { repository.upsert(capture(upserted)) } returns Unit
+
+        runBlocking {
+            val manager = backupManager()
+            val uri = mockk<Uri>()
+            assertTrue("Экспорт должен завершиться успешно", manager.exportToUri(uri))
+            val result = manager.importFromUri(uri)
+            assertNull("Импорт не должен возвращать ошибку: ${result.error}", result.error)
+            assertEquals(1, result.importedCount)
+            // Не "_x/seg.onnx" (старый startsWith без границы разделителя),
+            // а имя файла в корне моделей.
+            assertEquals("sibling-bytes", File(modelsRoot, "seg.onnx").readText())
+            assertTrue(!File(modelsRoot, "_x/seg.onnx").exists())
+        }
+    }
 }

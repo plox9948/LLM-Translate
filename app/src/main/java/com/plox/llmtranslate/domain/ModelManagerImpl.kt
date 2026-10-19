@@ -7,6 +7,7 @@ import android.provider.OpenableColumns
 import androidx.work.ExistingWorkPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import com.plox.llmtranslate.data.backup.ModelImportLock
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
 import com.plox.llmtranslate.data.download.DownloadLayout
 import com.plox.llmtranslate.data.download.ModelDownloadWorker
@@ -41,7 +42,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -106,8 +106,12 @@ class ModelManagerImpl @Inject constructor(
      * Issue #76: удаление (delete) сериализуется тем же мьютексом — гонка
      * import↔delete одной id давала висячий READY на удалённый каталог или
      * осиротевшие файлы без записи.
+     * Issue #83, п.1: лок вынесен в разделяемый [ModelImportLock] — импорт
+     * бэкапа (ModelBackupManager.importFromUri) иначе гонял подмену файлов той
+     * же id с живым WorkManager-воркером и параллельными импортами вне
+     * сериализации (порча восстановленной READY-записи).
      */
-    private val importMutex = Mutex()
+    private val importMutex = ModelImportLock.mutex
 
     override val catalog: Flow<List<ModelCard>> = catalogProvider.catalog
 

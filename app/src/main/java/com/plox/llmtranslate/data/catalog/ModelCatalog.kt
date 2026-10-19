@@ -73,7 +73,15 @@ class ModelCatalogParser(
         val defaultByModel = dto.defaultForLanguage.entries
             .sortedBy { it.key }
             .associate { (language, modelId) -> modelId to language }
+        // Issue #83, п.10: дубли id внутри каталога (особенно удалённого)
+        // давали дубли карточек в UI — оставляем первое вхождение, остальные
+        // отбрасываем с предупреждением.
+        val seenIds = HashSet<String>()
         return dto.models.mapNotNull { modelDto ->
+            if (!seenIds.add(modelDto.id)) {
+                Timber.w("Каталог: повторный id ${modelDto.id} — оставлено первое вхождение")
+                return@mapNotNull null
+            }
             try {
                 modelDto.toCard(defaultByModel[modelDto.id])
             } catch (e: IllegalStateException) {

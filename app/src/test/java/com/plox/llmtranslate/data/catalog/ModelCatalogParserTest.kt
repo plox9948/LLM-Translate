@@ -521,4 +521,28 @@ class ModelCatalogParserTest {
     fun `returns 0 for invalid version json`() {
         assertEquals(0, parser.parseVersion("{ invalid"))
     }
+
+    // ------------------------------------------------------------------
+    // Issue #83, п.10: дубли id внутри каталога не должны порождать дубли
+    // карточек — оставляется первое вхождение.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `duplicate ids in catalog keep first occurrence and drop rest`() {
+        val json = """
+            {
+              "version": 1,
+              "models": [
+                {"id":"dup","displayName":"A1","category":"TRANSLATION","runtime":"MARIAN_ONNX","sizeBytes":1},
+                {"id":"dup","displayName":"A2","category":"TRANSLATION","runtime":"MARIAN_ONNX","sizeBytes":2},
+                {"id":"uniq","displayName":"B","category":"TRANSLATION","runtime":"MARIAN_ONNX","sizeBytes":3}
+              ]
+            }
+        """.trimIndent()
+        val cards = parser.parse(json)
+        assertEquals(2, cards.size)
+        assertEquals("dup", cards[0].id)
+        assertEquals("A1", cards[0].displayName)
+        assertEquals("uniq", cards[1].id)
+    }
 }

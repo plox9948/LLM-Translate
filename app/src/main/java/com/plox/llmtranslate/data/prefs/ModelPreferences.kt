@@ -40,8 +40,14 @@ private const val DATASTORE_NAME = "model_prefs"
  * бросает IOException/CorruptionException и вешает ВСЕ Flow-читатели настроек;
  * [ReplaceFileCorruptionHandler] при сбое чтения удаляет файл и продолжает с
  * пустыми preferences (значения по умолчанию).
+ *
+ * Issue #83, п.3: [dataStoreInstance] помечен [Volatile] — double-checked
+ * locking без гарантии видимости иначе позволял двум потокам создать по
+ * инстансу DataStore (два писателя одного файла).
  */
 private val dataStoreLock = Any()
+
+@Volatile
 private var dataStoreInstance: DataStore<Preferences>? = null
 
 private val Context.dataStore: DataStore<Preferences>
@@ -134,6 +140,99 @@ internal fun <T> flowWithRecovery(
     }
 }
 
+/** Сериализатор JSON-карты «язык → id» для языковых preference-ключей. */
+internal val LANGUAGE_MAP_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
+
+/**
+ * Исход чистого декода JSON-карты «язык -> id»: карта + флаг, что исходная
+ * строка повреждена (issue #83, п.2). Декод БЕЗ побочных эффектов — никакой
+ * фоновой правки DataStore из decode (см. [decodeLanguageMapValue]).
+ */
+internal class LanguageMapDecode(
+    val map: Map<String, String>,
+    val corrupted: Boolean
+)
+
+/**
+ * Результат правки языковой карты ВНУТРИ одной `edit`-транзакции
+ * (issue #83, п.2): чем заменить/снять ключ.
+ */
+internal sealed interface LanguageMapEdit {
+    /** Перезаписать ключ значением [raw] (включая перезапись повреждённого). */
+    data class SetValue(val raw: String) : LanguageMapEdit
+
+    /** Удалить ключ (пустая карта после операции либо починка битого значения). */
+    object RemoveKey : LanguageMapEdit
+
+    /** Ничего не менять (изменений не было — не перетирать значение). */
+    object Unchanged : LanguageMapEdit
+}
+
+/**
+ * Чистый декод JSON-карты «язык → id» (STT/TTS) без обращения к DataStore
+ * (issue #83, п.2). Повреждённое значение — ПУСТАЯ карта с флагом
+ * [LanguageMapDecode.corrupted]; сам ключ чинит вызывающий ВНУТРИ той же
+ * `edit`-транзакции, в которой читает значение. Раньше Decode ловил исключение
+ * и запускал fire-and-forget `scope.launch { edit { remove(key) } }`: фоновый
+ * edit применялся ПОСЛЕ коммита текущей записи и удалял только что
+ * записанное назначение пользователя (lost update), а из-под `collect`
+ * сырых потоков edit вызывался вообще рекурсивно.
+ */
+internal fun decodeLanguageMapValue(
+    json: Json,
+    keyName: String,
+    raw: String?
+): LanguageMapDecode =
+    if (raw.isNullOrBlank()) LanguageMapDecode(emptyMap(), false)
+    else try {
+        LanguageMapDecode(json.decodeFromString(LANGUAGE_MAP_SERIALIZER, raw), false)
+    } catch (e: Exception) {
+        Timber.w(e, "Повреждённое значение $keyName — карта считается пустой, ключ чинится в той же транзакции записи")
+        LanguageMapDecode(emptyMap(), true)
+    }
+
+/**
+ * Новое СЫРОЕ значение языкового ключа при назначении языка (issue #83, п.2):
+ * повреждённое прежнее значение НЕ сливается с новым — карта стартует пусто и
+ * перезаписывается целиком в той же транзакции, поэтому назначение не может
+ * «потеряться» из-за отдельной чистки ключа.
+ * @return null — ключ удалить (карта опустела).
+ */
+internal fun languageMapSetRaw(
+    json: Json,
+    keyName: String,
+    raw: String?,
+    language: String,
+    modelId: String?
+): String? {
+    val decode = decodeLanguageMapValue(json, keyName, raw)
+    val updated = decode.map.toMutableMap()
+    if (modelId == null) updated.remove(language) else updated[language] = modelId
+    return if (updated.isEmpty()) null
+    else json.encodeToString(LANGUAGE_MAP_SERIALIZER, updated)
+}
+
+/**
+ * Правка языкового ключа при снятии всех назначений «язык -> [modelId]»
+ * (issue #83, п.2): [LanguageMapEdit.Unchanged] — если id не встречался в
+ * intact-карте (перезапись не нужна); повреждённое значение чинится сразу —
+ * [LanguageMapEdit.RemoveKey].
+ */
+internal fun languageMapStripEdit(
+    json: Json,
+    keyName: String,
+    raw: String?,
+    modelId: String
+): LanguageMapEdit {
+    val decode = decodeLanguageMapValue(json, keyName, raw)
+    if (decode.corrupted) return LanguageMapEdit.RemoveKey
+    val removed = decode.map.filterValues { it == modelId }.keys
+    if (removed.isEmpty()) return LanguageMapEdit.Unchanged
+    val updated = decode.map.toMutableMap()
+    removed.forEach { updated.remove(it) }
+    return if (updated.isEmpty()) LanguageMapEdit.RemoveKey
+    else LanguageMapEdit.SetValue(json.encodeToString(LANGUAGE_MAP_SERIALIZER, updated))
+}
 /**
  * Настройки выбора моделей и приложения (DataStore).
  */
@@ -181,10 +280,12 @@ class ModelPreferences @Inject constructor(
      * экспорта бэкапа: сбой чтения DataStore обязан стать ошибкой экспорта,
      * а не молча записанным в архив пустым значением (регресс: обёртка
      * «съедала» сбой и экспорт с дефолтами затем затирал реальные настройки).
+     * Декод битой карты — чистый [decodeLanguageMapValue], без edit-побочек
+     * из-под collect (issue #83, п.2).
      */
     internal val rawSttByLanguage: Flow<Map<String, String>> =
         context.dataStore.data.map { prefs ->
-            decodeLanguageMap(prefs[STT_BY_LANGUAGE_KEY], STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME)
+            decodeLanguageMapValue(json, STT_BY_LANGUAGE_NAME, prefs[STT_BY_LANGUAGE_KEY]).map
         }
 
     val sttByLanguage: Flow<Map<String, String>> =
@@ -206,7 +307,9 @@ class ModelPreferences @Inject constructor(
      */
     /** Сырой поток карты TTS-назначений — только для экспорта бэкапа (см. [rawSttByLanguage]). */
     internal val rawTtsByLanguage: Flow<Map<String, String>> =
-        context.dataStore.data.map { prefs -> decodeTtsByLanguage(prefs[TTS_BY_LANGUAGE_KEY]) }
+        context.dataStore.data.map { prefs ->
+            decodeLanguageMapValue(json, TTS_BY_LANGUAGE_NAME, prefs[TTS_BY_LANGUAGE_KEY]).map
+        }
 
     val ttsByLanguage: Flow<Map<String, String>> =
         flowWithRecovery(TTS_BY_LANGUAGE_NAME, emptyMap()) { rawTtsByLanguage }
@@ -219,13 +322,12 @@ class ModelPreferences @Inject constructor(
     suspend fun setTtsForLanguage(language: String, modelId: String?) =
         setForLanguage(TTS_BY_LANGUAGE_KEY, TTS_BY_LANGUAGE_NAME, language, modelId)
 
-    /** Декод JSON-карты «язык → id» для TTS-ключа. */
-    private fun decodeTtsByLanguage(raw: String?): Map<String, String> =
-        decodeLanguageMap(raw, TTS_BY_LANGUAGE_KEY, TTS_BY_LANGUAGE_NAME)
-
     /**
      * Общая запись языковой карты (STT/TTS): снять назначение при null,
-     * удалить ключ при опустевшей карте.
+     * удалить ключ при опустевшей карте. Issue #83, п.2: вся логика —
+     * [languageMapSetRaw] в ОДНОЙ edit-транзакции; битый прежний JSON
+     * перезаписывается результатом этой же транзакции, фоновый remove-редакт
+     * больше не затирает только что записанное назначение.
      */
     private suspend fun setForLanguage(
         key: Preferences.Key<String>,
@@ -234,72 +336,41 @@ class ModelPreferences @Inject constructor(
         modelId: String?
     ) {
         context.dataStore.edit { prefs ->
-            val map = decodeLanguageMap(prefs[key], key, keyName).toMutableMap()
-            if (modelId == null) map.remove(language) else map[language] = modelId
-            if (map.isEmpty()) {
-                prefs.remove(key)
-            } else {
-                prefs[key] = json.encodeToString(LANGUAGE_MAP_SERIALIZER, map)
-            }
-        }
-    }
-
-    /**
-     * Декод JSON-карты «язык → id»; повреждённое значение — сброс и удаление
-     * ключа из DataStore. Без удаления битое значение остаётся в хранилище
-     * и каждая следующая запись пересобирается из пусто-карты вместо явного сброса.
-     */
-    private fun decodeLanguageMap(
-        raw: String?,
-        key: Preferences.Key<String>,
-        keyName: String
-    ): Map<String, String> =
-        if (raw.isNullOrBlank()) emptyMap() else try {
-            json.decodeFromString(LANGUAGE_MAP_SERIALIZER, raw)
-        } catch (e: Exception) {
-            Timber.w(e, "Повреждённое значение $keyName, сброшено")
-            clearCorruptedLanguageMap(key, keyName)
-            emptyMap()
-        }
-
-    /** Удалить повреждённый языковой ключ из DataStore (см. [decodeLanguageMap]). */
-    private fun clearCorruptedLanguageMap(key: Preferences.Key<String>, keyName: String) {
-        scope.launch {
-            try {
-                context.dataStore.edit { prefs -> prefs.remove(key) }
-            } catch (e: Exception) {
-                Timber.w(e, "Не удалось удалить повреждённый ключ $keyName")
-            }
+            val updated = languageMapSetRaw(json, keyName, prefs[key], language, modelId)
+            if (updated == null) prefs.remove(key) else prefs[key] = updated
         }
     }
 
     /**
      * Снять все назначения «язык → модель» с languages-картами, ссылающиеся
      * на удалённую модель [modelId] (ревью: delete() не должен оставлять в
-     * настройках висячие id). Ключ удаляется при опустевшей карте.
+     * настройках висячие id). Ключ удаляется при опустевшей карте; повреждённое
+     * значение снимается той же транзакцией (issue #83, п.2 — раньше починка
+     * шла отдельным фоновым edit из-под decode и конфликтовала с записями).
      */
     suspend fun removeModelFromLanguageAssignments(modelId: String) {
         context.dataStore.edit { prefs ->
-            stripModelFromMap(prefs, STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME, modelId)
-            stripModelFromMap(prefs, TTS_BY_LANGUAGE_KEY, TTS_BY_LANGUAGE_NAME, modelId)
+            applyLanguageMapEdit(
+                prefs, STT_BY_LANGUAGE_KEY,
+                languageMapStripEdit(json, STT_BY_LANGUAGE_NAME, prefs[STT_BY_LANGUAGE_KEY], modelId)
+            )
+            applyLanguageMapEdit(
+                prefs, TTS_BY_LANGUAGE_KEY,
+                languageMapStripEdit(json, TTS_BY_LANGUAGE_NAME, prefs[TTS_BY_LANGUAGE_KEY], modelId)
+            )
         }
     }
 
-    /** Убрать из языковой карты pref-значения, равные [modelId] (без записи, если изменений нет). */
-    private fun stripModelFromMap(
+    /** Применить результат правки языковой карты к preferences транзакции. */
+    private fun applyLanguageMapEdit(
         prefs: MutablePreferences,
         key: Preferences.Key<String>,
-        keyName: String,
-        modelId: String
+        edit: LanguageMapEdit
     ) {
-        val map = decodeLanguageMap(prefs[key], key, keyName).toMutableMap()
-        val removedLanguages = map.filterValues { it == modelId }.keys
-        if (removedLanguages.isEmpty()) return
-        removedLanguages.forEach { map.remove(it) }
-        if (map.isEmpty()) {
-            prefs.remove(key)
-        } else {
-            prefs[key] = json.encodeToString(LANGUAGE_MAP_SERIALIZER, map)
+        when (edit) {
+            LanguageMapEdit.RemoveKey -> prefs.remove(key)
+            is LanguageMapEdit.SetValue -> prefs[key] = edit.raw
+            LanguageMapEdit.Unchanged -> Unit
         }
     }
 
@@ -531,9 +602,6 @@ class ModelPreferences @Inject constructor(
 
         /** Имя TTS-ключа для логов. */
         private const val TTS_BY_LANGUAGE_NAME = "tts_by_language"
-
-        /** Сериализатор карты языков для языковых preference-ключей. */
-        private val LANGUAGE_MAP_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
 
         /** Preference кода исходного языка последнего направления (issue #33). */
         private val LAST_SOURCE_LANG_KEY = stringPreferencesKey("last_source_lang")

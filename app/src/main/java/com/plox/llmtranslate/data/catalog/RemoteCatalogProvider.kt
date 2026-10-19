@@ -127,6 +127,15 @@ class RemoteCatalogProvider @Inject constructor(
             if (urlConn.responseCode == 200) {
                 val json = urlConn.inputStream.use { it.readBytes().decodeToString() }
                 val fetchedVersion = parser.parseVersion(json)
+                // Issue #83, п.9: битый JSON при HTTP 200 даёт нулевую версию и
+                // молча игнорируется навсегда — фиксируем в логе (семантику
+                // молчаливой отмены обновления не меняем).
+                if (fetchedVersion <= 0) {
+                    Timber.w(
+                        "Удалённый каталог отдал HTTP 200, но версия не считана " +
+                            "или нулевая (битый JSON?) — обновление проигнорировано"
+                    )
+                }
 
                 if (fetchedVersion > appliedVersion) {
                     val models = parser.parse(json)
@@ -190,18 +199,31 @@ class RemoteCatalogProvider @Inject constructor(
 
     /**
      * Объединить каталоги: удалённый переопределяет assets по id.
+     * Issue #83, п.10: дубли id внутри удалённого каталога давали дубли
+     * карточек в UI — дедупликация по id, первое вхождение побеждает.
+     * internal — покрыто unit-тестом.
      */
-    private fun mergeCatalogs(assets: List<ModelCard>, remote: List<ModelCard>): List<ModelCard> {
-        val remoteById = remote.associateBy { it.id }
+    internal fun mergeCatalogs(assets: List<ModelCard>, remote: List<ModelCard>): List<ModelCard> {
+        // Первые вхождения удалённого каталога побеждают повторы.
+        val remoteById = LinkedHashMap<String, ModelCard>()
+        remote.forEach { card ->
+            if (!remoteById.containsKey(card.id)) {
+                remoteById[card.id] = card
+            } else {
+                Timber.w("Удалённый каталог: повторный id ${card.id} — пропущен")
+            }
+        }
         val merged = assets.map { card ->
             remoteById[card.id] ?: card
         }.toMutableList()
 
-        // Добавляем модели, которых нет в assets.
+        // Добавляем модели, которых нет в assets (уже без дублей по id).
         val assetIds = assets.map { it.id }.toSet()
-        remote.filter { it.id !in assetIds }.forEach { merged.add(it) }
+        remoteById.values.filter { it.id !in assetIds }.forEach { merged.add(it) }
 
-        return merged
+        // Финальная гарантия единственного id на весь merged-список
+        // (первые позиции побеждают).
+        return merged.distinctBy { it.id }
     }
 }
 
