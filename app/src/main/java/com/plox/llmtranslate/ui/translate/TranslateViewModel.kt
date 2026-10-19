@@ -155,8 +155,9 @@ class TranslateViewModel @Inject constructor(
     // Контекст — человекочитаемые тексты ошибок из ресурсов (issue #57).
     @dagger.hilt.android.qualifiers.ApplicationContext
     private val appContext: Context,
-    // Тексты ввода/результата переживают гибель процесса (восстановление
-    // экрана «Перевод»; направление — как и раньше, из настроек issue #33).
+    // Тексты ввода/результата и привязка результата к направлению переживают
+    // гибель процесса (восстановление экрана «Перевод»); чипы направления —
+    // как и раньше, из настроек (issue #33, issue #81).
     private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -167,23 +168,46 @@ class TranslateViewModel @Inject constructor(
         /** Ключ восстанавливаемого текста результата в SavedStateHandle. */
         internal const val KEY_RESULT_TEXT = "translate_result_text"
 
+        /** Ключи восстанавливаемого направления результата (issue #81). */
+        internal const val KEY_RESULT_SOURCE_LANG = "translate_result_source_lang"
+
+        internal const val KEY_RESULT_TARGET_LANG = "translate_result_target_lang"
+
         /**
          * Потолок сохраняемого текста: бюджет SavedStateHandle/safeBundle на
          * Binder-транзакцию мал (~50 КБ лимит SAF-документов), рабочие переводы
          * заведомо короче — обрезка только защита от аномально длинного ввода.
          */
         internal const val MAX_RESTORED_TEXT_CHARS = 10_000
+
+        /**
+         * Снятое из SavedStateHandle направление результата (issue #81):
+         * код языка → [TranslateLanguage]; при отсутствии/неизвестном коде —
+         * null (дальше работает прежний фолбэк на направление по умолчанию).
+         */
+        private fun savedResultLang(
+            savedStateHandle: SavedStateHandle,
+            key: String
+        ): TranslateLanguage? {
+            val code = savedStateHandle.get<String>(key) ?: return null
+            return TranslateLanguage.entries.firstOrNull { it.code == code }
+        }
     }
 
     private val _uiState = MutableStateFlow(
         TranslateUiState(
             inputText = savedStateHandle[KEY_INPUT_TEXT] ?: "",
             resultText = savedStateHandle[KEY_RESULT_TEXT] ?: "",
-            // Восстановленный результат привязывается к направлению по
-            // умолчанию (ru→en): сохранённое из настроек направление при
-            // несовпадении его скроет (семантика issue #59).
-            resultSourceLang = TranslateLanguage.RU,
-            resultTargetLang = TranslateLanguage.EN,
+            // Восстановленный результат привязывается к снятому направлению
+            // перевода (issue #81): заголовок и метки карточки соответствуют
+            // снимку; при несовпадении с направлением из настроек гейт
+            // visibleResult скрывает результат (семантика issue #59). Если
+            // направление не снято (старый снапшот), фолбэк — прежнее
+            // направление по умолчанию (ru→en).
+            resultSourceLang = savedResultLang(savedStateHandle, KEY_RESULT_SOURCE_LANG)
+                ?: TranslateLanguage.RU,
+            resultTargetLang = savedResultLang(savedStateHandle, KEY_RESULT_TARGET_LANG)
+                ?: TranslateLanguage.EN,
             // Снимок ввода для пары избранного: восстановленный ввод и есть
             // снимок на момент перевода (latest-пись); при правке поля после
             // перевода звезда просто не подсветится — ключ не совпадёт.
@@ -512,6 +536,11 @@ class TranslateViewModel @Inject constructor(
         val state = _uiState.value
         savedStateHandle[KEY_INPUT_TEXT] = state.inputText.take(MAX_RESTORED_TEXT_CHARS)
         savedStateHandle[KEY_RESULT_TEXT] = state.resultText.take(MAX_RESTORED_TEXT_CHARS)
+        // Направление результата сохраняется вместе с текстами (issue #81):
+        // без него восстановленный снимок ложно привязывается к направлению
+        // по умолчанию и несогласованная пара проходит гейт visibleResult.
+        savedStateHandle[KEY_RESULT_SOURCE_LANG] = state.resultSourceLang?.code
+        savedStateHandle[KEY_RESULT_TARGET_LANG] = state.resultTargetLang?.code
     }
 
     // Job текущей длительной операции (перевод ИЛИ распознавание) —

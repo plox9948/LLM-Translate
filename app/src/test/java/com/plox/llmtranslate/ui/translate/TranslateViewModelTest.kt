@@ -783,6 +783,39 @@ class TranslateViewModelTest {
     }
 
     @Test
+    fun `restored result keeps its snapshot direction under a different current selection`() {
+        // issue #81: снимок результата ru→ne + настройка ru→en — метки
+        // результата должны соответствовать снимку, а не направлению чипов.
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        stubEchoEngine(
+            listOf(
+                readyTranslation("trans-ru-en", "ru→en", listOf("ru", "en")),
+                readyTranslation("trans-en-ne", "en→ne", listOf("en", "ne"))
+            )
+        )
+        val handle = SavedStateHandle()
+        createViewModel(handle)
+        viewModel.onTargetLangChange(TranslateLanguage.NE) // ru→ne
+        viewModel.onInputTextChanged("restorable nepali")
+        viewModel.translate()
+        val result = viewModel.uiState.value.resultText
+        assertTrue(result.isNotEmpty())
+        assertEquals(TranslateLanguage.NE, viewModel.uiState.value.targetLang)
+
+        // «am kill» и рестарт: тот же handle, направление из настроек — ru→en.
+        createViewModel(handle)
+        assertEquals(TranslateLanguage.RU, viewModel.uiState.value.sourceLang)
+        assertEquals(TranslateLanguage.EN, viewModel.uiState.value.targetLang)
+        // Снятое направление результата восстановлено — пара согласована.
+        assertEquals(TranslateLanguage.RU, viewModel.uiState.value.resultSourceLang)
+        assertEquals(TranslateLanguage.NE, viewModel.uiState.value.resultTargetLang)
+        // Гейт issue #59: под текущим выбором ru→en чужой снимок скрыт.
+        assertEquals("", viewModel.uiState.value.visibleResult)
+        viewModel.speakResult()
+        io.mockk.verify(exactly = 0) { ttsCoordinator.speak(any(), any()) }
+    }
+
+    @Test
     fun `saved texts are trimmed to max restored chars`() {
         every { favoritesRepository.observeAll() } returns flowOf(emptyList())
         val handle = SavedStateHandle()
