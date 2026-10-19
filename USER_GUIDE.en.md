@@ -114,7 +114,13 @@ models) together with an estimated memory consumption.
   "Clear" empties both fields.
 - The typed text and its translation survive the app being closed or the
   system killing its process: reopening "Translate" restores both fields
-  (up to 10,000 characters each, longer texts are trimmed).
+  (up to 10,000 characters each, longer texts are trimmed). The result comes
+  back bound to the direction it was translated in: its card title and
+  labels match that snapshot. If the restored direction differs from the
+  currently selected one, the result is hidden by the same direction-binding
+  rule — no mismatched pair appears under the new labels (your input is
+  kept; you can bring the needed translation back from history or translate
+  again).
 - The screen scrolls: long input and long translations are fully visible, the
   input field grows with the text instead of cutting it off.
 - In the input field header, next to the microphone, there is a "Copy source
