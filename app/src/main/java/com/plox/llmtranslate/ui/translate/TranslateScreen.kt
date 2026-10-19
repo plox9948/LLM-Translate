@@ -70,9 +70,6 @@ fun TranslateScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-    // Буфер обмена для кнопки копирования результата.
-    val clipboard = LocalClipboardManager.current
-
     // Разрешение на запись с микрофона.
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -137,58 +134,15 @@ fun TranslateScreen(
         }
 
         // Поле ввода.
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = state.sourceLang.title,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.weight(1f))
-                    // Копирование исходного текста в буфер обмена.
-                    IconButton(
-                        onClick = {
-                            clipboard.setText(AnnotatedString(state.inputText))
-                        },
-                        enabled = state.inputText.isNotEmpty() && !state.isTranslating
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.ContentCopy,
-                            contentDescription = stringResource(R.string.translate_copy_input_cd)
-                        )
-                    }
-                    // Кнопка записи аудио (STT).
-                    IconButton(
-                        onClick = { onMicClick() },
-                        enabled = !state.isTranslating
-                    ) {
-                        Icon(
-                            imageVector = if (state.isRecording) Icons.Filled.MicOff
-                            else Icons.Filled.Mic,
-                            contentDescription = stringResource(R.string.translate_record_cd),
-                            tint = if (state.hasSttModel) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
-                }
-                // Поле растёт по содержимому (issue #79): без maxLines-капса
-                // весь исходный текст доступен прокруткой экрана.
-                // Во время перевода поле не редактируется — иначе правка
-                // рассогласует ввод с уже считаемым результатом.
-                OutlinedTextField(
-                    value = state.inputText,
-                    onValueChange = viewModel::onInputTextChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3,
-                    readOnly = state.isTranslating,
-                    placeholder = { Text(stringResource(R.string.translate_input_placeholder)) }
-                )
-            }
-        }
+        InputCard(
+            sourceLang = state.sourceLang,
+            inputText = state.inputText,
+            isTranslating = state.isTranslating,
+            isRecording = state.isRecording,
+            hasSttModel = state.hasSttModel,
+            onInputTextChanged = viewModel::onInputTextChanged,
+            onMicClick = { onMicClick() }
+        )
 
         // Кнопки перевода и очистки поля.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -251,59 +205,18 @@ fun TranslateScreen(
         // кэш-перевод под новыми языками не отображается и не озвучивается.
         val visibleResult = state.visibleResult
         if (visibleResult.isNotEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = state.targetLang.title,
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                        Spacer(modifier = Modifier.weight(1f))
-                        // Копирование перевода в буфер обмена.
-                        IconButton(
-                            onClick = {
-                                clipboard.setText(AnnotatedString(visibleResult))
-                            }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.ContentCopy,
-                                contentDescription = stringResource(R.string.translate_copy_cd)
-                            )
-                        }
-                        // Озвучивание.
-                        IconButton(onClick = {
-                            if (state.isSpeaking) viewModel.stopSpeaking()
-                            else viewModel.speakResult()
-                        }) {
-                            Icon(
-                                imageVector = if (state.isSpeaking) Icons.Filled.Stop
-                                else Icons.AutoMirrored.Filled.VolumeUp,
-                                contentDescription = stringResource(R.string.translate_speak_cd)
-                            )
-                        }
-                        // Избранное перевода (issue #38): для AUTO-источника
-                        // направление результата не определено — звезда выключена.
-                        IconButton(
-                            onClick = viewModel::toggleResultFavorite,
-                            enabled = explicitSource
-                        ) {
-                            FavoriteStarIcon(state.resultFavorite)
-                        }
-                    }
-                    SelectionContainer {
-                        Text(
-                            text = visibleResult,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-            }
+            ResultCard(
+                targetLang = state.targetLang,
+                resultText = visibleResult,
+                isSpeaking = state.isSpeaking,
+                isFavorite = state.resultFavorite,
+                favoriteEnabled = explicitSource,
+                onSpeakToggle = {
+                    if (state.isSpeaking) viewModel.stopSpeaking()
+                    else viewModel.speakResult()
+                },
+                onToggleFavorite = viewModel::toggleResultFavorite
+            )
         }
 
         // Автоскачивание Piper-модели озвучки при фолбэке (issue #50):
@@ -353,6 +266,140 @@ fun TranslateScreen(
             onOption = viewModel::onOnboardingOption,
             onSkip = viewModel::onOnboardingSkip
         )
+    }
+}
+
+/**
+ * Карточка поля ввода: подпись исходного языка, кнопки копирования и записи,
+ * многострочное поле.
+ */
+@Composable
+private fun InputCard(
+    sourceLang: TranslateLanguage,
+    inputText: String,
+    isTranslating: Boolean,
+    isRecording: Boolean,
+    hasSttModel: Boolean,
+    onInputTextChanged: (String) -> Unit,
+    onMicClick: () -> Unit
+) {
+    // Буфер обмена для кнопки копирования ввода.
+    val clipboard = LocalClipboardManager.current
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = sourceLang.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                // Копирование исходного текста в буфер обмена.
+                IconButton(
+                    onClick = { clipboard.setText(AnnotatedString(inputText)) },
+                    enabled = inputText.isNotEmpty() && !isTranslating
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ContentCopy,
+                        contentDescription = stringResource(R.string.translate_copy_input_cd)
+                    )
+                }
+                // Кнопка записи аудио (STT).
+                IconButton(
+                    onClick = onMicClick,
+                    enabled = !isTranslating
+                ) {
+                    Icon(
+                        imageVector = if (isRecording) Icons.Filled.MicOff
+                        else Icons.Filled.Mic,
+                        contentDescription = stringResource(R.string.translate_record_cd),
+                        tint = if (hasSttModel) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+            }
+            // Поле растёт по содержимому (issue #79): без maxLines-капса
+            // весь исходный текст доступен прокруткой экрана.
+            // Во время перевода поле не редактируется — иначе правка
+            // рассогласует ввод с уже считаемым результатом.
+            OutlinedTextField(
+                value = inputText,
+                onValueChange = onInputTextChanged,
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 3,
+                readOnly = isTranslating,
+                placeholder = { Text(stringResource(R.string.translate_input_placeholder)) }
+            )
+        }
+    }
+}
+
+/**
+ * Карточка результата: подпись целевого языка, кнопки копирования,
+ * озвучивания и звезды избранного, выделяемый текст перевода.
+ */
+@Composable
+private fun ResultCard(
+    targetLang: TranslateLanguage,
+    resultText: String,
+    isSpeaking: Boolean,
+    isFavorite: Boolean,
+    favoriteEnabled: Boolean,
+    onSpeakToggle: () -> Unit,
+    onToggleFavorite: () -> Unit
+) {
+    // Буфер обмена для кнопки копирования результата.
+    val clipboard = LocalClipboardManager.current
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = targetLang.title,
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                // Копирование перевода в буфер обмена.
+                IconButton(
+                    onClick = { clipboard.setText(AnnotatedString(resultText)) }
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ContentCopy,
+                        contentDescription = stringResource(R.string.translate_copy_cd)
+                    )
+                }
+                // Озвучивание.
+                IconButton(onClick = onSpeakToggle) {
+                    Icon(
+                        imageVector = if (isSpeaking) Icons.Filled.Stop
+                        else Icons.AutoMirrored.Filled.VolumeUp,
+                        contentDescription = stringResource(R.string.translate_speak_cd)
+                    )
+                }
+                // Избранное перевода (issue #38): для AUTO-источника
+                // направление результата не определено — звезда выключена.
+                IconButton(
+                    onClick = onToggleFavorite,
+                    enabled = favoriteEnabled
+                ) {
+                    FavoriteStarIcon(isFavorite)
+                }
+            }
+            SelectionContainer {
+                Text(
+                    text = resultText,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
     }
 }
 

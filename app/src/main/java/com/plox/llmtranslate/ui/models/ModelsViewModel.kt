@@ -234,23 +234,18 @@ class ModelsViewModel @Inject constructor(
             // блокирует, выполняется на IO-диспетчере.
             _deviceInfo.value = modelManager.deviceInfo()
         }
+        // Прямые подписки «поток → StateFlow» (общий каркас — [collectInto]):
+        // движок TTS — та же настройка, что на экране «Настройки»;
+        // назначения STT/TTS по языкам — для подсветки чипов на карточках.
+        collectInto(preferences.ttsEngine, _ttsEngine)
+        collectInto(modelManager.sttByLanguage, _sttByLanguage)
+        collectInto(modelManager.ttsByLanguage, _ttsByLanguage)
+    }
+
+    /** Подписка потока [source] с прямой записью каждого значения в [target]. */
+    private fun <T> collectInto(source: Flow<T>, target: MutableStateFlow<T>) {
         viewModelScope.launch {
-            // Движок TTS — та же настройка, что на экране «Настройки».
-            preferences.ttsEngine.collect { engine ->
-                _ttsEngine.value = engine
-            }
-        }
-        viewModelScope.launch {
-            // Назначения STT по языкам — для подсветки чипов на карточках.
-            modelManager.sttByLanguage.collect { map ->
-                _sttByLanguage.value = map
-            }
-        }
-        viewModelScope.launch {
-            // Назначения Piper TTS по языкам — чипы на PIPER-карточках (issue #50).
-            modelManager.ttsByLanguage.collect { map ->
-                _ttsByLanguage.value = map
-            }
+            source.collect { value -> target.value = value }
         }
     }
 

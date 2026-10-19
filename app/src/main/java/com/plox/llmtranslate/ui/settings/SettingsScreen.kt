@@ -35,6 +35,7 @@ import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.TtsEngines
 import com.plox.llmtranslate.domain.model.visibleTtsEngineIds
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -79,34 +80,25 @@ class SettingsViewModel @Inject constructor(
     val uiState: StateFlow<SettingsUiState> = _uiState
 
     init {
-        viewModelScope.launch {
-            modelManager.catalog.collect { cards ->
-                _uiState.value = _uiState.value.copy(catalog = cards)
-            }
+        // Все настройки наблюдаются одинаково: значение потока пишется в
+        // соответствующее поле состояния (общий каркас — [watch]).
+        watch(modelManager.catalog) { state, cards -> state.copy(catalog = cards) }
+        watch(preferences.ttsEngine) { state, engine -> state.copy(ttsEngine = engine) }
+        watch(preferences.uiLanguage) { state, lang -> state.copy(uiLanguage = lang) }
+        watch(preferences.theme) { state, theme -> state.copy(theme = theme) }
+        watch(preferences.unloadTimeoutMinutes) { state, minutes ->
+            state.copy(unloadTimeoutMinutes = minutes)
         }
-        viewModelScope.launch {
-            preferences.ttsEngine.collect { engine ->
-                _uiState.value = _uiState.value.copy(ttsEngine = engine)
-            }
+        watch(preferences.modelDirectionRetention) { state, retention ->
+            state.copy(directionRetention = retention)
         }
+    }
+
+    /** Подписка потока настройки на запись в [uiState] без потери остальных полей. */
+    private fun <T> watch(source: Flow<T>, assign: (SettingsUiState, T) -> SettingsUiState) {
         viewModelScope.launch {
-            preferences.uiLanguage.collect { lang ->
-                _uiState.value = _uiState.value.copy(uiLanguage = lang)
-            }
-        }
-        viewModelScope.launch {
-            preferences.theme.collect { theme ->
-                _uiState.value = _uiState.value.copy(theme = theme)
-            }
-        }
-        viewModelScope.launch {
-            preferences.unloadTimeoutMinutes.collect { minutes ->
-                _uiState.value = _uiState.value.copy(unloadTimeoutMinutes = minutes)
-            }
-        }
-        viewModelScope.launch {
-            preferences.modelDirectionRetention.collect { retention ->
-                _uiState.value = _uiState.value.copy(directionRetention = retention)
+            source.collect { value ->
+                _uiState.value = assign(_uiState.value, value)
             }
         }
     }
@@ -148,6 +140,13 @@ class SettingsViewModel @Inject constructor(
     }
 }
 
+/** Подписи TTS-движков в карточке настройки (идентификатор → строковый ресурс). */
+private val TTS_ENGINE_LABELS = mapOf(
+    TtsEngines.SYSTEM to R.string.settings_tts_system,
+    TtsEngines.RHVOICE to R.string.settings_tts_rhvoice,
+    TtsEngines.ESPEAK to R.string.settings_tts_espeak
+)
+
 /**
  * Экран «Настройки»: TTS-движок, язык интерфейса, тема, выгрузка моделей,
  * поведение при смене направления перевода.
@@ -173,17 +172,12 @@ fun SettingsScreen(
 
         // TTS-движок: скрытые карточки каталога (hidden, issue #55) движки
         // не предлагают; уже выбранный движок остаётся в списке всегда.
-        val ttsLabelRes = mapOf(
-            TtsEngines.SYSTEM to R.string.settings_tts_system,
-            TtsEngines.RHVOICE to R.string.settings_tts_rhvoice,
-            TtsEngines.ESPEAK to R.string.settings_tts_espeak
-        )
         OptionCard(
             titleRes = R.string.settings_tts_engine,
             selected = state.ttsEngine,
             onSelect = viewModel::onTtsEngineChange,
             options = visibleTtsEngineIds(state.catalog, state.ttsEngine)
-                .map { engine -> engine to stringResource(ttsLabelRes.getValue(engine)) }
+                .map { engine -> engine to stringResource(TTS_ENGINE_LABELS.getValue(engine)) }
         )
 
         // Язык интерфейса.

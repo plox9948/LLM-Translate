@@ -14,9 +14,9 @@ import com.plox.llmtranslate.domain.model.userMessage
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import com.plox.llmtranslate.domain.runtime.trackEnginePreference
+import com.plox.llmtranslate.ui.launchGuarded
 import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -166,14 +166,13 @@ class FavoritesViewModel @Inject constructor(
 
     /** Убрать запись из избранного (звезда в карточке). */
     fun removeFavorite(entry: FavoriteEntry) {
-        viewModelScope.launch {
-            try {
-                favoritesRepository.remove(entry.sourceLang, entry.targetLang, entry.inputText)
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                Timber.e(e, "Не удалось убрать запись из избранного id=${entry.id}")
-                _errorMessageRes.value = R.string.favorites_update_failed
-            }
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.favorites_update_failed,
+            errorState = _errorMessageRes,
+            logMessage = "Не удалось убрать запись из избранного id=${entry.id}"
+        ) {
+            favoritesRepository.remove(entry.sourceLang, entry.targetLang, entry.inputText)
         }
     }
 

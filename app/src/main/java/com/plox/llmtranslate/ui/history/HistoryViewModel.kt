@@ -8,13 +8,11 @@ import com.plox.llmtranslate.data.model.TranslationHistoryRepository
 import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.domain.model.PendingTranslationHolder
 import com.plox.llmtranslate.domain.model.TranslationHistoryEntry
+import com.plox.llmtranslate.ui.launchGuarded
 import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
-import timber.log.Timber
 import javax.inject.Inject
 
 /**
@@ -64,16 +62,15 @@ class HistoryViewModel @Inject constructor(
 
     /** Переключить избранность записи истории (звезда в карточке). */
     fun toggleFavorite(entry: TranslationHistoryEntry) {
-        viewModelScope.launch {
-            try {
-                favoritesRepository.toggle(
-                    entry.sourceLang, entry.targetLang, entry.inputText, entry.resultText
-                )
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                Timber.e(e, "Не удалось переключить избранность записи истории")
-                _errorMessageRes.value = R.string.favorites_update_failed
-            }
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.favorites_update_failed,
+            errorState = _errorMessageRes,
+            logMessage = "Не удалось переключить избранность записи истории"
+        ) {
+            favoritesRepository.toggle(
+                entry.sourceLang, entry.targetLang, entry.inputText, entry.resultText
+            )
         }
     }
 
@@ -86,26 +83,24 @@ class HistoryViewModel @Inject constructor(
     }
 
     fun deleteEntry(id: Long) {
-        viewModelScope.launch {
-            try {
-                repository.delete(id)
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                Timber.e(e, "Не удалось удалить запись истории id=$id")
-                _errorMessageRes.value = R.string.history_delete_failed
-            }
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.history_delete_failed,
+            errorState = _errorMessageRes,
+            logMessage = "Не удалось удалить запись истории id=$id"
+        ) {
+            repository.delete(id)
         }
     }
 
     fun clearAll() {
-        viewModelScope.launch {
-            try {
-                repository.clear()
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                Timber.e(e, "Не удалось очистить историю")
-                _errorMessageRes.value = R.string.history_clear_failed
-            }
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.history_clear_failed,
+            errorState = _errorMessageRes,
+            logMessage = "Не удалось очистить историю"
+        ) {
+            repository.clear()
         }
     }
 

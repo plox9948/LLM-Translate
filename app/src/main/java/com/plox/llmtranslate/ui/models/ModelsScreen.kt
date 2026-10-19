@@ -47,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -206,17 +207,17 @@ fun ModelsScreen(
                 Spacer(modifier = Modifier.height(8.dp))
             }
             Row(modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
+                OutlinedActionButton(
+                    icon = Icons.Filled.FileUpload,
+                    labelRes = R.string.models_backup,
                     onClick = { viewModel.onBackupExportClick() },
                     modifier = Modifier.weight(1f),
                     enabled = !uiState.isBusy
-                ) {
-                    Icon(Icons.Filled.FileUpload, contentDescription = null)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(stringResource(R.string.models_backup))
-                }
+                )
                 Spacer(modifier = Modifier.width(8.dp))
-                OutlinedButton(
+                OutlinedActionButton(
+                    icon = Icons.Filled.FileDownload,
+                    labelRes = R.string.models_restore,
                     onClick = {
                         backupImportLauncher.launch(
                             arrayOf("application/zip", "application/x-zip-compressed", "*/*")
@@ -224,11 +225,7 @@ fun ModelsScreen(
                     },
                     modifier = Modifier.weight(1f),
                     enabled = !uiState.isBusy
-                ) {
-                    Icon(Icons.Filled.FileDownload, contentDescription = null)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(stringResource(R.string.models_restore))
-                }
+                )
             }
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -299,26 +296,15 @@ fun ModelsScreen(
                 // назначения или с сентинелем "system". Радиокнопка глобального
                 // движка (настройка ttsEngine: пакет SYSTEM/RHVOICE/eSpeak)
                 // живёт отдельным состоянием ttsEngineSelected и не меняется.
-                val isPiperTts = card.category == ModelCategory.TTS &&
-                    card.runtime == RuntimeType.PIPER_ONNX
-                val isSystemTts = card.category == ModelCategory.TTS &&
-                    card.runtime == RuntimeType.SYSTEM_TTS
-                val ttsEngineSelected = card.runtime.ttsEngineId() != null &&
-                    card.runtime.ttsEngineId() == ttsEngine
-                val ttsAssignedAny = ttsChipLanguages(card).any {
-                    ttsByLanguage[it] == card.id
-                }
-                val systemTtsActive = isSystemTts &&
-                    ttsChipLanguages(card).any { lang ->
-                        val assigned = ttsByLanguage[lang]
-                        assigned == null || assigned == TtsModelSelector.SYSTEM_SENTINEL
-                    }
-                val isActive = when (card.category) {
-                    // Явные скобки (ревью): && связывается сильнее ||, но
-                    // группировка улучшает читаемость и безопаснее при правках.
-                    ModelCategory.TTS -> (isPiperTts && ttsAssignedAny) || systemTtsActive
-                    else -> activeId == card.id
-                }
+                // Вся TTS-логика карточки — в чистой функции [ttsCardState].
+                val tts = ttsCardState(
+                    card = card,
+                    installedReady = installedModel?.isReady == true,
+                    ttsEngine = ttsEngine,
+                    ttsByLanguage = ttsByLanguage
+                )
+                val isActive =
+                    if (card.category == ModelCategory.TTS) tts.selected else activeId == card.id
                 val check = deviceInfo?.let { viewModel.checkInstall(card, it) }
                 // Чипы «язык распознавания» — только на установленных STT-карточках
                 // по языкам самой модели (issue #28).
@@ -331,27 +317,7 @@ fun ModelsScreen(
                 }
                 val sttAssignedLanguages =
                     sttChips.filter { sttByLanguage[it] == card.id }.toSet()
-                // Чипы «язык озвучивания» — на скачиваемых PIPER-карточках
-                // и на карточке Системного Android TTS (issues #50, #53):
-                // RHVOICE/eSpeak-ярлыки чипов не имеют, STT-чипы в TTS-секцию
-                // не попадают (условие выше — только STT-карточки).
-                val ttsChips = ttsChipLanguages(card)
-                val ttsModelReady = isPiperTts && installedModel?.isReady == true
-                // Чипы системной карточки кликабельны всегда — скачивать нечего.
-                val ttsChipsEnabled = ttsModelReady || isSystemTts
-                val ttsAssignedLanguages = if (isSystemTts) {
-                    // «Выбран» для Системного TTS: язык без назначения
-                    // (значение по умолчанию) или явный сентинель "system".
-                    ttsChips.filter { lang ->
-                        val assigned = ttsByLanguage[lang]
-                        assigned == null || assigned == TtsModelSelector.SYSTEM_SENTINEL
-                    }.toSet()
-                } else {
-                    ttsChips.filter {
-                        ttsModelReady && ttsByLanguage[it] == card.id
-                    }.toSet()
-                }
-                // Чип «Нужно для RU→EN»: карточка не хватает для последнего
+                // Чипы «Нужно для RU→EN»: карточка не хватает для последнего
                 // направления перевода (issue #33).
                 val requiredChipLabel = uiState.requiredChips[card.id]?.let { direction ->
                     stringResource(R.string.models_required_for, direction)
@@ -373,10 +339,10 @@ fun ModelsScreen(
                     check = check,
                     sttChips = sttChips,
                     sttAssignedLanguages = sttAssignedLanguages,
-                    ttsChips = ttsChips,
-                    ttsAssignedLanguages = ttsAssignedLanguages,
-                    ttsChipsEnabled = ttsChipsEnabled,
-                    ttsEngineSelected = ttsEngineSelected,
+                    ttsChips = tts.chips,
+                    ttsAssignedLanguages = tts.assignedLanguages,
+                    ttsChipsEnabled = tts.chipsEnabled,
+                    ttsEngineSelected = tts.engineSelected,
                     requiredChipLabel = requiredChipLabel,
                     actionsLocked = actionsLocked,
                     downloadPending = downloadPending,
@@ -644,7 +610,6 @@ private fun ModelCardItem(
                 // этой кнопкой или в настройках. Радиокнопок перевода и STT нет:
                 // модель перевода выбирается автоматически по направлению,
                 // STT — по языкам (issues #28, #29).
-                val canSelect = isTtsEngine || installedModel?.isReady == true
                 if (isTtsEngine) {
                     Box(
                         modifier = Modifier
@@ -652,7 +617,6 @@ private fun ModelCardItem(
                             .clip(CircleShape)
                             .selectable(
                                 selected = ttsEngineSelected,
-                                enabled = canSelect,
                                 role = Role.RadioButton,
                                 onClick = onActive
                             ),
@@ -802,23 +766,21 @@ private fun ModelCardItem(
                         )
                     }
                     installedModel == null -> {
-                        Button(
+                        DownloadButton(
+                            labelRes = R.string.download,
                             onClick = onDownload,
                             enabled = !downloadPending,
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Filled.Download, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(stringResource(R.string.download))
-                        }
+                        )
                         // Импорт уже готового файла модели (zip экспорта этой же
                         // программы или одиночный файл) вместо скачивания (issue #28).
                         Spacer(modifier = Modifier.width(8.dp))
-                        OutlinedButton(onClick = onImport, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Filled.FileDownload, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(stringResource(R.string.models_import))
-                        }
+                        OutlinedActionButton(
+                            icon = Icons.Filled.FileDownload,
+                            labelRes = R.string.models_import,
+                            onClick = onImport,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                     installedModel.status == ModelStatus.DOWNLOADING -> {
                         OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
@@ -828,28 +790,21 @@ private fun ModelCardItem(
                     installedModel.status == ModelStatus.ERROR -> {
                         // Повторное скачивание после ошибки — тот же запуск,
                         // что у обычного «Скачать» (без предварительного удаления).
-                        Button(
+                        DownloadButton(
+                            labelRes = R.string.models_retry_download,
                             onClick = onDownload,
                             enabled = !downloadPending,
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Filled.Download, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(stringResource(R.string.models_retry_download))
-                        }
+                        )
                         // Удаление остаётся доступным: «Экспорт» для ERROR
                         // модели бесполезен (не готова), «Удалить» — способ
                         // убрать битую запись, если повтор снова не помог.
                         Spacer(modifier = Modifier.width(8.dp))
-                        OutlinedButton(
+                        DeleteButton(
                             onClick = onDelete,
                             enabled = !actionsLocked,
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Filled.Delete, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(stringResource(R.string.models_delete))
-                        }
+                        )
                     }
                     else -> {
                         // Кнопка «Выбрать» осталась только у TTS-движков (ярлыков):
@@ -864,25 +819,19 @@ private fun ModelCardItem(
                             if (isTtsEngine) {
                                 Spacer(modifier = Modifier.width(8.dp))
                             }
-                            OutlinedButton(
+                            OutlinedActionButton(
+                                icon = Icons.Filled.FileUpload,
+                                labelRes = R.string.models_export,
                                 onClick = onExport,
                                 enabled = !actionsLocked,
                                 modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Filled.FileUpload, contentDescription = null)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(stringResource(R.string.models_export))
-                            }
+                            )
                             Spacer(modifier = Modifier.width(8.dp))
-                            OutlinedButton(
+                            DeleteButton(
                                 onClick = onDelete,
                                 enabled = !actionsLocked,
                                 modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Filled.Delete, contentDescription = null)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(stringResource(R.string.models_delete))
-                            }
+                            )
                         }
                     }
                 }
@@ -924,6 +873,54 @@ private fun ModelCardItem(
         }
     }
 }
+
+/**
+ * Основная кнопка «Скачать»/«Повторить» с иконкой загрузки — общий каркас
+ * обычной загрузки и повтора после ошибки.
+ */
+@Composable
+private fun DownloadButton(
+    @StringRes labelRes: Int,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier
+) {
+    Button(onClick = onClick, enabled = enabled, modifier = modifier) {
+        Icon(Icons.Filled.Download, contentDescription = null)
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(stringResource(labelRes))
+    }
+}
+
+/** Контурная кнопка действия с иконкой и подписью (общий каркас кнопок карточек). */
+@Composable
+private fun OutlinedActionButton(
+    icon: ImageVector,
+    @StringRes labelRes: Int,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier
+) {
+    OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier) {
+        Icon(icon, contentDescription = null)
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(stringResource(labelRes))
+    }
+}
+
+/** Кнопка «Удалить» — общий каркас (иконка корзины + подпись). */
+@Composable
+private fun DeleteButton(
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier
+) = OutlinedActionButton(
+    icon = Icons.Filled.Delete,
+    labelRes = R.string.models_delete,
+    onClick = onClick,
+    enabled = enabled,
+    modifier = modifier
+)
 
 /**
  * Строка чипов «язык назначения» (общий каркас чипов STT и TTS): подпись,
@@ -1011,6 +1008,59 @@ private fun ttsChipLanguages(card: ModelCard): List<String> =
     } else {
         emptyList()
     }
+
+/**
+ * Состояние TTS-карточки (issues #50, #53): подсветка «выбрана», чипы языков
+ * озвучивания, их доступность и подсветка радиокнопки глобального движка.
+ * Чистая логика — вынесена из цикла карточек для читаемости; для карточек
+ * не-TTS возвращает значения по умолчанию.
+ */
+private data class TtsCardState(
+    /** Карточка подсветить как выбранную (Piper назначена языку / системный активен). */
+    val selected: Boolean,
+    val chips: List<String>,
+    val chipsEnabled: Boolean,
+    val engineSelected: Boolean,
+    val assignedLanguages: Set<String>
+)
+
+private fun ttsCardState(
+    card: ModelCard,
+    installedReady: Boolean,
+    ttsEngine: String,
+    ttsByLanguage: Map<String, String>
+): TtsCardState {
+    val chips = ttsChipLanguages(card)
+    val engineId = card.runtime.ttsEngineId()
+    val engineSelected = engineId != null && engineId == ttsEngine
+    val isPiperTts = card.category == ModelCategory.TTS &&
+        card.runtime == RuntimeType.PIPER_ONNX
+    val isSystemTts = card.category == ModelCategory.TTS &&
+        card.runtime == RuntimeType.SYSTEM_TTS
+    // «Выбран» для Системного TTS: язык без назначения (значение по
+    // умолчанию) или явный сентинель "system".
+    val systemLanguages = chips.filter { lang ->
+        val assigned = ttsByLanguage[lang]
+        assigned == null || assigned == TtsModelSelector.SYSTEM_SENTINEL
+    }.toSet()
+    val modelReady = isPiperTts && installedReady
+    return TtsCardState(
+        // Подсветка (issue #53): Piper назначена хотя бы одному языку своего
+        // чипа; Системный TTS работает хотя бы для одного языка. Явные скобки
+        // (ревью): && связывается сильнее ||, но группировка безопаснее при правках.
+        selected = (isPiperTts && chips.any { ttsByLanguage[it] == card.id }) ||
+            (isSystemTts && systemLanguages.isNotEmpty()),
+        chips = chips,
+        // Чипы системной карточки кликабельны всегда — скачивать нечего.
+        chipsEnabled = modelReady || isSystemTts,
+        engineSelected = engineSelected,
+        assignedLanguages = if (isSystemTts) {
+            systemLanguages
+        } else {
+            chips.filter { modelReady && ttsByLanguage[it] == card.id }.toSet()
+        }
+    )
+}
 
 @Composable
 internal fun formatBytes(bytes: Long): String {

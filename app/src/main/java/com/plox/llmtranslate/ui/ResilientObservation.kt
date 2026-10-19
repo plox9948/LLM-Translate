@@ -43,3 +43,28 @@ internal fun <T> observeResilient(
         }
     }
 }
+
+/**
+ * Запуск репозиторной операции с guard (ревью #65): сбой Room не роняет
+ * процесс — ошибка логируется и пишется в [errorState] как id строкового
+ * ресурса (sticky до скрытия в UI). [CancellationException] пробрасывается
+ * как есть. Общий каркас try/catch+Timber операций ViewModel («История»,
+ * «Избранное»).
+ */
+internal fun launchGuarded(
+    scope: CoroutineScope,
+    @StringRes messageRes: Int,
+    errorState: MutableStateFlow<Int?>,
+    logMessage: String,
+    block: suspend () -> Unit
+) {
+    scope.launch {
+        try {
+            block()
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Timber.e(e, logMessage)
+            errorState.value = messageRes
+        }
+    }
+}
