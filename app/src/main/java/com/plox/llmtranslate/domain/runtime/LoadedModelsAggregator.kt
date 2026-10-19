@@ -21,8 +21,16 @@ object LoadedModelsAggregator {
      * @return сплющенный список всех загруженных моделей в порядке движков;
      *   эмитируется при любом изменении любого из состояний.
      */
-    fun merge(engines: List<StateFlow<List<LoadedModelInfo>>>): Flow<List<LoadedModelInfo>> =
-        combine(engines) { values: Array<out List<LoadedModelInfo>> ->
+    fun merge(engines: List<StateFlow<List<LoadedModelInfo>>>): Flow<List<LoadedModelInfo>> {
+        // Ревью #83: явная диагностика вместо «List is empty» из combine —
+        // пустой список движков означает ошибку сборки роутера, а не штатный
+        // «все движки разгружены» (штатный случай — движки с пустыми состояниями).
+        require(engines.isNotEmpty()) {
+            "LoadedModelsAggregator.merge вызван со списком из 0 движков — " +
+                "агрегировать состояния не из чего"
+        }
+        return combine(engines) { values: Array<out List<LoadedModelInfo>> ->
             values.flatMap { it }
         }
+    }
 }

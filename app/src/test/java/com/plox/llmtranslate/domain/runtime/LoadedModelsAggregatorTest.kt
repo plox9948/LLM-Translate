@@ -14,6 +14,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 /**
@@ -316,5 +318,21 @@ class LoadedModelsAggregatorTest {
             ),
             merged
         )
+    }
+
+    @Test
+    fun `merge rejects empty engines list with explicit diagnostics`() {
+        // Ревью #83: вместо «List is empty» из combine — понятное сообщение
+        // об ошибке сборки роутера (штатный случай «все разгружены» — движки
+        // с пустыми состояниями, а не пустой список движков).
+        try {
+            LoadedModelsAggregator.merge(emptyList())
+            fail("ожидался IllegalArgumentException для пустого списка движков")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(
+                "неожиданное сообщение: " + expected.message,
+                expected.message!!.contains("0 движков")
+            )
+        }
     }
 }

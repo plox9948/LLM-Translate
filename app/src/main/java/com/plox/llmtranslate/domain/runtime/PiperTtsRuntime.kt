@@ -26,6 +26,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -99,9 +101,15 @@ class PiperTtsRuntime @Inject constructor(
      */
     val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
 
-    /** Флаг отмены активного озвучивания ([stop]); пишется из любого потока. */
-    @Volatile
-    private var stopRequested = false
+    /**
+     * Гейт поколений озвучивания (ревью #83): прежний boolean-флаг терялся
+     * при конкурентных [stop]/[speak] — новая фраза сбрасывала флаг, а
+     * отменённая прежняя выставляла его снова и молча убивала воспроизведение
+     * новой фразы с «успешным» результатом. [speak] резервирует поколение до
+     * старта, [stop] снимает текущее на момент вызова и все прежние, [playPcm]
+     * проверяет своё поколение — сброс флага новой фразой отсутствует.
+     */
+    private val stopGate = PiperStopGate()
 
     /** Активный AudioTrack для остановки озвучивания из [stop]; volatile — доступ из разных потоков. */
     @Volatile
@@ -120,15 +128,18 @@ class PiperTtsRuntime @Inject constructor(
             // playPcm выполняется под [engineMutex] всю фазу воспроизведения
             // (перенос вне мьютекса рискован для stop-семантики с activeTrack,
             // ревью). Чтобы смена каталога не ждала конца озвучки, гасим её
-            // флагом прерывания заранее: циклы playPcm проверяют
-            // [stopRequested] на каждом чанке/дренаже и освобождают мьютекс
-            // досрочно (тот же путь, что [releaseModel]/[release]).
+            // заранее: циклы playPcm проверяют снятие поколения [stopGate] на
+            // каждом чанке/дренаже и освобождают мьютекс досрочно (тот же
+            // путь, что [releaseModel]/[release]).
+            // Ревью #83: сравнение по каноническому пути — один и тот же
+            // каталог, адресованный разными записями (symlink, «..»), имел бы
+            // разные absolutePath и ложно считался сменой модели.
+            val path = canonicalPath(modelDir)
             val existing = loaded
-            if (existing != null && existing.dirPath != modelDir.absolutePath) {
+            if (existing != null && existing.dirPath != path) {
                 stop()
             }
             engineMutex.withLock {
-                val path = modelDir.absolutePath
                 val current = loaded
                 if (current != null && current.dirPath == path) {
                     // No-op повторной загрузки того же каталога: метаданные
@@ -214,7 +225,10 @@ class PiperTtsRuntime @Inject constructor(
         onDone: (() -> Unit)? = null
     ): RuntimeError? {
         if (loaded == null) return RuntimeError.ModelNotReady
-        stopRequested = false
+        // Ревью #83: поколение этой фразы резервируется до старта; stop()
+        // снимет поколения, актуальные на момент вызова, а новая фраза
+        // флаг не сбрасывает.
+        val myGeneration = stopGate.reserve()
 
         var started = false
         val result = try {
@@ -234,7 +248,7 @@ class PiperTtsRuntime @Inject constructor(
                     }
                     currentCoroutineContext().ensureActive()
                     started = true
-                    playPcm(audio.samples, audio.sampleRate)
+                    playPcm(audio.samples, audio.sampleRate, myGeneration)
                     null
                 }
             }
@@ -254,7 +268,7 @@ class PiperTtsRuntime @Inject constructor(
      * воспроизведение обрывается сразу).
      */
     fun stop() {
-        stopRequested = true
+        stopGate.stopAll()
         activeTrack?.let { track ->
             try {
                 track.stop()
@@ -265,18 +279,23 @@ class PiperTtsRuntime @Inject constructor(
     }
 
     /**
-     * Разгрузить движок: сбрасывает активное озвучивание и асинхронно
-     * освобождает нативный OfflineTts под мьютексом (ожидает окончания
-     * активного синтеза — use-after-free исключён).
+     * Разгрузить движок: гасит активное озвучивание и освобождает нативный
+     * OfflineTts под [engineMutex] (ожидает окончания активного синтеза —
+     * use-after-free исключён).
+     *
+     * Ревью #83: путь suspend и сериализован тем же [engineMutex] с
+     * параллельными [load]/[speak]. Прежний fire-and-forget `scope.launch`
+     * мог не диспатчиться до конкурентного [load] — тогда release, забрав
+     * мьютекс ПОСЛЕ загрузки, освобождал бы свежий пучок вместо старого.
+     * Остановку озвучивания делаем синхронно до ожидания мьютекса: тишина
+     * наступает сразу, даже когда синтез держит мьютекс.
      */
-    fun release() {
+    suspend fun release() {
         stop()
-        scope.launch(Dispatchers.IO) {
-            engineMutex.withLock {
-                loaded?.releaseNative()
-                loaded = null
-                publishLoadedUnlocked()
-            }
+        engineMutex.withLock {
+            loaded?.releaseNative()
+            loaded = null
+            publishLoadedUnlocked()
         }
     }
 
@@ -312,6 +331,17 @@ class PiperTtsRuntime @Inject constructor(
         _loadedModels.value = loaded?.let { listOf(it.info) } ?: emptyList()
     }
 
+    /**
+     * Канонический путь каталога модели (ревью #83); при сбое [File.canonicalPath]
+     * (IO) — [File.absolutePath] как резервный вариант сравнения.
+     */
+    private fun canonicalPath(file: File): String = try {
+        file.canonicalPath
+    } catch (e: IOException) {
+        Timber.w(e, "Не удалось получить canonicalPath, сравнение по absolutePath: ${file.path}")
+        file.absolutePath
+    }
+
     /** Освободить нативный OfflineTts пучка (ошибки — только в лог). */
     private fun LoadedPiper.releaseNative() {
         try {
@@ -323,7 +353,8 @@ class PiperTtsRuntime @Inject constructor(
 
     /**
      * Записать PCM-чанки в AudioTrack (MODE_STREAM, 16-бит, моно) с
-     * проверкой отмены корутины и флага [stopRequested] на каждом чанке.
+     * проверкой отмены корутины и снятия поколения фразы ([stopGate]) на каждом
+     * чанке.
      *
      * После нормального завершения записи выполняется дренаж буфера (issue #51):
      * трек остаётся в PLAYING, ожидание до [DRAIN_TIMEOUT_MS] с опросом каждые
@@ -331,14 +362,16 @@ class PiperTtsRuntime @Inject constructor(
      * догоняет записанные кадры ([AudioTrack.getPlaybackHeadPosition] >=
      * записано) ИЛИ трек сам переходит из PLAYING в STOPPED (в MODE_STREAM при
      * исчерпании записанных данных) — иначе последние ~чанка (~180 мс)
-     * «проглатываются» stop()/release() в finally. [stopRequested] или
-     * истечение таймаута — мгновенный выход из цикла. При IllegalStateException
-     * у getter'а дренаж пропускается (защита от зависания). [stopRequested]
-     * (или отмена корутины, или written<=0 в цикле записи) пропускает дренаж:
-     * [stop] уже останавливает трек немедленно.
+     * «проглатываются» stop()/release() в finally. Снятое поколение фразы
+     * ([stopGate], ревью #83) или истечение таймаута — мгновенный выход из
+     * цикла. При IllegalStateException у getter'а дренаж пропускается (защита
+     * от зависания). Снятое поколение (или отмена корутины, или written<=0 в
+     * цикле записи) пропускает дренаж: [stop] уже останавливает трек
+     * немедленно.
+     * @param myGeneration поколение фразы, резервированное в [speak].
      * @return null; ошибки записи — только в лог (обрыв не считается ошибкой синтеза).
      */
-    private suspend fun playPcm(samples: FloatArray, sampleRate: Int) {
+    private suspend fun playPcm(samples: FloatArray, sampleRate: Int, myGeneration: Int) {
         if (samples.isEmpty()) return
         val minBuffer = AudioTrack.getMinBufferSize(
             sampleRate,
@@ -381,12 +414,12 @@ class PiperTtsRuntime @Inject constructor(
             var framesWritten = 0L
             var writeAborted = false
             while (offset < samples.size) {
-                if (stopRequested) break
+                if (stopGate.isStopped(myGeneration)) break
                 currentCoroutineContext().ensureActive()
                 val count = minOf(PCM_CHUNK_SAMPLES, samples.size - offset)
                 val pcm = toPcm16(samples, offset, count)
-                // write блокирует пока буфер полон; stop() из stop() выводит
-                // его раньше — цикл завершится по флагу на следующей итерации.
+                // write блокирует пока буфер полон; stop() гасит трек и снимает
+                // поколение — цикл завершится на следующей итерации.
                 val written = track.write(pcm, 0, count)
                 if (written <= 0) {
                     Timber.w("AudioTrack.write вернул $written — озвучивание прервано")
@@ -404,12 +437,12 @@ class PiperTtsRuntime @Inject constructor(
             // выводится. Трек остаётся в PLAYING; полный вывод определяется по
             // head >= framesWritten или переходу трека из PLAYING в STOPPED
             // (в MODE_STREAM происходит автоматически при исчерпании данных).
-            if (!stopRequested && !writeAborted && framesWritten > 0) {
+            if (!stopGate.isStopped(myGeneration) && !writeAborted && framesWritten > 0) {
                 try {
                     val deadline = System.currentTimeMillis() + DRAIN_TIMEOUT_MS
                     while (true) {
                         currentCoroutineContext().ensureActive()
-                        if (stopRequested) break
+                        if (stopGate.isStopped(myGeneration)) break
                         val head = track.playbackHeadPosition.toLong()
                         // Полный вывод: головка догнала записанные кадры ИЛИ
                         // трек сам перешёл из PLAYING в STOPPED (в MODE_STREAM
@@ -491,4 +524,39 @@ class PiperTtsRuntime @Inject constructor(
             espeakDataPath = espeak?.absolutePath.orEmpty()
         )
     }
+}
+
+/**
+ * Гейт поколений озвучивания Piper TTS (ревью #83, выделен для unit-теста).
+ *
+ * Проблема прежней реализации: глобальный boolean-флаг отмены — новая фраза
+ * сбрасывала его при старте, а завершающаяся/отменённая прежняя фраза
+ * (путь catch в speak, конкурентный stop из UI) выставляла снова:
+ * воспроизведение новой фразы молча не запускалось, возвращая «успех».
+ *
+ * Решение: монотонные счётчики поколений. [reserve] выдаёт номер фразы перед
+ * стартом; [stopAll] отмечает снятыми все поколения, актуальные на момент
+ * вызова (включая только что зарезервированное — осознанная семантика «стоп
+ * сейчас играющего»); [isStopped] проверяет конкретное поколение фразы,
+ * поэтому отмена старой фразы не затрагивает новую, резервированную позже
+ * stop-вызова.
+ */
+internal class PiperStopGate {
+
+    /** Номер последнего зарезервированного озвучивания. */
+    private val playSeq = AtomicInteger(0)
+
+    /** Максимальное снятое поколение: фразы с номером <= нему остановлены. */
+    private val stoppedSeq = AtomicInteger(0)
+
+    /** Зарезервировать поколение нового озвучивания. */
+    fun reserve(): Int = playSeq.incrementAndGet()
+
+    /** Снять все поколения, актуальные на текущий момент. */
+    fun stopAll() {
+        stoppedSeq.set(playSeq.get())
+    }
+
+    /** Снято ли поколение [myGeneration] (или его старт был бы остановлен). */
+    fun isStopped(myGeneration: Int): Boolean = stoppedSeq.get() >= myGeneration
 }

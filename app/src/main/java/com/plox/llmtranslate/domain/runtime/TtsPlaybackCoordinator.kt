@@ -407,7 +407,8 @@ class TtsPlaybackCoordinator @Inject constructor(
             Timber.w("Автоскачивание Piper-модели $cardId отменено: нет сети")
             return
         }
-        pendingRetry = PendingRetry(text, language)
+        val retry = PendingRetry(text, language)
+        pendingRetry = retry
         watchedDownloadId = cardId
         val watchGen = watchGeneration.incrementAndGet()
         // Наблюдение ставится до асинхронного upsert-а записи (startDownload
@@ -432,6 +433,31 @@ class TtsPlaybackCoordinator @Inject constructor(
             ) {
                 handleWatchedDownload(piperModels)
             }
+        }
+        // Ревью #83 (check-then-act): stop()/новая фраза могли вклиниться между
+        // проверкой токена в начале и присваиваниями watch/pendingRetry — та
+        // проверка их не покрыла. Повторно сверяем токен и снимаем ТОЛЬКО
+        // свою сцену: pendingRetry по идентичности экземпляра (чужой новой
+        // сцены не трогаем), watch — по cardId, статус — по совпадению id;
+        // grace-таймер гасится инкрементом поколения.
+        if (token != utteranceToken.get()) {
+            synchronized(watchLock) {
+                if (pendingRetry === retry) pendingRetry = null
+                if (watchedDownloadId == cardId) watchedDownloadId = null
+            }
+            watchGeneration.incrementAndGet()
+            _status.update {
+                if (it.downloadModelId == cardId) {
+                    it.copy(
+                        downloadModelId = null,
+                        downloadStatus = TtsDownloadStatus.NONE,
+                        downloadProgress = 0
+                    )
+                } else {
+                    it
+                }
+            }
+            Timber.d("Watch-сцена фолбэка снята: фраза устарела во время установки наблюдения")
         }
     }
 
@@ -483,6 +509,11 @@ class TtsPlaybackCoordinator @Inject constructor(
                 downloadProgress = 0
             )
         }
+        // Ревью #83: прежняя незавершённая озвучка координатора снимается перед
+        // установкой новой — без cancel говоривший job перезаписывался и две
+        // озвучки жили одновременно (обе под реальным мьютексом Piper —
+        // вторая молча ждала, растягивая паузу).
+        speakJob?.cancel()
         speakJob = scope.launch {
             try {
                 // Авто-ретрай Piper (путь READY) — незавершённая системная фраза

@@ -40,9 +40,10 @@ class TtsRuntime @Inject constructor(
         private const val INIT_TIMEOUT_MS = 10_000L
     }
 
-    // Мутируемое состояние движка читается из speak()/stop()/release() вне
-    // initMutex (вызовы из UI-кординат и app-скоупа) — @Volatile гарантирует
-    // междупоточную видимость записи после инициализации под мьютексом.
+    // Мутируемое состояние движка читается из stop() вне initMutex (вызовы из
+    // UI-кординат и app-скоупа; speak()/release() сериализованы мьютексом,
+    // ревью #83) — @Volatile гарантирует междупоточную видимость записи после
+    // инициализации под мьютексом.
     @Volatile
     private var tts: TextToSpeech? = null
     @Volatile
@@ -75,7 +76,9 @@ class TtsRuntime @Inject constructor(
     suspend fun init(engine: String): RuntimeError? = initMutex.withLock {
         if (engine == lastEngine && tts != null && ready) return@withLock null
         // Смена движка (или повтор после сбоя) — освобождаем старый экземпляр.
-        release()
+        // init уже держит initMutex — прямой путь без повторного захвата
+        // (Mutex не реентерабелен, иначе deadlock).
+        releaseUnlocked()
         lastEngine = engine
         val enginePackage = resolveEnginePackage(engine)
         val initError = withTimeoutOrNull(INIT_TIMEOUT_MS) {
@@ -118,7 +121,7 @@ class TtsRuntime @Inject constructor(
         // withTimeoutOrNull вернул null по таймауту (или успешный null без ready —
         // маловероятная гонка): недозагруженный экземпляр выгружаем.
         Timber.e("TTS инициализация: таймаут подключения движка '$engine'")
-        release()
+        releaseUnlocked()
         return@withLock RuntimeError.LoadFailed("tts", "Таймаут инициализации TTS")
     }
 
@@ -271,8 +274,20 @@ class TtsRuntime @Inject constructor(
 
     /**
      * Разгрузить TTS и освободить память.
+     *
+     * Ревью #83: shutdown сериализован с [speak]/[init] мьютексом [initMutex] —
+     * прежний внесине-путь гонял с параллельным [speak]: фраза могла
+     * зарегистрировать utterance после drain (залипший флаг «озвучиваем») или
+     * работать на уже shutdown-экземпляре. Drain pending-колбэков сохранён
+     * без изменений.
      */
-    fun release() {
+    suspend fun release() = initMutex.withLock { releaseUnlocked() }
+
+    /**
+     * Освобождение под УЖЕ удерживаемым [initMutex] ([Mutex] не
+     * реентерабелен — [init] вызывает напрямую во избежание deadlock).
+     */
+    private fun releaseUnlocked() {
         tts?.shutdown()
         tts = null
         ready = false

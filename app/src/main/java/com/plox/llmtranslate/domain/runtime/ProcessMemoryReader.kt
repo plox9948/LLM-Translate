@@ -42,6 +42,10 @@ class ProcessMemoryReader @Inject constructor(
                 ?: return@withContext null
             val info = am.getProcessMemoryInfo(intArrayOf(Process.myPid()))?.firstOrNull()
                 ?: return@withContext null
+            // Ревью #83: контракт KDoc — 0 не является валидным значением;
+            // AMS на сбое/ограничении fproc нередко возвращает именно нулевой
+            // PSS, и раньше он отдавался как «процесс ест 0 МБ».
+            if (info.totalPss <= 0) return@withContext null
             info.totalPss / KB_IN_MB
         } catch (e: Exception) {
             Timber.w(e, "Не удалось прочитать PSS процесса")

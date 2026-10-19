@@ -137,18 +137,10 @@ class RuntimeRouter @Inject constructor(
         releaseSafely("IndicTrans") { indicTransOnnxRuntime.release() }?.let { deferredCancellation = it }
         releaseSafely("slimt") { slimtRuntime.release() }?.let { deferredCancellation = it }
         releaseSafely("sherpa") { sherpaSttEngine.release() }?.let { deferredCancellation = it }
-        // Piper release() не suspend: останавливает озвучку и асинхронно
-        // освобождает нативный OfflineTts под своим мьютексом (issue #52).
-        // Ревью #83: исключение из него не должно обрывать уже выполненный
-        // обход движков и терять сохранённую отмену — тот же контур, что
-        // [releaseSafely] для suspend-движков.
-        try {
-            piperTtsRuntime.release()
-        } catch (e: CancellationException) {
-            deferredCancellation = deferredCancellation ?: e
-        } catch (e: Exception) {
-            Timber.e(e, "Ошибка разгрузки Piper TTS")
-        }
+        // Ревью #83: Piper release() стал suspend и сериализован со своими
+        // load/speak мьютексом движка — общий контур [releaseSafely]
+        // (NonCancellable + таймаут + try/catch), отдельного try/catch не нужны.
+        releaseSafely("Piper") { piperTtsRuntime.release() }?.let { deferredCancellation = it }
         deferredCancellation?.let { throw it }
     }
 

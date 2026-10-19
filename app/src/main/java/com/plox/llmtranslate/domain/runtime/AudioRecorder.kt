@@ -264,10 +264,14 @@ class AudioRecorder @Inject constructor(
         const val BITS_PER_SAMPLE = 16
 
         /**
-         * Жёсткий потолок длительности записи, мс (issue #68): максимум
+         * Жёсткий потолок длительности записи, мс (issues #68, #83): максимум
          * осмысленного STT-сценария (3 минуты). При достижении цикл чтения
-         * прекращает приём данных, ViewModel выполняет авто-остановку с
-         * корректным завершением (сохранение WAV и распознавание).
+         * САМ финализирует сцену: закрывает WAV с патчем размеров, освобождает
+         * AudioRecord и эмиттирует recordingFlow=false — при мёртвом ViewModel
+         * (переход на другой таб снимает recordingLimitJob) микрофон иначе
+         * оставался занятым навсегда. Авто-остановка ViewModel сохранена: её
+         * stopRecording() получает сохранённый путь записи (см.
+         * [limitFinishedWavPath]).
          */
         const val MAX_RECORDING_MS = 180_000L
 
@@ -370,6 +374,16 @@ class AudioRecorder @Inject constructor(
     private var generation: AtomicBoolean? = null
 
     /**
+     * Путь WAV, авто-дозакрытого по потолку [MAX_RECORDING_MS] (issue #83):
+     * цикл чтения уже снял сцену, поэтому обычный [stopRecording] вернул бы
+     * null — первый вызов [stopRecording] отдаёт этот путь, распознавание
+     * ViewModel выполняется как обычно. Снимается стартом новой сцены и в
+     * [cancel] (файл при этом удаляется).
+     */
+    @Volatile
+    private var limitFinishedWavPath: String? = null
+
+    /**
      * Начать запись с микрофона.
      * Тяжёлая инициализация AudioRecord — вне блокировки; перевод состояния
      * в «записываем» (проверка активной записи, установка полей и поколения,
@@ -448,6 +462,10 @@ class AudioRecorder @Inject constructor(
                 return@synchronized true
             }
             audioRecord = record
+            // Новая запись инвалидирует WAV, дозакрытый по потолку старой
+            // сцены (issue #83): его больше никто не отдаст, удаляет orphan-
+            // очистка кэша.
+            limitFinishedWavPath = null
             // Поколение этой записи: цикл чтения ниже замыкает локальную ссылку
             // и выходит, когда stop()/cancel() снимают именно это поколение,
             // даже если к тому моменту уже стартовала новая запись.
@@ -481,7 +499,27 @@ class AudioRecorder @Inject constructor(
                 // обязан завершиться, а не читать освобождённый AudioRecord
                 // новой записи (IllegalStateException / гонка освобождения).
                 while (currentGeneration.get()) {
-                    val read = record.read(readBuffer, 0, readBuffer.size)
+                    // Ревью #83: на части OEM при смерти аудио-HAL read() не
+                    // возвращает код ошибки, а бросает IllegalStateException —
+                    // без try/catch исключение роняло весь readJob: индикатор
+                    // залипал (_recordingFlow оставался true), AudioRecord —
+                    // занят. Путь тот же, что для read<0 (finishAfterReadFailure;
+                    // снимает сцену только пока поколение наше).
+                    val read = try {
+                        record.read(readBuffer, 0, readBuffer.size)
+                    } catch (e: IllegalStateException) {
+                        Timber.e(e, "AudioRecord.read() бросил исключение — запись аварийно останавливается")
+                        if (currentGeneration.get()) {
+                            finishAfterReadFailure(currentGeneration)
+                        }
+                        -1
+                    } catch (e: IllegalArgumentException) {
+                        Timber.e(e, "AudioRecord.read() с некорректными аргументами — запись аварийно останавливается")
+                        if (currentGeneration.get()) {
+                            finishAfterReadFailure(currentGeneration)
+                        }
+                        -1
+                    }
                     if (read > 0) {
                         try {
                             synchronized(sink) {
@@ -501,16 +539,20 @@ class AudioRecorder @Inject constructor(
                             break
                         }
                         writtenBytes += read
-                        // Потолок длительности (issue #68): защита и диска, и
-                        // длительности STT; авто-остановку с сохранением делает
-                        // ViewModel по MAX_RECORDING_MS — здесь лишь приём
-                        // данных прекращается (stopRecording корректно завершит
-                        // запись уже принятыми данными).
+                        // Потолок длительности (issues #68, #83): защита и диска, и
+                        // длительности STT. Цикл сам закрывает сцену с сохранением
+                        // данных (WAV патчится, AudioRecord освобождается,
+                        // recordingFlow=false); авто-остановка ViewModel по
+                        // MAX_RECORDING_MS остаётся запасной — её stopRecording()
+                        // получит дозакрытый путь из limitFinishedWavPath.
                         if (writtenBytes >= MAX_PCM_BYTES) {
                             Timber.w(
                                 "Достигнут потолок записи ${MAX_RECORDING_MS / 1000} с — " +
-                                    "приём данных остановлен"
+                                    "запись закрывается автоматически"
                             )
+                            if (currentGeneration.get()) {
+                                finishAtRecordingLimit(currentGeneration)
+                            }
                             break
                         }
                         val elapsedMs = (System.nanoTime() - startedAtNs) / 1_000_000L
@@ -644,6 +686,43 @@ class AudioRecorder @Inject constructor(
     }
 
     /**
+     * Остановка по достижению потолка [MAX_RECORDING_MS] из самого цикла
+     * чтения (issue #83). В отличие от [finishAfterReadFailure] данные
+     * исправны: WAV не отбрасывается, а корректно закрывается с патчем
+     * размеров, путь сохраняется в [limitFinishedWavPath] — штатная
+     * авто-остановка ViewModel дойдёт до [stopRecording] и получит этот путь.
+     * Если ViewModel мёртв — микрофон и индикатор уже освобождены этим
+     * путём, а WAV подчистит orphan-очистка кэша. Вызывается ИЗ корутины
+     * цикла чтения, собственный join сцены исключён (самодjoin), как и в
+     * [finishAfterReadFailure].
+     */
+    private suspend fun finishAtRecordingLimit(currentGeneration: AtomicBoolean) {
+        val scene = captureStopScene(expectedGeneration = currentGeneration) ?: return
+        withContext(NonCancellable + Dispatchers.IO) {
+            synchronized(sceneLock) {
+                if (audioRecord === scene.record) {
+                    audioRecord = null
+                }
+            }
+            try {
+                scene.record?.stop()
+            } catch (e: IllegalStateException) {
+                // Рекордер мог быть уже освобождён системой — не критично.
+            }
+            scene.record?.release()
+            _recordingElapsedMs.value = 0L
+            val sink = scene.sink
+            if (sink != null && sink.pcmSize > 0L && sink.closeAndPatch()) {
+                limitFinishedWavPath = sink.file.absolutePath
+                Timber.w("Запись закрыта по потолку длительности: WAV сохранён, AudioRecord освобождён")
+            } else {
+                sink?.discard()
+                Timber.w("Запись по потолку длительности без PCM-данных (или сбой патча WAV)")
+            }
+        }
+    }
+
+    /**
      * Принудительно остановить запись без сохранения WAV (выгрузка рантаймов
      * при ON_STOP, ревью): рекордер — app-scope синглтон и без остановки
      * микрофон оставался захваченным после сворачивания приложения.
@@ -652,7 +731,12 @@ class AudioRecorder @Inject constructor(
      * не трогается.
      */
     fun cancel() {
-        val scene = captureStopScene() ?: return
+        val scene = captureStopScene()
+        // WAV, дозакрытый по потолку (issue #83), при выгрузке тоже не нужен —
+        // удаляем вместе со сценой.
+        val staleWav = limitFinishedWavPath
+        limitFinishedWavPath = null
+        if (scene == null && staleWav == null) return
         scope.launch {
             // Сцена освобождения целиком под NonCancellable+IO (ревью повт.
             // аудита): join цикла, stop/release и отброс WAV не должны
@@ -661,6 +745,10 @@ class AudioRecorder @Inject constructor(
             // Дожидаемся выхода цикла чтения, чтобы не освободить AudioRecord
             // посреди блокирующего read() (тот же порядок, что в stopRecording).
             withContext(NonCancellable + Dispatchers.IO) {
+                if (staleWav != null && !File(staleWav).delete()) {
+                    Timber.w("Не удалось удалить WAV потолковой записи: $staleWav")
+                }
+                if (scene == null) return@withContext
                 detachStoppedScene(scene)
                 try {
                     scene.record?.stop()
@@ -682,6 +770,15 @@ class AudioRecorder @Inject constructor(
      * @return путь к WAV-файлу (каталог кэша) или null при ошибке/пустой записи.
      */
     suspend fun stopRecording(): String? {
+        // Самозакрытие по потолку (issue #83): сцена уже снята циклом чтения —
+        // путь WAV был дозакрыт и сохранён; отдаём его первому вызову
+        // (обычный captureStopScene на снятой сцене вернул бы null и
+        // распознавание сорвалось бы при живой ViewModel).
+        val autoPath = limitFinishedWavPath
+        if (autoPath != null) {
+            limitFinishedWavPath = null
+            return if (File(autoPath).exists()) autoPath else null
+        }
         val scene = captureStopScene() ?: return null
         // Сцена освобождения целиком под NonCancellable+IO (ревью повт.
         // аудита): ViewModel, дождавшийся отмены, иначе уничтожался в окне

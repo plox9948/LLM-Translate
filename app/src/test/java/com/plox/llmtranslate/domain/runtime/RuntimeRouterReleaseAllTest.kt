@@ -10,8 +10,8 @@ import org.junit.Test
 
 /**
  * Unit-тесты [RuntimeRouter.releaseAll] (ревью #83): исключение из
- * release() одного движка не должно обрывать разгрузку остальных, а
- * голый вызов Piper TTS (не suspend) — ронять весь обход целиком.
+ * release() одного движка (включая Piper TTS, чей release стал suspend и
+ * идёт через общий releaseSafely) не должно обрывать разгрузку остальных.
  */
 class RuntimeRouterReleaseAllTest {
 
@@ -29,7 +29,7 @@ class RuntimeRouterReleaseAllTest {
             coVerify(exactly = 1) { indic.release() }
             coVerify(exactly = 1) { slimt.release() }
             coVerify(exactly = 1) { sherpa.release() }
-            verify(exactly = 1) { piper.release() }
+            coVerify(exactly = 1) { piper.release() }
             verify(exactly = 1) { recorder.cancel() }
         }
     }
@@ -47,10 +47,10 @@ class RuntimeRouterReleaseAllTest {
     @Test
     fun `releaseAll survives a throwing Piper release`() = runBlocking {
         val f = Fixture()
-        // Piper — последний в обходе и НЕ под releaseSafely (не suspend):
-        // ревью #83 — раньше его исключение терялось только логами вызывающего,
-        // теперь обрабатывается в самом releaseAll.
-        every { f.piper.release() } throws RuntimeException("ozvuchka stuck")
+        // Piper — последний в обходе; ревью #83: release() стал suspend и
+        // проходит через releaseSafely — его исключение обрабатывается в самом
+        // releaseAll, обход не обрывается.
+        coEvery { f.piper.release() } throws RuntimeException("ozvuchka stuck")
 
         f.router.releaseAll()
 

@@ -53,6 +53,13 @@ class TtsPlaybackCoordinatorTest {
      */
     private var nowMs = 0L
 
+    /**
+     * Хук на каждое обращение боевого координатора к часам (ревью #83):
+     * позволяет эмулировать конкурентный stop() ровно в окне между
+     * присваиваниями watch и повторной сверкой токена в startFallback.
+     */
+    private var clockHook: (() -> Unit)? = null
+
     private val coordinator: TtsPlaybackCoordinator
 
     init {
@@ -66,7 +73,10 @@ class TtsPlaybackCoordinatorTest {
             piperRuntime,
             modelManager,
             CoroutineScope(UnconfinedTestDispatcher()),
-            DownloadWatchClock { nowMs },
+            DownloadWatchClock {
+                clockHook?.invoke()
+                nowMs
+            },
             contextWithNetwork(true)
         )
     }
@@ -649,6 +659,43 @@ class TtsPlaybackCoordinatorTest {
         // Промежуточные эмиссии того же экземпляра ошибки id не меняют.
         val same = coordinator.status.value.copy(isSpeaking = true).errorId
         assertEquals(second, same)
+    }
+
+    // ── ревью #83: check-then-act гейта watch — повторная сверка токена ──
+
+    @Test
+    fun `stop inside watch installation window is caught by token recheck`() {
+        // Инъекция по часам: stop() срабатывает сразу после установки
+        // pendingRetry/watchedDownloadId (watchGraceUntil считается часами) и
+        // до повторной сверки токена в конце startFallback. Первая проверка
+        // токена в начале уже пройдена и stop не увидит.
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        var stopInjected = false
+        clockHook = {
+            if (!stopInjected) {
+                stopInjected = true
+                coordinator.stop()
+            }
+        }
+        try {
+            coordinator.speak("текст", "ru")
+        } finally {
+            clockHook = null
+        }
+
+        // Watch-сцена снята повторной проверкой: DOWNLOADING не залипает.
+        assertTrue(stopInjected)
+        assertEquals(TtsDownloadStatus.NONE, coordinator.status.value.downloadStatus)
+        assertNull(coordinator.status.value.downloadModelId)
+        assertTrue(coordinator.status.value.isSpeaking.not())
+
+        // pendingRetry тоже снят: поздний READY не даёт авто-ретрай и
+        // автоназначение.
+        installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
+        coVerify(exactly = 0) { piperRuntime.speak(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { modelManager.setTtsForLanguage(any(), any()) }
     }
 
     @Test
