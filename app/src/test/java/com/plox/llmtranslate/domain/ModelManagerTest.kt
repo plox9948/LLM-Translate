@@ -1010,6 +1010,22 @@ class ModelManagerTest {
     }
 
     @Test
+    fun `startDownload keeps status when upsert fails after successful scheduling`() = runTest {
+        // Контрольное ревью, п.3: при отказе upsert ПОСЛЕ успешной постановки
+        // воркера статус записи не меняется в ERROR — живой воркер на
+        // finalize-гейте (WHERE status='DOWNLOADING') иначе потерял бы
+        // установленные файлы готовой модели.
+        every {
+            workManager.enqueueUniqueWork(any(), any(), any<OneTimeWorkRequest>())
+        } returns mockk<androidx.work.Operation>(relaxed = true)
+        coEvery { repository.upsert(any()) } throws RuntimeException("db write failed")
+
+        manager.startDownload(cardForDownload("dl3"))
+
+        coVerify(exactly = 0) { repository.updateDownloadStatus(any(), any()) }
+    }
+
+    @Test
     fun `delete during running import leaves consistent state`() = runBlocking<Unit> {
         // Issue #76: delete() был fire-and-forget вне importMutex — гонка
         // import↔delete одной id: delete удалял промоутенный каталог, и

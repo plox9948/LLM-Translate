@@ -223,53 +223,53 @@ class ModelManagerImpl @Inject constructor(
         )
         scope.launch {
             // Ревью, п.4: сначала постановка в WorkManager, затем upsert
-                // DOWNLOADING — при исключении schedule статус записи не
-                // меняется (нет висячего «скачивания» без воркера). Воркер
-                // получает все входные данные из inputData, а не из БД,
-                // поэтому upsert после schedule не ломает скачивание.
-                //
-                // ExistingWorkPolicy.KEEP — сознательная политика: повторный
-                // тап «Скачать» при живой загрузке НЕ пересоздаёт unique work,
-                // живой воркер сохраняет исходные inputData (URL, SHA-256).
-                // При этом upsert(DOWNLOADING) перезаписал бы строку нулевым
-                // прогрессом и визуально сбросил прогресс живой загрузки,
-                // поэтому при живом unique work upsert не выполняется (строка
-                // уже DOWNLOADING); если же строку успели удалить — upsert всё
-                // равно создаёт её.
-                val liveWork = hasLiveDownloadWork(model.id)
+            // DOWNLOADING — при отказе schedule запись помечается ERROR
+            // (висячего «скачивания» без воркера не остаётся). Воркер
+            // получает все входные данные из inputData, а не из БД,
+            // поэтому upsert после schedule не ломает скачивание.
+            //
+            // ExistingWorkPolicy.KEEP — сознательная политика: повторный
+            // тап «Скачать» при живой загрузке НЕ пересоздаёт unique work,
+            // живой воркер сохраняет исходные inputData (URL, SHA-256).
+            // При этом upsert(DOWNLOADING) перезаписал бы строку нулевым
+            // прогрессом и визуально сбросил прогресс живой загрузки,
+            // поэтому при живом unique work upsert не выполняется (строка
+            // уже DOWNLOADING); если же строку успели удалить — upsert всё
+            // равно создаёт её.
+            val liveWork = hasLiveDownloadWork(model.id)
+            try {
+                ModelDownloadWorker.schedule(context, model)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "Не удалось поставить на скачивание модель ${card.id}")
+                // Ревью: воркер не встал в очередь — возможная строка
+                // DOWNLOADING от прошлой попытки осталась бы «скачивающейся»
+                // вечно (pending-гард UI, карточка без кнопки). Помечаем её
+                // ERROR: карточка покажет «Повторить». Для новой модели без
+                // строки в БД обновление — no-op (0 строк).
                 try {
-                    ModelDownloadWorker.schedule(context, model)
+                    repository.updateDownloadStatus(model.id, ModelStatus.ERROR)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Timber.e(e, "Не удалось поставить на скачивание модель ${card.id}")
-                    // Ревью: воркер не встал в очередь — возможная строка
-                    // DOWNLOADING от прошлой попытки осталась бы «скачивающейся»
-                    // вечно (pending-гард UI, карточка без кнопки). Помечаем её
-                    // ERROR: карточка покажет «Повторить». Для новой модели без
-                    // строки в БД обновление — no-op (0 строк).
-                    try {
-                        repository.updateDownloadStatus(model.id, ModelStatus.ERROR)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Timber.e(e, "Не удалось перевести модель ${card.id} в ERROR после отказа schedule")
-                    }
-                    return@launch
+                    Timber.e(e, "Не удалось перевести модель ${card.id} в ERROR после отказа schedule")
                 }
-                if (!liveWork || repository.getById(model.id) == null) {
-                    try {
-                        repository.upsert(model)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        // Контрольное ревью, п.3: воркер уже в очереди — статус
-                        // НЕ меняем (READY→ERROR при живой загрузке потерял бы
-                        // установленные файлы на finalize-гейте). Строка
-                        // останется в прежнем статусе, докачка перезапустится.
-                        Timber.e(e, "Не удалось обновить запись модели ${card.id} после schedule")
-                    }
+                return@launch
+            }
+            if (!liveWork || repository.getById(model.id) == null) {
+                try {
+                    repository.upsert(model)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Контрольное ревью, п.3: воркер уже в очереди — статус
+                    // НЕ меняем (READY→ERROR при живой загрузке потерял бы
+                    // установленные файлы на finalize-гейте). Строка
+                    // останется в прежнем статусе, докачка перезапустится.
+                    Timber.e(e, "Не удалось обновить запись модели ${card.id} после schedule")
                 }
+            }
         }
     }
 
