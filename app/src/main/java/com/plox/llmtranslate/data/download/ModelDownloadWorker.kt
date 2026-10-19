@@ -74,19 +74,13 @@ class ModelDownloadWorker @AssistedInject constructor(
         val urls = decodeDelimitedList(urlsCsv).filter { it.isNotBlank() }
 
         // Ревью, п.3: гейт места до начала скачивания — пик установки по той
-        // же формуле, что и подсказка в UI (InstallCheckLogic): архивная
-        // распаковка ~2x, одиночный файл 1.2x. Нехватка — permanent-отказ
-        // (повтор без освобождения места бессилен), модель сразу в ERROR.
-        val fileNames = urls.mapIndexed { index, url -> DownloadLayout.sanitizedBasename(url, index) }
-        val isArchiveLayout = fileNames.any { DownloadLayout.isArchive(it) }
-        // gzip-артефакты slimt-пучков (ревью): DownloadLayout.isArchive их не
-        // учитывает, но пик при gunzip ≈1.5–1.7x размера — отдельный
-        // коэффициент InstallCheckLogic (архивная 2x здесь перерасходовала бы место).
-        val isGzipLayout = !isArchiveLayout &&
-            fileNames.any { DownloadLayout.isCompressedArtifact(it) }
-        val requiredFreeBytes = InstallCheckLogic.requiredDownloadFreeBytes(
-            sizeBytes, isArchiveLayout, isGzipLayout
-        )
+        // же формуле и единой классификацией раскладки, что и подсказка в UI
+        // (InstallCheckLogic): архивная распаковка ~2x, gz-артефакты slimt ~1.8x,
+        // одиночный файл 1.2x. Нехватка — permanent-отказ (повтор без
+        // освобождения места бессилен), модель сразу в ERROR.
+        val (isArchiveLayout, isGzipLayout) = InstallCheckLogic.urlLayoutFlags(urls)
+        val requiredFreeBytes =
+            InstallCheckLogic.requiredDownloadFreeBytes(sizeBytes, isArchiveLayout, isGzipLayout)
         if (requiredFreeBytes > 0L) {
             val stat = StatFs(modelsRoot.absolutePath)
             val freeBytes = stat.availableBlocksLong * stat.blockSizeLong

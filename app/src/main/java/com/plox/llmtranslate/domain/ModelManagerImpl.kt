@@ -1077,15 +1077,9 @@ class ModelManagerImpl @Inject constructor(
             // бы формально недостижима — round-trip собственного slimt-экспорта
             // отваливался (контрольный аудит, п.1).
             if (ArchiveFormats.isCompressedArtifact(fileName)) return@forEachIndexed
-            // Те же кандидаты имён, что у раскладки загрузок (п.15): новая
-            // схема с префиксом id, санитизированный basename и legacy-сырое
-            // имя URL вместе с query.
-            val candidates = buildList {
-                add(DownloadLayout.targetFileName(modelId, url, index, inModelDir = false))
-                if (fileName !in this) add(fileName)
-                val raw = url.substringAfterLast('/')
-                if (raw.isNotBlank() && raw !in this) add(raw)
-            }
+            // Те же кандидаты имён, что у раскладки загрузок (п.15) —
+            // единая точка [DownloadLayout.installedFileCandidates].
+            val candidates = DownloadLayout.installedFileCandidates(modelId, url, index)
             val file = candidates.asSequence()
                 .map { File(extracted, it) }
                 .firstOrNull { it.isFile }

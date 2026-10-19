@@ -59,6 +59,24 @@ object DownloadLayout {
         return if (inModelDir) base else "${sanitizeId(modelId)}__$base"
     }
 
+    /**
+     * Кандидаты имени УСТАНОВЛЕННОГО файла модели для сверки SHA-256
+     * (импорт ZIP в ModelManagerImpl и восстановление бэкапа): имя новой
+     * схемы с префиксом id, санитизированный basename без префикса и
+     * legacy-сырое имя URL вместе с query (старые загрузки писали
+     * «?raw=true» прямо в имя файла). Единая точка, чтобы сверки
+     * находили файлы всех схем одинаково.
+     */
+    fun installedFileCandidates(modelId: String, url: String, index: Int): List<String> {
+        val sanitized = sanitizedBasename(url, index)
+        return buildList {
+            add(targetFileName(modelId, url, index, inModelDir = false))
+            if (sanitized !in this) add(sanitized)
+            val raw = url.substringAfterLast('/')
+            if (raw.isNotBlank() && raw !in this) add(raw)
+        }
+    }
+
     /** Каталог мультифайловой модели: `<каталог рантайма>/<modelId>`. */
     fun modelDir(runtimeDir: File, modelId: String): File = File(runtimeDir, modelId)
 

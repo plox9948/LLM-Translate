@@ -2,6 +2,7 @@ package com.plox.llmtranslate.ui.models
 
 import android.content.Context
 import android.net.Uri
+import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.R
@@ -382,13 +383,12 @@ class ModelsViewModel @Inject constructor(
         viewModelScope.launch {
             // Результат импорта показываем статусным сообщением, как в
             // бэкап-ветках: молчаливый null при ошибке не оставлял UI без ответа.
-            val imported = modelManager.importFromUri(uri) != null
             _uiState.value = _uiState.value.copy(
-                statusMessage = if (imported) {
-                    context.getString(R.string.models_import_done)
-                } else {
-                    context.getString(R.string.models_import_failed)
-                }
+                statusMessage = statusResult(
+                    ok = modelManager.importFromUri(uri) != null,
+                    doneRes = R.string.models_import_done,
+                    failedRes = R.string.models_import_failed
+                )
             )
         }
     }
@@ -504,11 +504,11 @@ class ModelsViewModel @Inject constructor(
             val ok = modelManager.exportToUri(request.modelId, uri)
             _uiState.value = _uiState.value.copy(
                 exportingModelId = null,
-                statusMessage = if (ok) {
-                    context.getString(R.string.models_export_done)
-                } else {
-                    context.getString(R.string.models_export_failed)
-                }
+                statusMessage = statusResult(
+                    ok = ok,
+                    doneRes = R.string.models_export_done,
+                    failedRes = R.string.models_export_failed
+                )
             )
         }
     }
@@ -538,9 +538,10 @@ class ModelsViewModel @Inject constructor(
             val ok = backupManager.exportToUri(uri)
             _uiState.value = _uiState.value.copy(
                 isBusy = false,
-                statusMessage = context.getString(
-                    if (ok) R.string.models_backup_export_done
-                    else R.string.models_backup_export_failed
+                statusMessage = statusResult(
+                    ok = ok,
+                    doneRes = R.string.models_backup_export_done,
+                    failedRes = R.string.models_backup_export_failed
                 )
             )
         }
@@ -578,6 +579,13 @@ class ModelsViewModel @Inject constructor(
     fun clearStatusMessage() {
         _uiState.value = _uiState.value.copy(statusMessage = null)
     }
+
+    /** Локализованная статусная строка «успех/отказ» операции импорта/экспорта. */
+    private fun statusResult(
+        ok: Boolean,
+        @StringRes doneRes: Int,
+        @StringRes failedRes: Int
+    ): String = context.getString(if (ok) doneRes else failedRes)
 
     /** Скрыть баннер причины блокировки установки. */
     fun clearBlockedReason() {

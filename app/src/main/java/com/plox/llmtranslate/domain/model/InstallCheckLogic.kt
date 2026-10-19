@@ -9,14 +9,16 @@ import java.util.Locale
 object InstallCheckLogic {
 
     /**
-     * Определить тип раскладки карточки по её URLам скачивания: одиночный
-     * файл, архив (unpack-пик 2x) или gz-артефакты slimt-пачки ( gunzip-пик
-     * ≈1.5–1.7x). Имена извлекаются единой точкой [DownloadLayout.sanitizedBasename]
-     * — той же, что в гейте скачивания ModelDownloadWorker, иначе классификация
+     * Единая классификация раскладки по списку URL скачивания
+     * (пара isArchiveLayout to isGzipLayout): одиночный файл, архив
+     * (unpack-пик 2x) или gz-артефакты slimt-пачки (gunzip-пик ≈1.5–1.7x).
+     * Имена извлекаются единой точкой [DownloadLayout.sanitizedBasename] —
+     * ей пользуются подсказка UI ([cardLayoutFlags]), гейт скачивания
+     * ModelDownloadWorker и гейт распаковки бэкапа, иначе классификация
      * расходится на URL с query/спец-символами (ревью).
      */
-    private fun cardLayoutFlags(card: ModelCard): Pair<Boolean, Boolean> {
-        val names = card.downloadUrls().mapIndexed { index, url ->
+    fun urlLayoutFlags(urls: List<String>): Pair<Boolean, Boolean> {
+        val names = urls.mapIndexed { index, url ->
             DownloadLayout.sanitizedBasename(url, index)
         }
         val isArchiveLayout = names.any { ArchiveFormats.isArchive(it) }
@@ -24,6 +26,10 @@ object InstallCheckLogic {
             names.any { ArchiveFormats.isCompressedArtifact(it) }
         return isArchiveLayout to isGzipLayout
     }
+
+    /** Флаги раскладки карточки по её URLам скачивания (см. [urlLayoutFlags]). */
+    private fun cardLayoutFlags(card: ModelCard): Pair<Boolean, Boolean> =
+        urlLayoutFlags(card.downloadUrls())
 
 
     /**

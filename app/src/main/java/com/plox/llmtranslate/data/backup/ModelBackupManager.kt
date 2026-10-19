@@ -86,12 +86,7 @@ private fun bundleShaOk(entry: BackupModelEntry, dir: File): Boolean {
         if (ArchiveFormats.isArchive(fileName) || ArchiveFormats.isCompressedArtifact(fileName)) {
             return@forEachIndexed
         }
-        val candidates = buildList {
-            add(DownloadLayout.targetFileName(entry.id, url, index, inModelDir = false))
-            if (fileName !in this) add(fileName)
-            val raw = url.substringAfterLast('/')
-            if (raw.isNotBlank() && raw !in this) add(raw)
-        }
+        val candidates = DownloadLayout.installedFileCandidates(entry.id, url, index)
         val installed = candidates.asSequence()
             .map { name -> File(dir, name) }
             .firstOrNull { it.isFile }
@@ -105,20 +100,15 @@ private fun bundleShaOk(entry: BackupModelEntry, dir: File): Boolean {
  * Оценка места под установку записи бэкапа (ревью раунда 3): sizeBytes
  * манифеста — размер скачиваемых артефактов, без раздувания распаковки
  * archive (.tar.gz/.zip/.tar.bz2 → ×2) и gz-артефактов slimt (gunzip → ×1.8).
- * Тип раскладки определяется по тем же именам URL ([DownloadLayout.
- * sanitizedBasename] + [ArchiveFormats]), что в гейте скачивания
- * (InstallCheckLogic.cardLayoutFlags), требуемый объём — единой функцией
- * [InstallCheckLogic.requiredDownloadFreeBytes] (для одиночных файлов её
- * запас 1.2x заменяет прежний ×1.1 гейта импорта). Пустые urls
- * (импортированные модели) — одиночная раскладка.
+ * Тип раскладки определяется единой классификацией гейта скачивания
+ * [InstallCheckLogic.urlLayoutFlags] (те же имена URL, что в UI-подсказке и
+ * гейте ModelDownloadWorker; archive/gz-имена — [ArchiveFormats]), требуемый
+ * объём — единой функцией [InstallCheckLogic.requiredDownloadFreeBytes]
+ * (для одиночных файлов её запас 1.2x заменяет прежний ×1.1 гейта импорта).
+ * Пустые urls (импортированные модели) — одиночная раскладка.
  */
 internal fun backupInstallRequiredBytes(entry: BackupModelEntry): Long {
-    val names = entry.urls.mapIndexed { index, url ->
-        DownloadLayout.sanitizedBasename(url, index)
-    }
-    val isArchiveLayout = names.any { ArchiveFormats.isArchive(it) }
-    val isGzipLayout = !isArchiveLayout &&
-        names.any { ArchiveFormats.isCompressedArtifact(it) }
+    val (isArchiveLayout, isGzipLayout) = InstallCheckLogic.urlLayoutFlags(entry.urls)
     return InstallCheckLogic.requiredDownloadFreeBytes(
         entry.sizeBytes, isArchiveLayout, isGzipLayout
     )
@@ -612,28 +602,14 @@ class ModelBackupManager @Inject constructor(
         // (ревью #5: язык, отсутствующий в частичном бэкапе, не снимается).
         // Id не восстановленных в этом импорте моделей пропускаем
         // (сентинель «system» назначается всегда).
-        settings.sttByLanguage?.let { saved ->
-            assignmentOps(saved).forEach { (lang, id) ->
-                if (!isRestoredOrSentinel(id, restoredIds, null)) {
-                    Timber.w(
-                        "Назначение STT $id языку $lang пропущено: модель не восстановлена в этом импорте"
-                    )
-                    return@forEach
-                }
-                preferences.setSttForLanguage(lang, id)
-            }
-        }
-        settings.ttsByLanguage?.let { saved ->
-            assignmentOps(saved).forEach { (lang, id) ->
-                if (!isRestoredOrSentinel(id, restoredIds, TtsModelSelector.SYSTEM_SENTINEL)) {
-                    Timber.w(
-                        "Назначение TTS $id языку $lang пропущено: модель не восстановлена в этом импорте"
-                    )
-                    return@forEach
-                }
-                preferences.setTtsForLanguage(lang, id)
-            }
-        }
+        restoreLanguageAssignments(
+            settings.sttByLanguage, "STT", null, restoredIds,
+            preferences::setSttForLanguage
+        )
+        restoreLanguageAssignments(
+            settings.ttsByLanguage, "TTS", TtsModelSelector.SYSTEM_SENTINEL, restoredIds,
+            preferences::setTtsForLanguage
+        )
         settings.unloadTimeoutMinutes?.let { preferences.setUnloadTimeoutMinutes(it) }
         settings.modelDirectionRetention?.let { preferences.setModelDirectionRetention(it) }
         val lastSource = settings.lastSourceLang
@@ -657,6 +633,31 @@ class ModelBackupManager @Inject constructor(
             return
         }
         preferences.setActiveModelId(category, modelId)
+    }
+
+    /**
+     * Применить одну секцию поязыковых назначений (STT/TTS — общий цикл,
+     * см. presence-семантику в [restoreSettings]): [label] — для логов,
+     * [sentinel] — id, не требующий восстановленной модели (TTS «system»).
+     */
+    private suspend fun restoreLanguageAssignments(
+        saved: Map<String, String?>?,
+        label: String,
+        sentinel: String?,
+        restoredIds: Set<String>,
+        setter: suspend (language: String, modelId: String?) -> Unit
+    ) {
+        saved?.let {
+            assignmentOps(it).forEach { (lang, id) ->
+                if (!isRestoredOrSentinel(id, restoredIds, sentinel)) {
+                    Timber.w(
+                        "Назначение $label $id языку $lang пропущено: модель не восстановлена в этом импорте"
+                    )
+                    return@forEach
+                }
+                setter(lang, id)
+            }
+        }
     }
 
     /** null-операция (снять) / sentinel, не требующий модели / восстановленная модель. */

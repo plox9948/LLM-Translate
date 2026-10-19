@@ -155,15 +155,11 @@ class SettingsViewModel @Inject constructor(
     /**
      * Смена поведения при смене направления перевода (issue #36):
      * «keep» — не выгружать модели других направлений, «unload» — выгружать.
-     * Неизвестное значение нормализуется к значению по умолчанию (keep).
+     * Нормализация неизвестного значения к значению по умолчанию (keep) —
+     * в единственной точке [ModelPreferences.setModelDirectionRetention].
      */
     fun onDirectionRetentionChange(value: String) {
-        val retention = if (value == ModelPreferences.RETENTION_UNLOAD) {
-            ModelPreferences.RETENTION_UNLOAD
-        } else {
-            ModelPreferences.RETENTION_KEEP
-        }
-        viewModelScope.launch { preferences.setModelDirectionRetention(retention) }
+        viewModelScope.launch { preferences.setModelDirectionRetention(value) }
     }
 }
 

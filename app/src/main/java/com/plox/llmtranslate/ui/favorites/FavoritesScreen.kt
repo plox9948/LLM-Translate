@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.ui.favorites
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -173,28 +174,18 @@ private fun FavoriteItem(
         resultText = entry.resultText,
         onUse = onUse
     ) {
-        // Озвучивание оригинала.
-        IconButton(
-            onClick = { onSpeak(FavoriteSpeakField.INPUT) },
-            modifier = Modifier.width(40.dp)
-        ) {
-            Icon(
-                imageVector = if (speakingInput) Icons.Filled.Stop
-                else Icons.AutoMirrored.Filled.VolumeUp,
-                contentDescription = stringResource(R.string.favorites_speak_input_cd)
-            )
-        }
-        // Озвучивание перевода.
-        IconButton(
-            onClick = { onSpeak(FavoriteSpeakField.RESULT) },
-            modifier = Modifier.width(40.dp)
-        ) {
-            Icon(
-                imageVector = if (speakingResult) Icons.Filled.Stop
-                else Icons.AutoMirrored.Filled.VolumeUp,
-                contentDescription = stringResource(R.string.favorites_speak_result_cd)
-            )
-        }
+        // Озвучивание оригинала и перевода: повторный тап по говорящему
+        // полю показывает «стоп» вместо динамика.
+        SpeakFieldButton(
+            speaking = speakingInput,
+            cdRes = R.string.favorites_speak_input_cd,
+            onClick = { onSpeak(FavoriteSpeakField.INPUT) }
+        )
+        SpeakFieldButton(
+            speaking = speakingResult,
+            cdRes = R.string.favorites_speak_result_cd,
+            onClick = { onSpeak(FavoriteSpeakField.RESULT) }
+        )
         // Убрать из избранного — общая иконка звезды (ревью #18).
         IconButton(
             onClick = onRemove,
@@ -202,5 +193,27 @@ private fun FavoriteItem(
         ) {
             FavoriteStarIcon(isFavorite = true)
         }
+    }
+}
+
+/**
+ * Кнопка озвучивания поля записи: динамик или «стоп», когда поле
+ * уже говорится (общий каркас кнопок оригинала и перевода).
+ */
+@Composable
+private fun SpeakFieldButton(
+    speaking: Boolean,
+    @StringRes cdRes: Int,
+    onClick: () -> Unit
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier.width(40.dp)
+    ) {
+        Icon(
+            imageVector = if (speaking) Icons.Filled.Stop
+            else Icons.AutoMirrored.Filled.VolumeUp,
+            contentDescription = stringResource(cdRes)
+        )
     }
 }
