@@ -63,6 +63,9 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
 
                 is DownloadOutcome.InsufficientStorage ->
                     return outcome.toInstallFailure()
+
+                is DownloadOutcome.FileError ->
+                    return outcome.toInstallFailure()
             }
             val downloaded = File(modelDir, archiveName)
             // Суффикс — без учёта регистра (классификация ArchiveFormats.

@@ -71,11 +71,16 @@ interface ModelDao {
      * bytes_done — они пишутся только при завершении). Каталогные поля не
      * затрагиваются, см. [updateStatusById].
      *
-     * @return число обновлённых строк (0 или 1).
+     * Условие `status = 'DOWNLOADING'` (issue #83, п.3, по образцу
+     * [finalizeDownloadById]): запоздалый прогресс отменённого/терминально
+     * завершённого воркера не перетирает READY/ERROR и не возвращает
+     * готовую запись в DOWNLOADING.
+     *
+     * @return число обновлённых строк (0 — запись удалена или не в DOWNLOADING).
      */
     @Query(
         "UPDATE models SET status = :status, progress = :progress, " +
-            "updated_at = :updatedAt WHERE id = :id"
+            "updated_at = :updatedAt WHERE id = :id AND status = 'DOWNLOADING'"
     )
     suspend fun updateProgressById(
         id: String,

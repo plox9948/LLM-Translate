@@ -152,6 +152,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             InstallResult.Failure("Не удалось скачать архив: $fileName")
         is DownloadOutcome.Mismatch -> outcome.toInstallFailure()
         is DownloadOutcome.InsufficientStorage -> outcome.toInstallFailure()
+        is DownloadOutcome.FileError -> outcome.toInstallFailure()
     }
 
     /**
@@ -172,6 +173,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             InstallResult.Failure("Не удалось скачать: $fileName")
         is DownloadOutcome.Mismatch -> outcome.toInstallFailure()
         is DownloadOutcome.InsufficientStorage -> outcome.toInstallFailure()
+        is DownloadOutcome.FileError -> outcome.toInstallFailure()
     }
 
     private suspend fun extractArchive(archiveFile: File, destDir: File, fileName: String): Boolean {
@@ -280,6 +282,20 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                 tarInput.use { tar ->
                     var entry = tar.nextEntry
                     while (entry != null) {
+                        // Issue #83 (CVE-2022-41405): symlink/hardlink-записи tar
+                        // записались бы как обычный файл с путём цели в содержимом,
+                        // а последующие записи канонализуются ЧЕРЕЗ этот файл-ссылку
+                        // и пишутся мимо destDir. Ссылочные записи архивов моделей
+                        // не используются - пропускаем с предупреждением
+                        // (ZIP-распаковку не затрагиваем).
+                        if (entry.isSymbolicLink || entry.isLink) {
+                            Timber.w(
+                                "Пропущена ссылочная запись tar-архива: " +
+                                    "${entry.name} -> ${entry.linkName}"
+                            )
+                            entry = tar.nextEntry
+                            continue
+                        }
                         writeArchiveEntry(tar, destDir, entry.name, entry.isDirectory, createdFiles)
                         entry = tar.nextEntry
                     }

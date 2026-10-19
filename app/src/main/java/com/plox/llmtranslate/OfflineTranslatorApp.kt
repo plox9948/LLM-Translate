@@ -3,9 +3,13 @@ package com.plox.llmtranslate
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
 import com.plox.llmtranslate.BuildConfig
 import com.plox.llmtranslate.data.catalog.RemoteCatalogProvider
 import com.plox.llmtranslate.data.model.FileSnapshot
+import com.plox.llmtranslate.data.download.ModelDownloadWorker
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.runtime.AudioRecorder
@@ -110,11 +114,56 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
                 if (obsoletePaths.isNotEmpty()) {
                     Timber.d("Удалено файлов устаревших моделей: ${obsoletePaths.size}")
                 }
+                repairStaleDownloadingRecords()
                 checkReadyRecordsAgainstDisk()
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка очистки устаревших моделей")
             }
         }
+    }
+
+    /**
+     * Лечение «залипшего» status=DOWNLOADING (issue #83, п.2) до сверки READY:
+     * запись со статусом DOWNLOADING без живой unique-работы WorkManager
+     * (терминальное падение воркера до фиксации статуса, гонка отмены/
+     * постановки) навсегда оставалась «скачивающейся» в UI без возможности
+     * повтора. Такие записи переводятся в ERROR.
+     *
+     * Законное возобновление скачивания не ломается: WorkManager переживает
+     * перезапуск процесса и сам держит поставленную работу (ENQUEUED/
+     * RUNNING/BLOCKED) — для живых id запись остаётся DOWNLOADING. При
+     * недоступном WorkManager (исключение/пустой ответ без данных) запись
+     * не трогаем — ложный ERROR хуже перепроверки на следующем старте.
+     */
+    private suspend fun repairStaleDownloadingRecords() {
+        try {
+            val repaired = modelRepository.markStaleDownloadingRecords(::hasLiveDownloadWork)
+            if (repaired.isNotEmpty()) {
+                Timber.w("Залипших DOWNLOADING-записей без работы переведено в ERROR: ${repaired.size}")
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка сверки DOWNLOADING-записей с WorkManager")
+        }
+    }
+
+    /**
+     * Живая скачивающая unique-работа модели (ENQUEUED/RUNNING/BLOCKED).
+     * false — работы нет (завершена/отменена/не создана); при сбое запроса
+     * WorkManager возвращаем true — запись считается живой и не трогается
+     * (см. [repairStaleDownloadingRecords]).
+     */
+    private fun hasLiveDownloadWork(modelId: String): Boolean = try {
+        val states = WorkManager.getInstance(this)
+            .getWorkInfosForUniqueWork(ModelDownloadWorker.workName(modelId))
+            .get(WORK_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .map { it.state }
+        states.any {
+            it == WorkInfo.State.ENQUEUED || it == WorkInfo.State.RUNNING ||
+                it == WorkInfo.State.BLOCKED
+        }
+    } catch (e: Exception) {
+        Timber.w(e, "WorkManager недоступен для $modelId — DOWNLOADING не трогаем")
+        true
     }
 
     /**
@@ -178,3 +227,5 @@ internal fun fileSnapshotOf(path: String): FileSnapshot? {
         else -> null
     }
 }
+
+private const val WORK_QUERY_TIMEOUT_MS = 5_000L

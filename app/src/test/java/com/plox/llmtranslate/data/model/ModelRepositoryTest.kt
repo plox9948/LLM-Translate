@@ -70,6 +70,9 @@ class ModelRepositoryTest {
             updatedAt: Long
         ): Int {
             val existing = store[id] ?: return 0
+            // Гейт того же SQL-запроса Room (issue #83, п.3): UPDATE ...
+            // WHERE id = :id AND status = 'DOWNLOADING'.
+            if (existing.status != ModelStatus.DOWNLOADING.name) return 0
             store[id] = existing.copy(status = status, progress = progress, updatedAt = updatedAt)
             return 1
         }
@@ -432,5 +435,63 @@ class ModelRepositoryTest {
         assertEquals(ModelStatus.READY.name, dao.store.getValue("no-path").status)
         assertEquals(ModelStatus.READY.name, dao.store.getValue("offline").status)
         assertEquals(ModelStatus.DOWNLOADING.name, dao.store.getValue("downloading").status)
+    }
+
+    @Test
+    fun `late progress from dead worker cannot overwrite ready or error record`() = runTest {
+        // Issue #83, п.3: гейт updateProgressById по status='DOWNLOADING'.
+        val dao = FakeDao()
+        dao.upsert(entity(id = "ready", filePath = "/files/m1"))
+        dao.upsert(entity(id = "failed", status = ModelStatus.ERROR.name, filePath = null))
+        val repo = ModelRepository(dao)
+
+        assertFalse(repo.updateDownloadProgress("ready", ModelStatus.DOWNLOADING, 57))
+        assertFalse(repo.updateDownloadProgress("failed", ModelStatus.DOWNLOADING, 57))
+        // Статус, прогресс и путь READY-записи не тронуты; ERROR не вернулся
+        // в DOWNLOADING.
+        assertEquals(ModelStatus.READY.name, dao.store.getValue("ready").status)
+        assertEquals(100, dao.store.getValue("ready").progress)
+        assertEquals("/files/m1", dao.store.getValue("ready").filePath)
+        assertEquals(ModelStatus.ERROR.name, dao.store.getValue("failed").status)
+        assertEquals(100, dao.store.getValue("failed").progress)
+
+        // DOWNLOADING-запись по-прежнему обновляется.
+        dao.upsert(
+            entity(id = "live", status = ModelStatus.DOWNLOADING.name, filePath = null)
+                .copy(progress = 0)
+        )
+        assertTrue(repo.updateDownloadProgress("live", ModelStatus.DOWNLOADING, 57))
+        assertEquals(57, dao.store.getValue("live").progress)
+    }
+
+    @Test
+    fun `markStaleDownloadingRecords moves orphaned downloading rows to error`() = runTest {
+        // Issue #83, п.2: лечение залипшего DOWNLOADING — только для записей
+        // без живой unique-работы WorkManager (предикат внедрён).
+        val dao = FakeDao()
+        dao.upsert(
+            entity(id = "live", status = ModelStatus.DOWNLOADING.name, filePath = null)
+                .copy(progress = 30)
+        )
+        dao.upsert(
+            entity(id = "stale", status = ModelStatus.DOWNLOADING.name, filePath = null)
+                .copy(progress = 42)
+        )
+        dao.upsert(entity(id = "ready", filePath = "/files/m1"))
+        dao.upsert(entity(id = "failed", status = ModelStatus.ERROR.name, filePath = null))
+        val repo = ModelRepository(dao)
+
+        val repaired = repo.markStaleDownloadingRecords { modelId -> modelId == "live" }
+
+        assertEquals(listOf("stale"), repaired)
+        assertEquals(ModelStatus.ERROR.name, dao.store.getValue("stale").status)
+        // Живая загрузка, READY и ERROR не тронуты.
+        assertEquals(ModelStatus.DOWNLOADING.name, dao.store.getValue("live").status)
+        assertEquals(30, dao.store.getValue("live").progress)
+        assertEquals(ModelStatus.READY.name, dao.store.getValue("ready").status)
+        assertEquals(ModelStatus.ERROR.name, dao.store.getValue("failed").status)
+
+        // Повторный вызов — никого не дублирует (stale уже ERROR).
+        assertEquals(emptyList<String>(), repo.markStaleDownloadingRecords { it == "live" })
     }
 }

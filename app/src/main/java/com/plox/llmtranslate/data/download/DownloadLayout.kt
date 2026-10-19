@@ -47,6 +47,24 @@ object DownloadLayout {
         modelId.map { if (it.isLetterOrDigit() || it in "._-") it else '_' }.joinToString("")
 
     /**
+     * Разделитель склейки корневого имени «<id><разделитель><basename>». «~» не
+     * встречается ни в результате [sanitizeId], ни в [sanitizedBasename], поэтому
+     * имя однозначно разбирается и разные пары (id, basename) не могут столкнуться
+     * (issue #83, п.7: прежний разделитель «__» допускал коллизию «a»+«__b.bin»
+     * против «a__»+«_b.bin», из-за чего очистка осиротевших файлов могла снести
+     * файл соседней READY-модели).
+     */
+    private const val PREFIX_SEPARATOR = "~"
+
+    /**
+     * Имя прежней схемы склейки «<sanitizeId(modelId)>__<basename>» (до issue #83).
+     * Установленные по ней файлы не переименовываются — они обязаны находиться
+     * сверками и очистками как legacy-кандидаты.
+     */
+    private fun legacyPrefixedName(modelId: String, base: String): String =
+        "${sanitizeId(modelId)}__${base}"
+
+    /**
      * Имя целевого файла модели по URL. Для файлов, скачиваемых в общий корень
      * каталога рантайма (одиночный ONNX/архив), добавляется префикс modelId —
      * защита от коллизий одинаковых basename разных моделей в одном каталоге
@@ -56,7 +74,7 @@ object DownloadLayout {
      */
     fun targetFileName(modelId: String, url: String, index: Int, inModelDir: Boolean): String {
         val base = sanitizedBasename(url, index)
-        return if (inModelDir) base else "${sanitizeId(modelId)}__$base"
+        return if (inModelDir) base else "${sanitizeId(modelId)}$PREFIX_SEPARATOR$base"
     }
 
     /**
@@ -71,6 +89,10 @@ object DownloadLayout {
         val sanitized = sanitizedBasename(url, index)
         return buildList {
             add(targetFileName(modelId, url, index, inModelDir = false))
+            // Legacy-имя прежней схемы склейки «id__basename» (issue #83):
+            // установленные по ней файлы должны находиться сверкой.
+            val legacyPrefixed = legacyPrefixedName(modelId, sanitized)
+            if (legacyPrefixed !in this) add(legacyPrefixed)
             if (sanitized !in this) add(sanitized)
             val raw = url.substringAfterLast('/')
             if (raw.isNotBlank() && raw !in this) add(raw)
@@ -129,6 +151,10 @@ object DownloadLayout {
             add(targetFileName(modelId, url, index, inModelDir = false))
             val sanitized = sanitizedBasename(url, index)
             if (sanitized !in this) add(sanitized)
+            // Legacy-имена обеих прежних схем (issue #83) - очистка обязана
+            // находить остатки и с новым, и со старым префиксным разделителем.
+            val legacyPrefixed = legacyPrefixedName(modelId, sanitized)
+            if (legacyPrefixed !in this) add(legacyPrefixed)
             if (legacy !in this) add(legacy)
             val rawWithQuery = url.substringAfterLast('/')
             if (rawWithQuery.isNotBlank() && !rawWithQuery.all { it == '.' } &&

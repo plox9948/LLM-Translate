@@ -48,5 +48,6 @@ class OnnxInstaller : ModelInstaller, BaseDownloader() {
         is DownloadOutcome.NetworkError -> InstallResult.Failure(outcome.message)
         is DownloadOutcome.Mismatch -> outcome.toInstallFailure()
         is DownloadOutcome.InsufficientStorage -> outcome.toInstallFailure()
+        is DownloadOutcome.FileError -> outcome.toInstallFailure()
     }
 }

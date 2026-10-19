@@ -130,6 +130,36 @@ class ModelRepository @Inject constructor(
     }
 
     /**
+     * Сверка DOWNLOADING-записей с WorkManager при старте процесса
+     * (issue #83, п.2): «залипший» status=DOWNLOADING — запись без живой
+     * unique-работы скачивания (терминальное падение воркера до фиксации
+     * статуса, гонка отмены/постановки). UI держит карточку «скачивающейся»
+     * без кнопки повтора; такие записи переводятся в ERROR — пользователь
+     * сможет повторить. Законное возобновление скачиваний не затрагивается:
+     * WorkManager переживает перезапуск процесса и сам возобновляет
+     * поставленную работу — такие id [hasLiveWork] признаёт живыми
+     * (ENQUEUED/RUNNING/BLOCKED).
+     *
+     * @param hasLiveWork признак живой unique-работы скачивания по id;
+     *        при недоступном WorkManager вызывающий обязан вернуть true
+     *        (ложный ERROR хуже, чем перепроверка на следующем старте).
+     * @return id записей, переведённых в ERROR.
+     */
+    internal suspend fun markStaleDownloadingRecords(hasLiveWork: (String) -> Boolean): List<String> {
+        val now = System.currentTimeMillis()
+        val stale = dao.observeAll().first()
+            .filter { it.status == ModelStatus.DOWNLOADING.name }
+            .filter { !hasLiveWork(it.id) }
+        stale.forEach { dao.updateStatusById(it.id, ModelStatus.ERROR.name, now) }
+        if (stale.isNotEmpty()) {
+            Timber.w(
+                "DOWNLOADING-записи без живой работы скачивания переведены в ERROR: " +
+                    stale.joinToString { it.id }
+            )
+        }
+        return stale.map { it.id }
+    }
+    /**
      * Синхронизация полей ram_required_mb/recommended_ram_mb у существующих
      * записей БД с актуальным каталогом по id.
      *

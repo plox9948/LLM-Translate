@@ -78,13 +78,18 @@ class ModelDownloadWorker @AssistedInject constructor(
         // (InstallCheckLogic): архивная распаковка ~2x, gz-артефакты slimt ~1.8x,
         // одиночный файл 1.2x. Нехватка — permanent-отказ (повтор без
         // освобождения места бессилен), модель сразу в ERROR.
+        // Issue #83, п.1: измерение — через [downloadVolumeFreeBytes] с перехватом
+        // сбоя StatFs: на недоступном/неисправном томе StatFs бросает
+        // IllegalArgumentException, и без перехвата doWork падал бы ДО try/catch
+        // установки — unique work терминально FAILED, запись навеки DOWNLOADING.
+        // При сбое оценки гейт пропускается: ENOSPC всё равно классифицируется
+        // isOutOfSpaceError при фактической записи.
         val (isArchiveLayout, isGzipLayout) = InstallCheckLogic.urlLayoutFlags(urls)
         val requiredFreeBytes =
             InstallCheckLogic.requiredDownloadFreeBytes(sizeBytes, isArchiveLayout, isGzipLayout)
         if (requiredFreeBytes > 0L) {
-            val stat = StatFs(modelsRoot.absolutePath)
-            val freeBytes = stat.availableBlocksLong * stat.blockSizeLong
-            if (freeBytes < requiredFreeBytes) {
+            val freeBytes = downloadVolumeFreeBytes(modelsRoot.absolutePath)
+            if (isDownloadSpaceMissing(requiredFreeBytes, freeBytes)) {
                 Timber.e(
                     "Модель $modelId: недостаточно места — требуется $requiredFreeBytes байт, " +
                         "доступно $freeBytes"
@@ -311,3 +316,25 @@ class ModelDownloadWorker @AssistedInject constructor(
         }
     }
 }
+
+/**
+ * Свободное место на томе каталога моделей ([StatFs]); null — оценка
+ * недоступна (том отмонтован/неисправен, unit-test JVM без android.os).
+ * Никогда не бросает: сбой измерения не должен ронять воркер — гейт тогда
+ * просто пропускается (issue #83, п.1; по образцу ModelBackupManager.hasFreeSpaceFor).
+ */
+internal fun downloadVolumeFreeBytes(volumePath: String): Long? = try {
+    val stat = StatFs(volumePath)
+    stat.availableBlocksLong * stat.blockSizeLong
+} catch (e: Exception) {
+    Timber.w(e, "Не удалось оценить свободное место на томе $volumePath — гейт места пропущен")
+    null
+}
+
+/**
+ * Решение гейта места перед скачиванием: true — места заведомо не хватает
+ * (permanent-отказ); false — требуется 0 байт либо оценка недоступна
+ * (гейт пропускается, нехватка различится isOutOfSpaceError при записи).
+ */
+internal fun isDownloadSpaceMissing(requiredBytes: Long, freeBytes: Long?): Boolean =
+    requiredBytes > 0L && freeBytes != null && freeBytes < requiredBytes

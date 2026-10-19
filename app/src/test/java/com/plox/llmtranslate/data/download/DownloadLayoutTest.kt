@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.data.download
 
 import com.plox.llmtranslate.domain.model.RuntimeType
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -138,5 +139,63 @@ class DownloadLayoutTest {
         assertFalse("legacy fallback «file_0» не удалён", File(runtimeDir, "file_0.part").exists())
         assertFalse("legacy «modelId.onnx» не удалён", File(runtimeDir, "legacy-id.onnx").exists())
         assertFalse("legacy .part «modelId.onnx» не удалён", File(runtimeDir, "legacy-id.onnx.part").exists())
+    }
+
+    @Test
+    fun `prefixed names use separator outside sanitized alphabet and keep legacy candidates`() {
+        // Issue #83, п.7: «~» не порождается ни sanitizeId, ни sanitizedBasename —
+        // пары (id, basename), сталкивавшиеся при «__», теперь дают разные имена,
+        // а legacy-имена прежней схемы остаются кандидатами для уже
+        // установленных файлов.
+        assertEquals(
+            "a~_b.bin",
+            DownloadLayout.targetFileName("a", "https://h/_b.bin", 0, inModelDir = false)
+        )
+        // Прежняя схема для этих же пар давала коллизию «a___b.bin»:
+        // id "a" + basename "_b.bin" и id "a_" + basename "b.bin".
+        val first = DownloadLayout.targetFileName("a", "https://h/_b.bin", 0, inModelDir = false)
+        val second = DownloadLayout.targetFileName("a_", "https://h/b.bin", 0, inModelDir = false)
+        assertTrue(first != second)
+
+        val candidates = DownloadLayout.installedFileCandidates("a", "https://h/_b.bin", 0)
+        assertTrue("новая схема не в кандидатах", candidates.contains("a~_b.bin"))
+        assertTrue("legacy-склейка «__» не в кандидатах", candidates.contains("a___b.bin"))
+        assertTrue("basename без префикса не в кандидатах", candidates.contains("_b.bin"))
+    }
+
+    @Test
+    fun `root cleanup removes own leftovers of both schemes and spares neighbor model`() {
+        // Issue #83, п.7: очистка удаляет остатки обеих схем своей модели и не
+        // трогает новую схему соседней модели с похожим id.
+        val runtimeDir = folder.newFolder("MARIAN_ONNX")
+        val ownUrl = "https://h/b.bin"
+        touch(File(runtimeDir, "a_~b.bin"))
+        touch(File(runtimeDir, "a_~b.bin.part"))
+        touch(File(runtimeDir, "a___b.bin"))
+        touch(File(runtimeDir, "a___b.bin.part"))
+        // Файл соседней READY-модели id "a" ("a~_b.bin") при прежней схеме
+        // совпадал бы с legacy-кандидатом — теперь не должен удаляться...
+        // NB: legacy-кандидат модели "a_" — «a___b.bin», он принадлежит обеих
+        // схем; «a~_b.bin» — чужое имя новой схемы.
+        touch(File(runtimeDir, "a~_b.bin"))
+
+        DownloadLayout.deleteOrphanedFiles(runtimeDir, RuntimeType.MARIAN_ONNX, "a_", listOf(ownUrl))
+
+        assertFalse("цель новой схемы не удалена", File(runtimeDir, "a_~b.bin").exists())
+        assertFalse(".part новой схемы не удалён", File(runtimeDir, "a_~b.bin.part").exists())
+        assertFalse("legacy-цель не удалена", File(runtimeDir, "a___b.bin").exists())
+        assertFalse("legacy .part не удалён", File(runtimeDir, "a___b.bin.part").exists())
+        assertTrue("файл новой схемы соседней модели задет очисткой", File(runtimeDir, "a~_b.bin").isFile)
+    }
+
+    @Test
+    fun `deletePendingParts covers legacy prefixed parts too`() {
+        // Issue #83: части докачки прежней схемы «id__base.part» тоже чистятся.
+        val runtimeDir = folder.newFolder("MARIAN_ONNX")
+        touch(File(runtimeDir, "mdl__part.onnx.part"))
+        DownloadLayout.deletePendingParts(
+            runtimeDir, RuntimeType.MARIAN_ONNX, "mdl", listOf("https://h/part.onnx")
+        )
+        assertFalse(File(runtimeDir, "mdl__part.onnx.part").exists())
     }
 }

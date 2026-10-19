@@ -6,7 +6,11 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
+import org.apache.commons.compress.archivers.tar.TarConstants
 import java.io.ByteArrayOutputStream
+import java.util.zip.GZIPOutputStream
 import java.io.File
 import java.security.MessageDigest
 import java.util.zip.ZipEntry
@@ -166,6 +170,63 @@ class ArchiveInstallerExtractionTest {
 
             assertTrue(result is InstallResult.Success)
             assertEquals("ok", File(DownloadLayout.modelDir(root, "m1"), "tokens.txt").readText())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    private fun tarGzBytes(entries: List<TarArchiveEntry>, payloads: Map<String, ByteArray>): ByteArray {
+        val out = ByteArrayOutputStream()
+        GZIPOutputStream(out).use { gz ->
+            TarArchiveOutputStream(gz).use { tar ->
+                entries.forEach { entry ->
+                    tar.putArchiveEntry(entry)
+                    payloads[entry.name]?.let { tar.write(it) }
+                    tar.closeArchiveEntry()
+                }
+            }
+        }
+        return out.toByteArray()
+    }
+
+    @Test
+    fun `tar symlink entry is skipped and not written through as regular file`() = runBlocking {
+        // Issue #83, п.4 (CVE-2022-41405): symlink-запись нельзя писать как
+        // обычный файл с путём цели - следующая запись канонализуется ЧЕРЕЗ
+        // неё и уйдёт за пределы destDir.
+        val root = tempDir()
+        try {
+            val good = TarArchiveEntry("model.bin")
+                .also { it.size = 7L }
+            val link = TarArchiveEntry("passage", TarConstants.LF_SYMLINK)
+                .also { it.setLinkName("/var/lib/outside.bin") }
+            val hardlink = TarArchiveEntry("model.lnk", TarConstants.LF_LINK)
+                .also { it.setLinkName("model.bin") }
+            val after = TarArchiveEntry("passage/nested.bin")
+                .also { it.size = 5L }
+            val archive = File(root, "model.tar.gz")
+            archive.writeBytes(
+                tarGzBytes(
+                    listOf(good, link, hardlink, after),
+                    mapOf(
+                        "model.bin" to "payload".toByteArray(),
+                        "passage/nested.bin" to "other".toByteArray()
+                    )
+                )
+            )
+            val outDir = File(root, "model")
+            outDir.mkdirs()
+
+            val extracted = installer.extractTar(archive, outDir, bzip2 = false)
+
+            // Распаковка продолжается: обычная запись извлечена, ссылочная -
+            // пропущена (не стала файлом с содержимым-путём), запись ПОСЛЕ
+            // ссылки разворачивается штатно в destDir.
+            assertTrue(extracted)
+            assertEquals("payload", File(outDir, "model.bin").readText())
+            assertFalse("symlink записан как обычный файл", File(outDir, "passage").isFile)
+            assertFalse("hardlink записан как обычный файл", File(outDir, "model.lnk").exists())
+            assertEquals("other", File(outDir, "passage/nested.bin").readText())
         } finally {
             root.deleteRecursively()
         }

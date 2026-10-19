@@ -70,3 +70,11 @@ internal fun DownloadOutcome.Mismatch.toInstallFailure(): InstallResult.Failure 
  */
 internal fun DownloadOutcome.InsufficientStorage.toInstallFailure(): InstallResult.Failure =
     InstallResult.Failure(message, permanent = true)
+
+/**
+ * Файловая ошибка финальной записи (rename, issue #83, п.6): сеть ни при чём,
+ * автоматические повторы лишь заново скачают весь файл к тому же сбою -
+ * permanent=true, модель сразу в ERROR с понятной причиной, повтор вручную.
+ */
+internal fun DownloadOutcome.FileError.toInstallFailure(): InstallResult.Failure =
+    InstallResult.Failure(message, permanent = true)

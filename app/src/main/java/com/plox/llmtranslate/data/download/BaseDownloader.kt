@@ -40,6 +40,16 @@ sealed class DownloadOutcome {
      * докачка продолжится с места обрыва.
      */
     data class InsufficientStorage(val message: String) : DownloadOutcome()
+
+    /**
+     * Файловая ошибка финальной стадии записи (issue #83, п.6): .part уже
+     * скачан и верифицирован, но rename в целевое имя не удался (сбой ФС,
+     * цель занята каталогом/чужим файлом). Это НЕ сетевая ошибка:
+     * автоматические повторы лишь заново скачают весь файл к тому же
+     * сбою - инсталляторы переводят её в permanent-отказ, модель в ERROR,
+     * пользователь повторит вручную.
+     */
+    data class FileError(val message: String) : DownloadOutcome()
 }
 
 /**
@@ -160,14 +170,21 @@ abstract class BaseDownloader {
                         )
                         break
                     }
-                    metaFile.delete()
-                    // Финальный rename.
+                    // Финальный rename. Мета докачки удаляем только после
+                    // успеха: при отказе rename .part+meta остаются валидными
+                    // данными для ручного повтора.
                     if (doneFile.exists()) doneFile.delete()
-                    outcome = if (partFile.renameTo(doneFile)) {
-                        DownloadOutcome.Success(doneFile)
+                    if (partFile.renameTo(doneFile)) {
+                        metaFile.delete()
+                        outcome = DownloadOutcome.Success(doneFile)
                     } else {
+                        // Issue #83, п.6: сбой rename - файловая ошибка, а не
+                        // сетевая: NetworkError давал бы 5 полных перекачек
+                        // верифицированного файла к тому же результату.
                         Timber.e("Не удалось переименовать ${partFile.name} в ${doneFile.name}")
-                        DownloadOutcome.NetworkError("Не удалось завершить запись $fileName")
+                        outcome = DownloadOutcome.FileError(
+                            "Не удалось записать файл $fileName на место (сбой файловой системы)"
+                        )
                     }
                     break
                 }
@@ -262,6 +279,17 @@ abstract class BaseDownloader {
                 412, 416 -> {
                     Timber.d("Сервер отклонил докачку $url (HTTP $code) — перезагрузка")
                     return TransferOutcome.Restart
+                }
+                // Issue #83, п.5: HttpURLConnection следует редиректам только
+                // в пределах одного протокола; HTTP -> HTTPS доходит сюда
+                // ответом 3xx. Различаем явно: повтор по той же ссылке
+                // бессилен, может помочь другое зеркало/https-адрес из urls.
+                in 300..399 -> {
+                    Timber.e("HTTP $code: редирект при загрузке $url (межпротокольные редиректы не следуются)")
+                    return TransferOutcome.Network(
+                        "HTTP $code: редирект при загрузке $url - межпротокольный " +
+                            "(http/https) редирект не поддерживается, нужен прямой адрес"
+                    )
                 }
                 else -> {
                     Timber.e("Ошибка HTTP $code при загрузке $url")
@@ -430,6 +458,7 @@ abstract class BaseDownloader {
                 is DownloadOutcome.NetworkError -> return fileOutcome
                 is DownloadOutcome.Mismatch -> return fileOutcome
                 is DownloadOutcome.InsufficientStorage -> return fileOutcome
+                is DownloadOutcome.FileError -> return fileOutcome
             }
         }
         onProgress(100)
