@@ -112,6 +112,9 @@
     <string name="models_backup_import_error">त्रुटि: %1$s</string>
     <string name="models_backup_import_done">आयात: %1$d, छोडिएको: %2$d</string>
     <string name="models_backup_import_done_settings">आयात: %1$d, छोडिएको: %2$d, सेटिङहरू पुनर्स्थापित</string>
+    <string name="models_status_error">डाउनलोड त्रुटि</string>
+    <string name="models_retry_download">पुनःप्रयास गर्नुहोस्</string>
+    <string name="models_export_cancelled">निर्यात रद्द भयो</string>
 
     <!-- Экран «Настройки» -->
     <string name="settings_tts_engine">वाणी संश्लेषण इन्जिन</string>

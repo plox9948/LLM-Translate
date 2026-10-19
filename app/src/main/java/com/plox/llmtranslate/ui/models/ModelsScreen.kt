@@ -80,6 +80,7 @@ fun ModelsScreen(
     val deviceInfo by viewModel.deviceInfo.collectAsStateWithLifecycle()
     val licenseModel by viewModel.licenseConfirmModel.collectAsStateWithLifecycle()
     val blockedReason by viewModel.blockedReason.collectAsStateWithLifecycle()
+    val observeErrorRes by viewModel.observeErrorRes.collectAsStateWithLifecycle()
     val processPssMb by viewModel.processPssMb.collectAsStateWithLifecycle()
     val ttsEngine by viewModel.ttsEngine.collectAsStateWithLifecycle()
     val sttByLanguage by viewModel.sttByLanguage.collectAsStateWithLifecycle()
@@ -190,6 +191,12 @@ fun ModelsScreen(
             // Баннер причины блокировки установки (тап — скрыть).
             blockedReason?.let { reason ->
                 ErrorBanner(text = reason, onClick = { viewModel.clearBlockedReason() })
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // Баннер сбоя наблюдения Room-потоков (issue #67, тап — скрыть).
+            observeErrorRes?.let { res ->
+                ErrorBanner(text = stringResource(res), onClick = { viewModel.clearObserveError() })
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
@@ -355,6 +362,9 @@ fun ModelsScreen(
                 // блокирует действия всех карточек.
                 val exportingId = uiState.exportRequest?.modelId ?: uiState.exportingModelId
                 val actionsLocked = uiState.isBusy || exportingId == card.id
+                // Guard от двойного тапа «Скачать»: id уже в pending в VM —
+                // кнопка неактивна, пока статус не получен из Room.
+                val downloadPending = card.id in uiState.pendingDownloadIds
 
                 ModelCardItem(
                     card = card,
@@ -369,6 +379,7 @@ fun ModelsScreen(
                     ttsEngineSelected = ttsEngineSelected,
                     requiredChipLabel = requiredChipLabel,
                     actionsLocked = actionsLocked,
+                    downloadPending = downloadPending,
                     onDownload = { viewModel.onDownloadClick(card) },
                     onImport = {
                         importLauncher.launch(
@@ -597,6 +608,7 @@ private fun ModelCardItem(
     ttsEngineSelected: Boolean,
     requiredChipLabel: String?,
     actionsLocked: Boolean,
+    downloadPending: Boolean,
     onDownload: () -> Unit,
     onImport: () -> Unit,
     onDelete: () -> Unit,
@@ -747,6 +759,19 @@ private fun ModelCardItem(
                 )
             }
 
+            // Скачивание завершилось ошибкой: подпись ошибки на карточке
+            // (без неё модель выглядела установленной), повтор — кнопка
+            // «Повторить»; прогресс-бар при ERROR скрыт (не скачивается).
+            if (installedModel?.status == ModelStatus.ERROR) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = stringResource(R.string.models_status_error),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
             // Прогресс-бар скачивания.
             installedModel?.let { model ->
                 if (model.status == ModelStatus.DOWNLOADING) {
@@ -777,7 +802,11 @@ private fun ModelCardItem(
                         )
                     }
                     installedModel == null -> {
-                        Button(onClick = onDownload, modifier = Modifier.weight(1f)) {
+                        Button(
+                            onClick = onDownload,
+                            enabled = !downloadPending,
+                            modifier = Modifier.weight(1f)
+                        ) {
                             Icon(Icons.Filled.Download, contentDescription = null)
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(stringResource(R.string.download))
@@ -794,6 +823,32 @@ private fun ModelCardItem(
                     installedModel.status == ModelStatus.DOWNLOADING -> {
                         OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
                             Text(stringResource(R.string.models_cancel_download))
+                        }
+                    }
+                    installedModel.status == ModelStatus.ERROR -> {
+                        // Повторное скачивание после ошибки — тот же запуск,
+                        // что у обычного «Скачать» (без предварительного удаления).
+                        Button(
+                            onClick = onDownload,
+                            enabled = !downloadPending,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Filled.Download, contentDescription = null)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(stringResource(R.string.models_retry_download))
+                        }
+                        // Удаление остаётся доступным: «Экспорт» для ERROR
+                        // модели бесполезен (не готова), «Удалить» — способ
+                        // убрать битую запись, если повтор снова не помог.
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = onDelete,
+                            enabled = !actionsLocked,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Filled.Delete, contentDescription = null)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(stringResource(R.string.models_delete))
                         }
                     }
                     else -> {

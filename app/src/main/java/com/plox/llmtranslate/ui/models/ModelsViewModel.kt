@@ -17,12 +17,14 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelFileNaming
+import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.TtsEngines
 import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
 import com.plox.llmtranslate.domain.runtime.ProcessMemoryReader
+import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +67,13 @@ data class ModelsUiState(
     /** Id модели, для которой идёт запись экспорта (SAF-копирование/zip). */
     val exportingModelId: String? = null,
     val statusMessage: String? = null,
+    /**
+     * Id карточек с уже запущенным (но ещё не подтверждённым Room-статусом)
+     * скачиванием — guard от двойного тапа «Скачать»/«Повторить»: кнопки для
+     * этих id неактивны, пока статус не получен из Room или запуск не снят
+     * (блокировка установки, отказ от лицензии).
+     */
+    val pendingDownloadIds: Set<String> = emptySet(),
     /**
      * Карточки каталога, недостающие для последнего направления перевода (issue #33):
      * id карточки → подпись чипа («RU→EN»); каталог в [catalog] уже отсортирован
@@ -151,50 +160,74 @@ class ModelsViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ModelsUiState())
     val uiState: StateFlow<ModelsUiState> = _uiState
 
+    // Сообщение сбоя наблюдения Room-потоков — id строкового ресурса (issue #67):
+    // sticky до скрытия баннером в UI.
+    private val _observeErrorRes = MutableStateFlow<Int?>(null)
+    val observeErrorRes: StateFlow<Int?> = _observeErrorRes
+
     init {
-        viewModelScope.launch {
-            combine(
-                // Каталог с направлением: приоритизация карточек выполняется
-                // вместе, чтобы сортировка не разъезжалась с потоком каталога.
-                combine(modelManager.catalog, lastDirectionFlow) { cards, direction ->
-                    cards to direction
-                },
-                modelManager.installedModels(null),
-                activeIdsFlow,
-                modelManager.diskUsage,
-                modelManager.loadedModels
-            ) { (catalog, direction), installed, activeIds, disk, loaded ->
-                // Чипы «нужно для направления» — по недостающим звеньям
-                // цепочки текущего направления (issue #33).
-                val chips = if (direction != null && direction.first != direction.second) {
-                    val installedTranslation =
-                        installed.filter { it.category == ModelCategory.TRANSLATION }
-                    CatalogPriority.requiredChips(
-                        catalog, installedTranslation, direction.first, direction.second
+        // issue #67: combine-цепочка с Room-источниками (каталог, installed,
+        // diskUsage) наблюдалась без обработки исключений — сбой Room ронял
+        // процесс; observeResilient логирует, показывает ошибку и перезапускает
+        // всю цепочку combine после сбоя (обоснование — в его KDoc).
+        observeResilient(
+            scope = viewModelScope,
+            source = {
+                combine(
+                    // Каталог с направлением: приоритизация карточек выполняется
+                    // вместе, чтобы сортировка не разъезжалась с потоком каталога.
+                    combine(modelManager.catalog, lastDirectionFlow) { cards, direction ->
+                        cards to direction
+                    },
+                    modelManager.installedModels(null),
+                    activeIdsFlow,
+                    modelManager.diskUsage,
+                    modelManager.loadedModels
+                ) { (catalog, direction), installed, activeIds, disk, loaded ->
+                    // Чипы «нужно для направления» — по недостающим звеньям
+                    // цепочки текущего направления (issue #33).
+                    val chips = if (direction != null && direction.first != direction.second) {
+                        val installedTranslation =
+                            installed.filter { it.category == ModelCategory.TRANSLATION }
+                        CatalogPriority.requiredChips(
+                            catalog, installedTranslation, direction.first, direction.second
+                        )
+                    } else {
+                        emptyMap()
+                    }
+                    ModelsUiState(
+                        catalog = CatalogPriority.prioritize(catalog, chips),
+                        requiredChips = chips,
+                        installed = installed,
+                        activeIds = activeIds,
+                        diskUsage = disk,
+                        loadedModels = loaded
                     )
-                } else {
-                    emptyMap()
                 }
-                ModelsUiState(
-                    catalog = CatalogPriority.prioritize(catalog, chips),
-                    requiredChips = chips,
-                    installed = installed,
-                    activeIds = activeIds,
-                    diskUsage = disk,
-                    loadedModels = loaded
-                )
-            }.collect { derived ->
-                // Сохраняем транзиентные поля (статус, экспорт, busy),
-                // чтобы они не терялись при обновлении Room/DataStore.
-                val current = _uiState.value
-                _uiState.value = derived.copy(
-                    exportRequest = current.exportRequest,
-                    backupExportRequest = current.backupExportRequest,
-                    isBusy = current.isBusy,
-                    exportingModelId = current.exportingModelId,
-                    statusMessage = current.statusMessage
-                )
-            }
+            },
+            messageRes = R.string.models_observe_failed,
+            errorState = _observeErrorRes,
+        ) { derived ->
+            // Сохраняем транзиентные поля (статус, экспорт, busy),
+            // чтобы они не терялись при обновлении Room/DataStore.
+            val current = _uiState.value
+            // Pending-скачивания снимаются, когда Room подтвердил запуск
+            // (DOWNLOADING) или отказ (ERROR) — карточка переключилась на
+            // «Отменить»/«Повторить», guard больше не нужен.
+            val pending = current.pendingDownloadIds.filter { id ->
+                derived.installed.none {
+                    it.id == id &&
+                        (it.status == ModelStatus.DOWNLOADING || it.status == ModelStatus.ERROR)
+                }
+            }.toSet()
+            _uiState.value = derived.copy(
+                pendingDownloadIds = pending,
+                exportRequest = current.exportRequest,
+                backupExportRequest = current.backupExportRequest,
+                isBusy = current.isBusy,
+                exportingModelId = current.exportingModelId,
+                statusMessage = current.statusMessage
+            )
         }
         viewModelScope.launch(Dispatchers.IO) {
             // Устройство для проверки совместимости: чтение ActivityManager/StatFs
@@ -252,24 +285,38 @@ class ModelsViewModel @Inject constructor(
 
     /** Проверить, можно ли установить, и при необходимости попросить подтверждение лицензии. */
     fun onDownloadClick(card: ModelCard) {
-        val device = _deviceInfo.value
-        if (device == null) {
-            // deviceInfo читается с IO и может ещё не быть готов при первом тапе —
-            // не глушим клик молча: дозагружаем и продолжаем проверку.
-            viewModelScope.launch(Dispatchers.IO) {
-                val loaded = modelManager.deviceInfo().also { _deviceInfo.value = it }
-                applyInstallCheck(card, loaded)
-            }
-            return
+        // Guard от двойного тапа: id добавляется в pending до проверок и запуска
+        // скачивания, кнопка для pending-id неактивна; ExistingWorkPolicy в
+        // домене защищает и без этого, но UI не должен дёргать applyInstallCheck
+        // повторно. Pending снимается при статусе из Room (см. подписку init),
+        // при блокировке установки или отказе от лицензии.
+        if (card.id in _uiState.value.pendingDownloadIds) return
+        _uiState.value = _uiState.value.copy(
+            pendingDownloadIds = _uiState.value.pendingDownloadIds + card.id
+        )
+        // Устройство для проверки совместимости: перечитывается при каждом тапе —
+        // свободное место и память меняются, пока жив процесс, кэшированное
+        // значение устаревает. Чтение ActivityManager/StatFs блокирует — IO.
+        viewModelScope.launch(Dispatchers.IO) {
+            val loaded = modelManager.deviceInfo().also { _deviceInfo.value = it }
+            applyInstallCheck(card, loaded)
         }
-        applyInstallCheck(card, device)
+    }
+
+    /** Снять guard «скачивание запущено» с карточки. */
+    private fun clearDownloadPending(cardId: String) {
+        _uiState.value = _uiState.value.copy(
+            pendingDownloadIds = _uiState.value.pendingDownloadIds - cardId
+        )
     }
 
     private fun applyInstallCheck(card: ModelCard, device: DeviceInfo) {
         when (val check = modelManager.checkInstall(card, device)) {
             is InstallCheck.Blocked -> {
-                // Блокировка: причина показывается баннером на экране.
+                // Блокировка: причина показывается баннером на экране;
+                // скачивание не запускалось — guard снимаем сразу.
                 _blockedReason.value = check.reason
+                clearDownloadPending(card.id)
             }
             else -> {
                 if (card.requiresLicenseConfirmation) {
@@ -289,6 +336,8 @@ class ModelsViewModel @Inject constructor(
     }
 
     fun cancelLicenseConfirm() {
+        // Подтверждение отменено — скачивание не запущено, guard снимаем.
+        _licenseConfirmModel.value?.let { card -> clearDownloadPending(card.id) }
         _licenseConfirmModel.value = null
     }
 
@@ -428,7 +477,16 @@ class ModelsViewModel @Inject constructor(
         // Отмена пикера (uri == null) тоже чистит состояние: флаг блокировки
         // карточки снимается, запрос сброшен.
         _uiState.value = _uiState.value.copy(exportRequest = null, exportingModelId = null)
-        if (uri == null || request == null) return
+        if (uri == null) return
+        if (request == null) {
+            // Цель выбрана, но live-запрос потерян (смерть процесса с открытым
+            // пикером) — копировать нечего: сообщаем об отмене вместо тихого
+            // игнора.
+            _uiState.value = _uiState.value.copy(
+                statusMessage = context.getString(R.string.models_export_cancelled)
+            )
+            return
+        }
         // Пока идёт запись ZIP, карточка этой модели блокируется (issue #31):
         // удаление mid-экспорта обрезает архив, и импорт даёт неполную модель.
         viewModelScope.launch {
@@ -514,6 +572,11 @@ class ModelsViewModel @Inject constructor(
     /** Скрыть баннер причины блокировки установки. */
     fun clearBlockedReason() {
         _blockedReason.value = null
+    }
+
+    /** Скрыть баннер сбоя наблюдения Room-потоков. */
+    fun clearObserveError() {
+        _observeErrorRes.value = null
     }
 
     /**
