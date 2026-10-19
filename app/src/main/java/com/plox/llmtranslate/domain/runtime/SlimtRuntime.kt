@@ -106,8 +106,8 @@ class SlimtRuntime @Inject constructor(
      */
     override suspend fun ensureLoaded(modelInfo: InstalledModel): RuntimeError? =
         withContext(Dispatchers.IO) {
-            val path = modelInfo.filePath
-            if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
+            val path = installedModelPath(modelInfo)
+                ?: return@withContext RuntimeError.ModelNotReady
 
             engineCache.sessionMutex.withLock {
                 // Быстрый путь под мьютексом: пучок уже в кэше — делать

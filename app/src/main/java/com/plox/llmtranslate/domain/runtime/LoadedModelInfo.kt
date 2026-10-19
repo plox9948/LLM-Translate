@@ -52,6 +52,15 @@ internal fun LoadedModelInfo.directionMismatch(
 }
 
 /**
+ * Путь каталога установленной модели — общая валидация начала `ensureLoaded`
+ * во всех движках (Marian, IndicTrans, slimt, sherpa): null, если путь не
+ * заполнен (модель не готова — [RuntimeError.ModelNotReady] возвращает
+ * вызывающий).
+ */
+internal fun installedModelPath(model: InstalledModel): String? =
+    model.filePath?.takeIf { it.isNotBlank() }
+
+/**
  * Метаданные пучка модели перевода для публикации в `loadedModels` —
  * одинаковые во всех трёх переводческих движках (Marian, IndicTrans, slimt)
  * при загрузке в `ensureLoaded`.

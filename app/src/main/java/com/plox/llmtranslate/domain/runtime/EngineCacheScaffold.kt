@@ -12,10 +12,10 @@ import timber.log.Timber
  * мьютекс сериализации, кэш, активный id, публикация [loadedModels],
  * unload-политика при смене направления и операции release/releaseModel.
  *
- * Вынесен из трёх идентичных копий (MarianOnnxRuntime, IndicTransOnnxRuntime,
- * SlimtRuntime) без изменения поведения: публичные методы движков остаются
- * на местах и делегируют сюда; тексты логов строятся из [logLabel]
- * байт-в-байт как раньше.
+ * Вынесен из идентичных копий (MarianOnnxRuntime, IndicTransOnnxRuntime,
+ * SlimtRuntime, SherpaSttEngine) без изменения поведения: публичные методы
+ * движков остаются на местах и делегируют сюда; тексты логов строятся из
+ * [logLabel] байт-в-байт как раньше.
  *
  * Все методы с суффиксом `Unlocked` вызывать только под [sessionMutex].
  * Освобождение ресурсов пучка делегировано [releaseBundle] (сессии ORT
@@ -60,7 +60,8 @@ internal class EngineCacheScaffold<T>(
      * LRU-кэш загруженных пучков моделей (issue #36). Наружу не отдаётся:
      * кладка пучков идёт через [putBundleUnlocked] (ревью #79 — прежнее
      * значение при повторном put не должно теряться без освобождения).
-     *internal — только для юнит-тестов каркаса.
+     * internal — для юнит-тестов каркаса и специфичных путей движков
+     * (снятие неконсистентного пучка без освобождения в SherpaSttEngine).
      */
     internal val cache = EngineModelCache<T>(capacity)
 

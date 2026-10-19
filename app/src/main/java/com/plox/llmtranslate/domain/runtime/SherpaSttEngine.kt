@@ -15,9 +15,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -36,20 +34,18 @@ import javax.inject.Singleton
  * Для whisper-моделей язык распознавания задаётся в [transcribe]; при его смене
  * распознаватель пересоздаётся.
  *
- * Модели хранятся LRU-кэшем пучков (issue #37, по образцу #36): при настройке
- * keep движок удерживает загруженные STT-модели и повторный выбор модели
- * не выполняет загрузку заново (быстрый путь [ensureLoaded]); при unload —
- * держит только текущую модель.
+ * Модели хранятся LRU-кэшем пучков на общем каркасе [EngineCacheScaffold]
+ * (issue #37, по образцу #36): при настройке keep движок удерживает
+ * загруженные STT-модели и повторный выбор модели не выполняет загрузку
+ * заново (быстрый путь каркаса [EngineCacheScaffold.reuseCachedUnlocked]);
+ * при unload — держит только текущую модель.
  *
- * TODO(ревью): движок дублирует логику [EngineCacheScaffold]
- * (mutex + [EngineModelCache] + активный id + publish/eviction/retention).
- * Перевод на каркас отложен намеренно (объём велик для текущего цикла):
- * расхождения — каркас не покрывает пересоздание whisper-recognizer при
- * смене языка (var-поля пучка вместо immutable), освобождение пучка здесь
- * делегировано [ModelBundle.release] (шерпа-специфика), а у каркаса —
- * коллбэку [releaseBundle]; быстрая ветка unload здесь повторяет
- * [reuseCachedUnlocked] байт-в-байт. При переносе сохранить гарантию
- * повторного release() в ветке смены языка (ревью).
+ * Поверх каркаса остаётся только sherpa-специфика: определение типа модели
+ * по файлам ([detectModel]), построение [OfflineRecognizer] ([buildRecognizer])
+ * и пересоздание распознавателя при смене языка whisper — пучок держит
+ * [ModelBundle.recognizer] в var (каркас пучков не инспектирует).
+ * Освобождение нативного распознавателя — [ModelBundle.release]
+ * (гарантия повторного release() при сбое пересоздания языка — в [transcribe]).
  */
 @Singleton
 class SherpaSttEngine @Inject constructor(
@@ -94,27 +90,22 @@ class SherpaSttEngine @Inject constructor(
     }
 
     /**
-     * Защита нативного recognizer: распознавание, загрузка и разгрузка
-     * сериализуются, поэтому release() ждёт окончания активного decode
-     * (use-after-free исключён). Распознавание может идти десятки секунд —
-     * для onStop-разгрузки это приемлемо, release() вызывается вне главного потока.
-     * Вся работа с [cache] и [activeId] — только под этим мьютексом.
+     * Каркас LRU-кэша пучков: распознавание, загрузка и разгрузка
+     * сериализуются внутренним мьютексом каркаса, поэтому release() ждёт
+     * окончания активного decode (use-after-free исключён). Распознавание
+     * может идти десятки секунд — для onStop-разгрузки это приемлемо,
+     * release() вызывается вне главного потока.
      */
-    private val recognizerMutex = Mutex()
+    private val engineCache = EngineCacheScaffold<ModelBundle>(
+        capacity = EngineCacheScaffold.DEFAULT_MODEL_CACHE_CAPACITY,
+        retentionProvider = retentionProvider,
+        logLabel = "sherpa",
+        releaseBundle = ModelBundle::release,
+        infoOf = { it.info },
+    )
 
-    /** LRU-кэш загруженных пучков моделей (issue #37). */
-    private val cache = EngineModelCache<ModelBundle>(EngineCacheScaffold.DEFAULT_MODEL_CACHE_CAPACITY)
-
-    /**
-     * Id пучка, на котором работает [transcribe]; пишется и читается только
-     * под [recognizerMutex].
-     */
-    private var activeId: String? = null
-
-    private val _loadedModels = MutableStateFlow<List<LoadedModelInfo>>(emptyList())
-
-    /** Состояние загруженных моделей; пишется только под [recognizerMutex]. */
-    override val loadedModels: StateFlow<List<LoadedModelInfo>> = _loadedModels
+    /** Состояние загруженных моделей; пишется только под мьютексом [engineCache]. */
+    override val loadedModels: StateFlow<List<LoadedModelInfo>> = engineCache.loadedModels
 
     /**
      * Загрузить sherpa-модель, поместив пучок в LRU-кэш. При настройке keep
@@ -126,31 +117,30 @@ class SherpaSttEngine @Inject constructor(
      */
     override suspend fun ensureLoaded(model: InstalledModel): RuntimeError? =
         withContext(Dispatchers.IO) {
-            val path = model.filePath
-            if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
+            val path = installedModelPath(model)
+                ?: return@withContext RuntimeError.ModelNotReady
 
-            recognizerMutex.withLock {
-                val cached = cache.get(model.id)
-                if (cached != null) {
-                    // Быстрый путь под мьютексом: пучок уже в кэше — делать
-                    // активным без пересоздания распознавателя (повторный
-                    // выбор модели, issue #37). Политика применяется и здесь:
-                    // в unload-режиме движок обязан держать только текущую модель.
-                    if (!retentionProvider.keepModelsOnDirectionChange()) {
-                        unloadOtherBundlesUnlocked(model.id)
-                    }
-                    activeId = model.id
-                    publishLoadedUnlocked()
+            engineCache.sessionMutex.withLock {
+                // Быстрый путь под мьютексом: пучок уже в кэше — делать
+                // активным без пересоздания распознавателя (повторный
+                // выбор модели, issue #37). Политика применяется и здесь:
+                // в unload-режиме движок обязан держать только текущую модель.
+                if (engineCache.reuseCachedUnlocked(model.id)) {
                     return@withContext null
                 }
 
                 // Политика выгрузки читается на каждую загрузку — смена
                 // настройки применяется сразу.
-                if (!retentionProvider.keepModelsOnDirectionChange()) {
-                    releaseUnlocked()
-                }
+                engineCache.applyRetentionUnlocked()
 
-                try {
+                guardModelLoad(
+                    label = "sherpa",
+                    engineTag = "sherpa",
+                    path = path,
+                    // Частично созданных сессий у sherpa нет: распознаватель
+                    // строится одним вызовом и при сбое не создаётся вовсе.
+                    closePartial = {}
+                ) {
                     val meta = detectModel(File(path))
                     if (meta == null) {
                         Timber.e("Не удалось определить тип sherpa-модели: $path")
@@ -164,7 +154,7 @@ class SherpaSttEngine @Inject constructor(
                     // Пучок ещё не в кэше — при отмене/ошибке чужие пучки целы.
                     currentCoroutineContext().ensureActive()
                     val recognizer = buildRecognizer(meta, whisperLanguage)
-                    cache.put(
+                    engineCache.putBundleUnlocked(
                         model.id,
                         ModelBundle(
                             info = LoadedModelInfo(
@@ -179,22 +169,9 @@ class SherpaSttEngine @Inject constructor(
                             whisperLanguage = whisperLanguage
                         )
                     )
-                    activeId = model.id
-                    cache.evictOverCapacity().forEach { (evictedId, bundle) ->
-                        Timber.d("Sherpa: вытеснена из кэша модель $evictedId")
-                        bundle.release()
-                    }
-                    publishLoadedUnlocked()
+                    engineCache.publishActiveUnlocked(model.id)
                     Timber.d("Sherpa-модель загружена (${meta.type}): $path")
                     null
-                } catch (e: CancellationException) {
-                    // Отмена загрузки кнопкой «Отмена» — не ошибка: пучок этого
-                    // пути в кэш не положен, пучки других моделей остаются.
-                    Timber.d("Загрузка sherpa-модели отменена: $path")
-                    throw e
-                } catch (e: Exception) {
-                    Timber.e(e, "Не удалось загрузить sherpa-модель $path")
-                    RuntimeError.LoadFailed("sherpa", e.message ?: "Неизвестная ошибка")
                 }
             }
         }
@@ -207,8 +184,8 @@ class SherpaSttEngine @Inject constructor(
      */
     override suspend fun transcribe(wavPath: String, language: String?): Result<String> =
         withContext(Dispatchers.IO) {
-            recognizerMutex.withLock {
-                val bundle = activeId?.let { cache.get(it) }
+            engineCache.sessionMutex.withLock {
+                val bundle = engineCache.activeBundle()
                     ?: return@withContext Result.failure(RuntimeError.ModelNotSelected)
 
                 // Для whisper при смене языка пересоздаём распознаватель.
@@ -252,12 +229,15 @@ class SherpaSttEngine @Inject constructor(
                                 )
                             }
                         }
-                        val failedId = activeId
+                        val failedId = engineCache.activeId
                         if (failedId != null) {
-                            cache.remove(failedId)
-                            activeId = null
+                            // Снятие пучка с кэша БЕЗ releaseBundle: распознаватель
+                            // уже освобождён (или попытка бросила) выше —
+                            // повторный release был бы double-release.
+                            engineCache.cache.remove(failedId)
+                            engineCache.activeId = null
                         }
-                        publishLoadedUnlocked()
+                        engineCache.publishLoadedUnlocked()
                         return@withContext Result.failure(
                             RuntimeError.LoadFailed(
                                 "sherpa",
@@ -323,63 +303,17 @@ class SherpaSttEngine @Inject constructor(
 
     /**
      * Разгрузить ВСЕ удерживаемые движком модели. Ждёт окончания активного
-     * распознавания ([recognizerMutex]).
+     * распознавания (мьютекс [engineCache]).
      */
-    override suspend fun release() {
-        recognizerMutex.withLock { releaseUnlocked() }
-    }
+    override suspend fun release() = engineCache.release()
 
     /**
      * Извлечь и освободить пучок модели [modelId] (удаление модели, issue #40).
-     * Ждёт окончания активного распознавания под [recognizerMutex]; если пучок
-     * был активным — сбрасывает [activeId] и публикует новый список
-     * [loadedModels]. Отсутствующий в кэше id — no-op.
+     * Ждёт окончания активного распознавания под мьютексом [engineCache]; если
+     * пучок был активным — сбрасывается активный id и публикуется новый
+     * список [loadedModels]. Отсутствующий в кэше id — no-op.
      */
-    override suspend fun releaseModel(modelId: String) {
-        recognizerMutex.withLock {
-            cache.remove(modelId)?.let { bundle ->
-                bundle.release()
-                Timber.d("sherpa: пучок удалённой модели $modelId освобождён")
-            }
-            if (activeId == modelId) {
-                activeId = null
-            }
-            publishLoadedUnlocked()
-        }
-    }
-
-    /**
-     * Непосредственная разгрузка всех пучков. Вызывать только под
-     * [recognizerMutex], чтобы не пересекаться с активным decode.
-     */
-    private fun releaseUnlocked() {
-        cache.clear().forEach { (_, bundle) -> bundle.release() }
-        activeId = null
-        _loadedModels.value = emptyList()
-    }
-
-    /**
-     * Выгрузить все пучки кэша, кроме [keepId] (unload-режим при попадании
-     * в кэш — движок держит только текущую модель). Вызывать только под
-     * [recognizerMutex].
-     */
-    private fun unloadOtherBundlesUnlocked(keepId: String) {
-        cache.keysNotIn(setOf(keepId)).forEach { staleId ->
-            cache.remove(staleId)?.release()
-            Timber.d("sherpa: выгружена модель другого направления $staleId")
-        }
-    }
-
-    /**
-     * Опубликовать список загруженных моделей (активная — первой).
-     * Вызывать только под [recognizerMutex].
-     */
-    private fun publishLoadedUnlocked() {
-        val active = activeId
-        _loadedModels.value = cache.all()
-            .sortedByDescending { (id, _) -> id == active }
-            .map { (_, bundle) -> bundle.info }
-    }
+    override suspend fun releaseModel(modelId: String) = engineCache.releaseModel(modelId)
 
     /**
      * Метаданные модели (тип и пути к файлам).

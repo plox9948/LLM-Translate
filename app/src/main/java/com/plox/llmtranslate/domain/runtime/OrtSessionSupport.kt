@@ -74,7 +74,7 @@ internal fun closePartiallyCreated(label: String, vararg sessions: OrtSession?) 
  *
  * Аномальная структура выходов (хвост не кратен четвёркам или слоёв ноль) —
  * явное исключение: вызывающий ensureLoaded оборачивает его в
- * [RuntimeError.LoadFailed] ([guardOrtModelLoad]); прежняя целочисленная
+ * [RuntimeError.LoadFailed] ([guardModelLoad]); прежняя целочисленная
  * формула молча давала 0/неверное число слоёв, и инференс падал на пустых
  * past_key_values (ревью).
  */
@@ -103,30 +103,31 @@ internal fun closeBundleSessions(label: String, vararg sessions: OrtSession) {
 }
 
 /**
- * Общий catch-каркас загрузки ONNX-модели перевода (Marian, IndicTrans):
- * отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем уже созданные
- * сессии этого пучка ([closeCreatedSessions]; пучки других направлений
+ * Общий catch-каркас загрузки модели движка (Marian, IndicTrans — ONNX-сессии;
+ * sherpa STT — распознаватель строится одним вызовом, частично созданных
+ * ресурсов нет): отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
+ * уже созданные ресурсы этого пучка ([closePartial]; пучки других направлений
  * остаются в кэше) и всплываем выше, не конвертируя отмену в LoadFailed;
  * прочие исключения — явный [RuntimeError.LoadFailed]. Тексты логов
  * строятся из [label]/[engineTag] байт-в-байт как в прежних ensureLoaded
  * движков. [block] возвращает null при успехе или RuntimeError раннего
  * возврата (проверки файлов/токенизаторов — остаются внутри block).
  */
-internal inline fun guardOrtModelLoad(
+internal inline fun guardModelLoad(
     label: String,
     engineTag: String,
     path: String,
-    closeCreatedSessions: () -> Unit,
+    closePartial: () -> Unit,
     block: () -> RuntimeError?
 ): RuntimeError? = try {
     block()
 } catch (e: CancellationException) {
     Timber.d("Загрузка $label-модели отменена: $path")
-    closeCreatedSessions()
+    closePartial()
     throw e
 } catch (e: Exception) {
     Timber.e(e, "Не удалось загрузить $label-модель $path")
-    closeCreatedSessions()
+    closePartial()
     RuntimeError.LoadFailed(engineTag, e.message ?: "Неизвестная ошибка")
 }
 

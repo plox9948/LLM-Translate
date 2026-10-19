@@ -129,8 +129,8 @@ class IndicTransOnnxRuntime @Inject constructor(
      */
     override suspend fun ensureLoaded(modelInfo: InstalledModel): RuntimeError? =
         withContext(Dispatchers.IO) {
-            val path = modelInfo.filePath
-            if (path.isNullOrBlank()) return@withContext RuntimeError.ModelNotReady
+            val path = installedModelPath(modelInfo)
+                ?: return@withContext RuntimeError.ModelNotReady
 
             engineCache.sessionMutex.withLock {
                 // Быстрый путь под мьютексом: пучок уже в кэше — делать
@@ -146,11 +146,11 @@ class IndicTransOnnxRuntime @Inject constructor(
                 var encoder: OrtSession? = null
                 var decoder: OrtSession? = null
                 var decoderPast: OrtSession? = null
-                guardOrtModelLoad(
+                guardModelLoad(
                     label = "IndicTrans",
                     engineTag = "indictrans",
                     path = path,
-                    closeCreatedSessions = {
+                    closePartial = {
                         closePartiallyCreated("IndicTrans", encoder, decoder, decoderPast)
                     }
                 ) {
