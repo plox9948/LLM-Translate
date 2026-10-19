@@ -384,7 +384,9 @@ abstract class BaseDownloader {
         modelDir.mkdirs()
 
         urls.forEachIndexed { index, url ->
-            val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
+            // Имя цели — санитизированный basename из единой схемы
+            // DownloadLayout (каталог модели персональный — префикс не нужен).
+            val fileName = DownloadLayout.sanitizedBasename(url, index)
             val expectedSha = sha256s.getOrNull(index)
             val doneFile = File(modelDir, fileName)
             if (doneFile.isFile && canReuseDownloaded(doneFile, expectedSha)) {

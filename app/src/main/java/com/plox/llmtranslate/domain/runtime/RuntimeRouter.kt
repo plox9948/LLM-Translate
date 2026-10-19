@@ -5,6 +5,7 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.RuntimeType
 import kotlinx.coroutines.flow.Flow
+import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -64,6 +65,23 @@ class RuntimeRouter @Inject constructor(
     fun sttEngine(): SttEngine = sherpaSttEngine
 
     /**
+     * Движок перевода по типу рантайма или null для не-переводческих рантаймов
+     * (STT/TTS). Освобождение пучка не должно падать на ошибочной связке
+     * «TRANSLATION-запись + непереводческий рантайм» (ревью: исключение из
+     * [translationEngine] ломало delete/импорт таких записей).
+     */
+    private fun translationEngineOrNull(runtime: RuntimeType): TranslationEngine? = when (runtime) {
+        RuntimeType.MARIAN_ONNX -> marianOnnxRuntime
+        RuntimeType.INDICTRANS_ONNX -> indicTransOnnxRuntime
+        RuntimeType.MARIAN_SLIMT -> slimtRuntime
+        RuntimeType.SHERPA,
+        RuntimeType.SYSTEM_TTS,
+        RuntimeType.RHVOICE,
+        RuntimeType.ESPEAK,
+        RuntimeType.PIPER_ONNX -> null
+    }
+
+    /**
      * Убрать пучки удалённой модели из кэшей движков её категории (issue #40):
      * после удаления файлов запись в LRU-кэше с тем же id продолжала
      * «показывать» модель загруженной, а повторная загрузка того же id
@@ -73,11 +91,24 @@ class RuntimeRouter @Inject constructor(
      * удалённая/перескачанная Piper-модель оставалась в движке со
      * stale-нативным OfflineTts); встроенные системные TTS-модели в движке
      * не загружены — no-op по несовпадению id.
+     *
+     * TRANSLATION-запись с непереводческим рантаймом (битая связка) — warning
+     * и no-op вместо [RuntimeError.UnsupportedRuntime]: очистка и промоут не
+     * должны обрываться из-за записи, в кэше которой и так нет движка.
      */
     suspend fun releaseModel(model: InstalledModel) {
         when (model.category) {
-            ModelCategory.TRANSLATION ->
-                translationEngine(model.runtime).releaseModel(model.id)
+            ModelCategory.TRANSLATION -> {
+                val engine = translationEngineOrNull(model.runtime)
+                if (engine == null) {
+                    Timber.w(
+                        "Модель ${model.id}: рантайм ${model.runtime.name} не переводческий — " +
+                            "освобождение движка пропущено"
+                    )
+                } else {
+                    engine.releaseModel(model.id)
+                }
+            }
             ModelCategory.STT -> sherpaSttEngine.releaseModel(model.id)
             ModelCategory.TTS -> piperTtsRuntime.releaseModel(model.id)
         }

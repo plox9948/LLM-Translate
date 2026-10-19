@@ -833,6 +833,57 @@ class ModelManagerTest {
         modelsDir.deleteRecursively()
     }
 
+    @Test
+    fun `zip import cancels live download of same id before promotion`() = runTest {
+        // Ревью: отмена живой загрузки той же id обязана произойти ДО промоута
+        // пучка (как в одиночном импорте) — cleanupCancelledModel отменённого
+        // воркера не должен зайти на уже промоутенные файлы.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        coEvery { repository.getById("zip-model") } returns null
+        val liveInfo = mockk<WorkInfo>()
+        every { liveInfo.state } returns WorkInfo.State.ENQUEUED
+        val future = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
+        every { future.get(any(), any()) } returns listOf(liveInfo)
+        every {
+            workManager.getWorkInfosForUniqueWork("download_model_zip-model")
+        } returns future
+
+        var step = 0
+        var cancelledAt = -1
+        var promotedAt = -1
+        every { workManager.cancelUniqueWork("download_model_zip-model") } answers {
+            cancelledAt = step++
+            mockk<androidx.work.Operation>(relaxed = true)
+        }
+        val managerSpy = spyk(manager)
+        coEvery { managerSpy.copyExtractedToStaging(any(), any()) } coAnswers {
+            promotedAt = step++
+            callOriginal()
+        }
+
+        val newContent = byteArrayOf(9, 9)
+        val zip = zipOf(mapOf("model.bin" to newContent))
+        every { context.contentResolver.openInputStream(any()) } answers {
+            ByteArrayInputStream(zip)
+        }
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "zip-model.zip"
+
+        assertEquals("zip-model", managerSpy.importFromUri(uri))
+
+        assertTrue("Живая загрузка не отменена", cancelledAt >= 0)
+        assertTrue(
+            "Отмена живой загрузки обязана предшествовать промоуту пучка",
+            cancelledAt < promotedAt
+        )
+        // Промоутенный пучок на месте и не задет очисткой отменённой загрузки.
+        val bundled = File(File(modelsDir, "SHERPA"), "zip-model/model.bin")
+        assertArrayEquals(newContent, bundled.readBytes())
+        modelsDir.deleteRecursively()
+    }
+
     private fun cardForDownload(id: String) = ModelCard(
         id = id,
         category = ModelCategory.TRANSLATION,
@@ -876,7 +927,7 @@ class ModelManagerTest {
     }
 
     @Test
-    fun `startDownload keeps record status when scheduling fails`() = runTest {
+    fun `startDownload marks error when scheduling fails`() = runTest {
         every {
             workManager.enqueueUniqueWork(
                 any(),
@@ -887,10 +938,11 @@ class ModelManagerTest {
 
         manager.startDownload(cardForDownload("dl2"))
 
-        // Отказ schedule — статус не должен меняться: upsert (DOWNLOADING)
-        // не выполняется вовсе.
+        // Отказ schedule — upsert (DOWNLOADING) не выполняется вовсе, а
+        // уже возможная строка DOWNLOADING переводится в ERROR, иначе UI
+        // навсегда остался бы в pending-гарде без кнопки «Повторить».
         coVerify(exactly = 0) { repository.upsert(any()) }
-        coVerify(exactly = 0) { repository.updateDownloadStatus(any(), any()) }
+        coVerify(exactly = 1) { repository.updateDownloadStatus("dl2", ModelStatus.ERROR) }
     }
 
     @Test

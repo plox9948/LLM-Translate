@@ -52,8 +52,11 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         modelDir.mkdirs()
 
         urls.forEachIndexed { index, url ->
-            val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
-            val isArchive = DownloadLayout.isArchive(fileName)
+            // Имя и каталог цели — единая схема DownloadLayout: архив
+            // скачивается в общий корень каталога с префиксом modelId,
+            // одиночный файл — в персональный каталог модели без префикса.
+            val isArchive = DownloadLayout.isArchive(DownloadLayout.sanitizedBasename(url, index))
+            val fileName = DownloadLayout.targetFileName(modelId, url, index, !isArchive)
 
             if (isArchive) {
                 when (val outcome = downloadFile(url, targetDir, fileName, hashes[index]) { fileProgress ->

@@ -111,8 +111,34 @@ class RuntimeModelReleaseTest {
                 runtime = RuntimeType.SHERPA
             ))
 
-            coVerify(exactly = 1) { slimt.releaseModel("trans-ru-en") }
-            coVerify(exactly = 1) { sherpa.releaseModel("stt-ru-gigaam") }
+        coVerify(exactly = 1) { slimt.releaseModel("trans-ru-en") }
+        coVerify(exactly = 1) { sherpa.releaseModel("stt-ru-gigaam") }
+        coVerify(exactly = 0) { piper.releaseModel(any()) }
+    }
+
+    @Test
+    fun `router releaseModel tolerates translation record with non-translation runtime`() =
+        kotlinx.coroutines.runBlocking {
+            // Ревью: раньше translationEngine бросал UnsupportedRuntime и
+            // delete/импорт TRANSLATION-записи с непереводческим рантаймом
+            // падал. Теперь — no-op без исключения (в кэше движка такой id
+            // и так нет).
+            val marian = mockk<MarianOnnxRuntime>(relaxed = true)
+            val indic = mockk<IndicTransOnnxRuntime>(relaxed = true)
+            val slimt = mockk<SlimtRuntime>(relaxed = true)
+            val sherpa = mockk<SherpaSttEngine>(relaxed = true)
+            val piper = mockk<PiperTtsRuntime>(relaxed = true)
+
+            val router = RuntimeRouter(marian, indic, slimt, sherpa, piper, mockk(relaxed = true))
+            router.releaseModel(ttsModel("broken-trans").copy(
+                category = ModelCategory.TRANSLATION,
+                runtime = RuntimeType.SHERPA
+            ))
+
+            coVerify(exactly = 0) { marian.releaseModel(any()) }
+            coVerify(exactly = 0) { indic.releaseModel(any()) }
+            coVerify(exactly = 0) { slimt.releaseModel(any()) }
+            coVerify(exactly = 0) { sherpa.releaseModel(any()) }
             coVerify(exactly = 0) { piper.releaseModel(any()) }
         }
 }

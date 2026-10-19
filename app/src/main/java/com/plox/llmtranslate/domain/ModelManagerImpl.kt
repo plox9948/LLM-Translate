@@ -238,6 +238,18 @@ class ModelManagerImpl @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "Не удалось поставить на скачивание модель ${card.id}")
+                // Ревью: воркер не встал в очередь — возможная строка
+                // DOWNLOADING от прошлой попытки осталась бы «скачивающейся»
+                // вечно (pending-гард UI, карточка без кнопки). Помечаем её
+                // ERROR: карточка покажет «Повторить». Для новой модели без
+                // строки в БД обновление — no-op (0 строк).
+                try {
+                    repository.updateDownloadStatus(model.id, ModelStatus.ERROR)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.e(e, "Не удалось перевести модель ${card.id} в ERROR после отказа schedule")
+                }
             }
         }
     }
@@ -665,6 +677,19 @@ class ModelManagerImpl @Inject constructor(
                 // Issue #69: eviction кэша движков выполняется ВНУТРИ
                 // promoteExtractedDir до перезаписи файлов каталога (см. его KDoc),
                 // здесь остаётся только регистрация новой записи.
+
+                // Ревью: живая загрузка той же id отменяется ДО modelFromMeta/
+                // modelFromZipName (как в одиночном импорте), а не после промоута:
+                // финализация/переименования отменённого воркера и его
+                // cleanupCancelledModel обязаны случиться раньше промоута, иначе
+                // снесут только что промоутенный пучок (гейт finalizeDownload
+                // по status='DOWNLOADING' защищает только запись БД, не файлы).
+                // id известна до промоута: из метаданных или из имени ZIP.
+                val supersededId = meta?.id ?: modelIdFromZipName(sourceName)
+                if (supersededId != null) {
+                    cancelSupersededDownload(supersededId, repository.getById(supersededId))
+                }
+
                 val model = meta?.let { modelFromMeta(it, tempDir) }
                     ?: modelFromZipName(sourceName, tempDir)
                     ?: return null
@@ -677,10 +702,6 @@ class ModelManagerImpl @Inject constructor(
                 // oldPath == newPath внутри deleteSupersededImportFiles не даст
                 // удалить только что промоутенный целевой каталог.
                 val previousRecord = repository.getById(model.id)
-                // Живая загрузка той же id отменяется до upsert (см. одиночный
-                // импорт): иначе воркер дописывает файлы раскладки поверх
-                // промоутенного пучка.
-                cancelSupersededDownload(model.id, previousRecord)
                 repository.upsert(model)
                 model.filePath?.let { deleteSupersededImportFiles(previousRecord, File(it)) }
                 Timber.d("Импортирована модель ${model.id} (ZIP $sourceName)")
@@ -811,11 +832,13 @@ class ModelManagerImpl @Inject constructor(
      * Сверить фактические SHA-256 распакованных файлов импорта с ожидаемыми
      * хэшами (из model_meta.json, иначе — из существующей каталожной записи
      * той же id, см. вызов в [modelFromMeta]). Ожидаемые хэши привязаны к
-     * URL каталога: file[i] — [DownloadLayout.sanitizedBasename] от urls[i];
-     * архивные URL пропускаются (их хэш относится к архиву, а не к
-     * распакованному содержимому). Несовпадение или отсутствующий файл —
-     * [ImportRejectedException] до промоута: прежний пучок нетронут, temp
-     * чистится в finally [importZip].
+     * URL каталога: file[i] ищется по всем кандидатам именования
+     * [DownloadLayout] (новая схема `modelId__basename`, санитизированный
+     * basename и legacy-сырой basename — установка, из которой сделан экспорт,
+     * могла быть названа по любой из схем); архивные URL пропускаются (их хэш
+     * относится к архиву, а не к распакованному содержимому). Несовпадение или
+     * отсутствующий файл — [ImportRejectedException] до промоута: прежний
+     * пучок нетронут, temp чистится в finally [importZip].
      */
     private fun verifyImportChecksums(
         modelId: String,
@@ -828,8 +851,19 @@ class ModelManagerImpl @Inject constructor(
             val sha = expected.getOrNull(index)?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
             val fileName = DownloadLayout.sanitizedBasename(url, index)
             if (DownloadLayout.isArchive(fileName)) return@forEachIndexed
-            val file = File(extracted, fileName)
-            val actual = if (file.isFile) sha256Hex(file) else null
+            // Те же кандидаты имён, что у раскладки загрузок (п.15): новая
+            // схема с префиксом id, санитизированный basename и legacy-сырое
+            // имя URL вместе с query.
+            val candidates = buildList {
+                add(DownloadLayout.targetFileName(modelId, url, index, inModelDir = false))
+                if (fileName !in this) add(fileName)
+                val raw = url.substringAfterLast('/')
+                if (raw.isNotBlank() && raw !in this) add(raw)
+            }
+            val file = candidates.asSequence()
+                .map { File(extracted, it) }
+                .firstOrNull { it.isFile }
+            val actual = if (file != null) sha256Hex(file) else null
             if (actual == null || !actual.equals(sha, ignoreCase = true)) {
                 throw ImportRejectedException(
                     "SHA-256 файла $fileName модели $modelId не совпал с ожидаемым"
@@ -950,17 +984,24 @@ class ModelManagerImpl @Inject constructor(
     )
 
     /**
-     * Распакованный ZIP без метаданных → модель с параметрами,
-     * угаданными по имени файла.
+     * Id модели из имени ZIP-файла без метаданных (общий расчёт для отмены
+     * живой загрузки до промоута и для [modelFromZipName]); пустое — null.
      */
-    private suspend fun modelFromZipName(sourceName: String, extracted: File): InstalledModel? {
-        val modelId = sanitizeModelIdFromName(
+    private fun modelIdFromZipName(sourceName: String): String? =
+        sanitizeModelIdFromName(
             sourceName
                 .removeSuffix(".zip")
                 .removeSuffix(".gguf")
                 .removeSuffix(".onnx")
-        )
-        if (modelId.isBlank()) return null
+        ).takeIf { it.isNotBlank() }
+
+    /**
+     * Распакованный ZIP без метаданных → модель с параметрами,
+     * угаданными по имени файла.
+     */
+    private suspend fun modelFromZipName(sourceName: String, extracted: File): InstalledModel? {
+        val modelId = modelIdFromZipName(sourceName)
+            ?: return null
         val runtime = guessRuntime(sourceName)
             ?: run {
                 Timber.w("Неизвестный формат ZIP-модели $sourceName — импорт отклонён")

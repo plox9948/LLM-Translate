@@ -18,8 +18,10 @@ import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.joinDelimitedList
 import com.plox.llmtranslate.domain.model.sha256sFromCsv
 import com.plox.llmtranslate.domain.model.sha256sToCsv
+import com.plox.llmtranslate.domain.model.splitDelimitedList
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
@@ -66,7 +68,9 @@ class ModelDownloadWorker @AssistedInject constructor(
 
         val modelsRoot = ModelStorage.modelsRoot(applicationContext)
         val modelsDir = File(modelsRoot, runtime.name)
-        val urls = urlsCsv.split(',').filter { it.isNotBlank() }
+        // Единый разделитель списков — «\n» (LIST_DELIMITER), legacy-«,» в
+        // inputData ещё не переварившихся постановок разбирается с фолбэком.
+        val urls = splitDelimitedList(urlsCsv).filter { it.isNotBlank() }
 
         // Ревью, п.3: гейт места до начала скачивания — пик установки по той
         // же формуле, что и подсказка в UI (InstallCheckLogic): архивная
@@ -231,7 +235,9 @@ class ModelDownloadWorker @AssistedInject constructor(
                 .setInputData(
                     workDataOf(
                         KEY_MODEL_ID to model.id,
-                        KEY_URLS to model.downloadUrls().joinToString(","),
+                        // Разделитель «\n» (LIST_DELIMITER): URL допустимо
+                        // содержать запятые в query — ',' разъедал такие URL.
+                        KEY_URLS to joinDelimitedList(model.downloadUrls()),
                         KEY_SHA256 to (model.sha256 ?: ""),
                         KEY_SHA256S to sha256sToCsv(model.sha256s),
                         KEY_RUNTIME to model.runtime.name,

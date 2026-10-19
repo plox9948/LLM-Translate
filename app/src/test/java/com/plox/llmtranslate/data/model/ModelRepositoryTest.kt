@@ -83,6 +83,8 @@ class ModelRepositoryTest {
             updatedAt: Long
         ): Int {
             val existing = store[id] ?: return 0
+            // Гейт того же SQL-запроса Room: UPDATE ... WHERE status='DOWNLOADING'.
+            if (existing.status != ModelStatus.DOWNLOADING.name) return 0
             store[id] = existing.copy(
                 status = status,
                 progress = progress,
@@ -290,7 +292,15 @@ class ModelRepositoryTest {
         assertEquals(800, dao.store.getValue("m1").recommendedRamMb)
         assertEquals(42, dao.store.getValue("m1").progress)
 
-        // Завершение: READY/100/filePath/bytesDone — RAM-поля снова не тронуты.
+        // Гейт finalize (WHERE status='DOWNLOADING'): по ERROR-записи
+        // завершение не пишется — запоздалая финализация воркера не
+        // перетирает выставленный статус.
+        assertFalse(repo.finalizeDownload("m1", "/files/m1-final", 1000))
+        assertEquals(ModelStatus.ERROR.name, dao.store.getValue("m1").status)
+
+        // Завершение DOWNLOADING-записи: READY/100/filePath/bytesDone —
+        // RAM-поля снова не тронуты.
+        assertTrue(repo.updateDownloadStatus("m1", ModelStatus.DOWNLOADING))
         assertTrue(repo.finalizeDownload("m1", "/files/m1-final", 1000))
         val final = dao.store.getValue("m1")
         assertEquals(ModelStatus.READY.name, final.status)
@@ -313,6 +323,23 @@ class ModelRepositoryTest {
         assertFalse(repo.updateDownloadProgress("keep", ModelStatus.DOWNLOADING, 10))
         assertFalse(repo.finalizeDownload("keep", "/files/keep", 5))
         assertNull(dao.getById("keep"))
+    }
+
+    @Test
+    fun `finalize download on ready or error record leaves it untouched`() = runTest {
+        val dao = FakeDao()
+        dao.upsert(entity(id = "ready", filePath = "/files/m1"))
+        dao.upsert(entity(id = "failed", status = ModelStatus.ERROR.name, filePath = null))
+        val repo = ModelRepository(dao)
+
+        // Гейт DAO (status='DOWNLOADING'): READY и ERROR не финализуются,
+        // поля записей не меняются.
+        assertFalse(repo.finalizeDownload("ready", "/files/other", 5))
+        assertFalse(repo.finalizeDownload("failed", "/files/other", 5))
+        assertEquals(ModelStatus.READY.name, dao.store.getValue("ready").status)
+        assertEquals("/files/m1", dao.store.getValue("ready").filePath)
+        assertEquals(ModelStatus.ERROR.name, dao.store.getValue("failed").status)
+        assertNull(dao.store.getValue("failed").filePath)
     }
 
     @Test

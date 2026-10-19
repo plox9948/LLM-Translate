@@ -145,7 +145,9 @@ class ArchiveInstallerTest {
             File(modelDir, "model.onnx").readText()
         )
         // Скачанный архив удалён из корня каталога рантайма (не сирота, С4).
-        assertFalse(File(targetDir, "model.zip").exists())
+        // Имя архива — новая схема с префиксом id (DownloadLayout, ревью п.15).
+        assertFalse(File(targetDir, "stt-fixture__model.zip").exists())
+        assertFalse(File(targetDir, "stt-fixture__model.zip.part").exists())
     }
 
     @Test
@@ -173,7 +175,7 @@ class ArchiveInstallerTest {
             File(modelDir, "encoder-model.onnx").readText()
         )
         assertFalse("Подкаталог после flatten должен быть удалён", File(modelDir, "dummy-sherpa").exists())
-        assertFalse(File(targetDir, "dummy.tar.bz2").exists())
+        assertFalse(File(targetDir, "stt-tarbz__dummy.tar.bz2").exists())
     }
 
     @Test
@@ -277,8 +279,9 @@ class ArchiveInstallerTest {
         // discardPartial: файлы этой распаковки удалены полностью.
         assertFalse("first.txt этой распаковки не удалён", firstFile.exists())
         assertFalse("second.bin этой распаковки не удалён", File(modelDir, "second.bin").exists())
-        // С4: архив-сирота из корня каталога удалён при отмене.
-        assertFalse("Архив остался сиротой в корне каталога", File(targetDir, "cancel_archive.zip").exists())
+        // С4: архив-сирота из корня каталога удалён при отмене (имя — новая
+        // схема с префиксом id, DownloadLayout/targetFileName).
+        assertFalse("Архив остался сиротой в корне каталога", File(targetDir, "stt-cancel__cancel_archive.zip").exists())
         // Ранее скачанный файл другой записи НЕ удалён.
         assertEquals(
             "Ранее скачанный файл потерян",
@@ -286,6 +289,6 @@ class ArchiveInstallerTest {
             File(modelDir, "extra.bin").length().toInt()
         )
         // .part архива (если был) не обязан остаться — архив был докачан до конца.
-        assertFalse(File(targetDir, "cancel_archive.zip.part").exists())
+        assertFalse(File(targetDir, "stt-cancel__cancel_archive.zip.part").exists())
     }
 }

@@ -34,7 +34,9 @@ class OnnxInstaller : ModelInstaller, BaseDownloader() {
             )
         }
 
-        val fileName = urls[0].substringAfterLast('/').ifBlank { "$modelId.onnx" }
+        // Имя цели — единая схема DownloadLayout: префикс modelId в общем
+        // корне каталога рантайма (защита от коллизий одинаковых basename).
+        val fileName = DownloadLayout.targetFileName(modelId, urls[0], 0, inModelDir = false)
         return toInstallResult(
             downloadFile(urls[0], targetDir, fileName, hashes[0], onProgress = onProgress)
         )

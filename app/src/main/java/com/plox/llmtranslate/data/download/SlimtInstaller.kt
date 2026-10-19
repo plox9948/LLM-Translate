@@ -40,7 +40,9 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
         val created = mutableListOf<File>()
 
         for ((index, url) in urls.withIndex()) {
-            val archiveName = url.substringAfterLast('/').ifBlank { "file_$index" }
+            // Имя цели — единая схема DownloadLayout (пучок лежит в
+            // персональном каталоге модели — префикс modelId не нужен).
+            val archiveName = DownloadLayout.targetFileName(modelId, url, index, inModelDir = true)
             val outcome = downloadFile(
                 url = url,
                 targetDir = modelDir,

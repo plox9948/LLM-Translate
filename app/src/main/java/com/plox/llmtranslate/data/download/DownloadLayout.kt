@@ -58,6 +58,43 @@ object DownloadLayout {
     /** Каталог мультифайловой модели: `<каталог рантайма>/<modelId>`. */
     fun modelDir(runtimeDir: File, modelId: String): File = File(runtimeDir, modelId)
 
+    /** Признак «файл скачивается в персональный каталог модели» для раскладки [fileDir]. */
+    private fun inModelDirFor(
+        runtime: RuntimeType,
+        urls: List<String>,
+        fileName: String
+    ): Boolean = when (runtime) {
+        RuntimeType.SHERPA, RuntimeType.PIPER_ONNX -> !isArchive(fileName)
+        RuntimeType.MARIAN_SLIMT -> true
+        else -> urls.size > 1
+    }
+
+    /** Цель скачивания инсталлятора: каталог цели + имя целевого файла (единая схема п.15). */
+    data class FileTarget(val dir: File, val fileName: String)
+
+    /**
+     * Единый расчёт цели скачивания конкретного URL инсталляторами:
+     * каталог по раскладке [fileDir] и имя по [targetFileName] (с префиксом
+     * modelId в общем корне рантайма). Инсталляторы обязаны брать имя отсюда,
+     * чтобы cleanup ([deleteOrphanedFiles]/[deletePendingParts]) находил файлы,
+     * названные той же схемой.
+     */
+    fun fileTarget(
+        runtimeDir: File,
+        runtime: RuntimeType,
+        modelId: String,
+        urls: List<String>,
+        url: String,
+        index: Int
+    ): FileTarget {
+        val fileName = sanitizedBasename(url, index)
+        val inModelDir = inModelDirFor(runtime, urls, fileName)
+        return FileTarget(
+            dir = if (inModelDir) modelDir(runtimeDir, modelId) else runtimeDir,
+            fileName = targetFileName(modelId, url, index, inModelDir)
+        )
+    }
+
     /**
      * Каталог, в который инсталлятор скачивает файл по URL (и в котором
      * лежит его `<имя>.part`):
@@ -72,20 +109,22 @@ object DownloadLayout {
         modelId: String,
         urls: List<String>,
         fileName: String
-    ): File {
-        val inModelDir = when (runtime) {
-            RuntimeType.SHERPA, RuntimeType.PIPER_ONNX -> !isArchive(fileName)
-            RuntimeType.MARIAN_SLIMT -> true
-            else -> urls.size > 1
+    ): File =
+        if (inModelDirFor(runtime, urls, fileName)) {
+            modelDir(runtimeDir, modelId)
+        } else {
+            runtimeDir
         }
-        return if (inModelDir) modelDir(runtimeDir, modelId) else runtimeDir
-    }
 
     /**
      * Кандидаты имён целевого файла в корне каталога рантайма: новое имя
      * (префикс modelId + санитизированный basename, п.15), санитизированный
-     * basename без префикса и сырой basename URL (legacy-загрузки, начатые до
-     * смены схемы) — очистка обязана находить остатки обеих схем.
+     * basename без префикса и legacy-имена загрузок, начатых до смены схемы:
+     * сырой basename без query/fragment, сырой basename ВМЕСТЕ с query
+     * (старый `substringAfterLast('/')` не отрезал «?raw=true» — он попадал
+     * в имя файла и в `.part`), fallback старого одиночного ONNX
+     * `<modelId>.onnx` при пустом basename — очистка обязана находить
+     * остатки всех схем.
      */
     private fun rootNameCandidates(modelId: String, url: String, index: Int): List<String> {
         val raw = url.substringAfterLast('/').substringBefore('?').substringBefore('#')
@@ -95,6 +134,16 @@ object DownloadLayout {
             val sanitized = sanitizedBasename(url, index)
             if (sanitized !in this) add(sanitized)
             if (legacy !in this) add(legacy)
+            val rawWithQuery = url.substringAfterLast('/')
+            if (rawWithQuery.isNotBlank() && !rawWithQuery.all { it == '.' } &&
+                rawWithQuery !in this
+            ) {
+                add(rawWithQuery)
+            }
+            if (raw.isBlank() || raw.all { it == '.' }) {
+                val legacySingle = "$modelId.onnx"
+                if (legacySingle !in this) add(legacySingle)
+            }
         }
     }
 

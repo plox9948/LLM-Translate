@@ -196,9 +196,11 @@ class OnnxInstallerTest {
             OnnxInstaller().install(urls, null, listOf(sha256(encoderBytes)), targetDir, "single-model") {}
         }
         assertTrue("Ожидался Success, получено: $ok", ok is InstallResult.Success)
+        // Одиночный файл скачивается в корень каталога с префиксом id
+        // (единая схема DownloadLayout.targetFileName, ревью п.15).
         assertArrayEqualsSafe(
             encoderBytes,
-            File(targetDir, "model.onnx").readBytes()
+            File(targetDir, "single-model__model.onnx").readBytes()
         )
 
         val bad = runBlocking {
