@@ -117,11 +117,18 @@ data class ModelCard(
      */
     val defaultForLanguage: String? = null
 ) {
-    /** Лицензия требует подтверждения (некоммерческая). */
+    /**
+     * Лицензия требует подтверждения (некоммерческая). Сверка по токенам
+     * (ревью: прежнее `contains("NC")` ложно срабатывало на подстроках вроде
+     * «TRANSCENDENTAL»): лицензия разбивается по разделителям, и ищется
+     * точный токен «NC» (покрывает «CC-BY-NC-4.0», «-NC» и т.п.) либо
+     * словосочетание NON-COMMERCIAL в любом написании разделителя.
+     */
     val requiresLicenseConfirmation: Boolean
         get() {
             val upper = license.uppercase()
-            return upper.contains("NC") || upper.contains("NON-COMMERCIAL")
+            val tokens = LICENSE_TOKEN_DELIMITERS.split(upper).filter { it.isNotEmpty() }
+            return tokens.any { it == "NC" } || NON_COMMERCIAL_PHRASE.containsMatchIn(upper)
         }
 
     /** Все URL для скачивания: urls (мультифайл) или url (один файл). */
@@ -135,16 +142,48 @@ data class ModelCard(
 private fun resolveDownloadUrls(url: String, urls: List<String>): List<String> =
     if (urls.isNotEmpty()) urls else listOfNotNull(url.takeIf { it.isNotBlank() })
 
+/** Разделитель токенов лицензии для [ModelCard.requiresLicenseConfirmation]. */
+private val LICENSE_TOKEN_DELIMITERS = Regex("[^A-Z0-9]+")
+
+/** Варианты записи «non-commercial» с любым разделителем (или слитно). */
+private val NON_COMMERCIAL_PHRASE = Regex("NON[-_ ]?COMMERCIAL")
+
 /**
- * Кодирование списка по-URL SHA-256 в CSV-колонку БД: пустой элемент —
- * хеш неизвестен, пустая строка — пустой список.
+ * Разделитель многосоставных строковых колонок БД (urls, languages) и
+ * входных данных воркера — перенос строки: URL допустимо содержать запятые
+ * (query-параметры), прежний разделитель ',' разъедал такие URL на части.
+ */
+internal const val LIST_DELIMITER = '\n'
+
+/**
+ * Разбор колонки-списка: новый разделитель «\n»; если его нет — legacy-форма
+ * с ',' (старые строки БД до смены разделителя; URL без запятых декодируются
+ * в один элемент корректно).
+ */
+internal fun splitDelimitedList(raw: String): List<String> =
+    if (raw.contains(LIST_DELIMITER)) raw.split(LIST_DELIMITER) else raw.split(',')
+
+/** Кодирование списка строк (urls/languages) в колонку БД. */
+internal fun joinDelimitedList(items: List<String>): String =
+    items.joinToString(LIST_DELIMITER.toString())
+
+/**
+ * Кодирование списка по-URL SHA-256 в колонку БД: пустой элемент —
+ * хеш неизвестен, пустая строка — пустой список. Разделитель — «\n»
+ * (единый со списком urls; хеши заведомо не содержат переносов).
  */
 internal fun sha256sToCsv(sha256s: List<String?>): String =
-    sha256s.joinToString(",") { it?.takeIf { value -> value.isNotBlank() }.orEmpty() }
+    sha256s.joinToString(LIST_DELIMITER.toString()) { it?.takeIf { value -> value.isNotBlank() }.orEmpty() }
 
-/** Обратное к [sha256sToCsv] декодирование (пустая строка — пустой список). */
-internal fun sha256sFromCsv(raw: String): List<String?> =
-    if (raw.isEmpty()) emptyList() else raw.split(',').map { it.takeIf { value -> value.isNotBlank() } }
+/**
+ * Обратное к [sha256sToCsv] декодирование (пустая строка — пустой список);
+ * без «\n» в значениях — fallback на legacy-разделитель ',' (старые строки БД).
+ */
+internal fun sha256sFromCsv(raw: String): List<String?> {
+    if (raw.isEmpty()) return emptyList()
+    val parts = if (raw.contains(LIST_DELIMITER)) raw.split(LIST_DELIMITER) else raw.split(',')
+    return parts.map { it.takeIf { value -> value.isNotBlank() } }
+}
 
 /**
  * Установленная модель (каталожная или импортированная).

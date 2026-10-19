@@ -5,8 +5,10 @@ import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.joinDelimitedList
 import com.plox.llmtranslate.domain.model.sha256sFromCsv
 import com.plox.llmtranslate.domain.model.sha256sToCsv
+import com.plox.llmtranslate.domain.model.splitDelimitedList
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -75,8 +77,13 @@ class ModelRepository @Inject constructor(
         dao.updateProgressById(id, status.name, progress, System.currentTimeMillis()) > 0
 
     /**
-     * Точечное завершение скачивания: READY, прогресс 100, filePath, bytesDone.
-     * Каталогные поля не затрагиваются, см. [updateDownloadStatus].
+     * Точечное завершение скачивания: READY, прогресс 100, filePath, bytesDone
+     * (фактический объём установленных файлов). Каталогные поля не
+     * затрагиваются, см. [updateDownloadStatus]. Готовит только запись в
+     * DOWNLOADING: удалённая или выведенная из DOWNLOADING строка не
+     * обновляется (см. [ModelDao.finalizeDownloadById]).
+     *
+     * @return false, если запись удалена или уже не в DOWNLOADING.
      */
     suspend fun finalizeDownload(id: String, filePath: String, bytesDone: Long): Boolean =
         dao.finalizeDownloadById(
@@ -90,6 +97,34 @@ class ModelRepository @Inject constructor(
 
     suspend fun deleteById(id: String) {
         dao.deleteById(id)
+    }
+
+    /**
+     * Сверка READY-записей с фактическим наличием файлов на диске (ревью, п.1):
+     * одиночный файл должен существовать и быть непустым, мультифайловый
+     * пучок/распакованный архив — непустым каталогом. Битые записи переводятся
+     * в ERROR без удаления (пользователь увидит ошибку и сможет переустановить).
+     *
+     * [snapshot] возвращает снимок пути или null, когда путь недоступен для
+     * verdict (родительский каталог не виден — внешний storage временно
+     * отмонтирован): такие записи не трогаются ни для каталожных, ни для
+     * IMPORTED-моделей.
+     *
+     * @return id записей, переведённых в ERROR.
+     */
+    internal suspend fun markBrokenReadyRecords(snapshot: (String) -> FileSnapshot?): List<String> {
+        val now = System.currentTimeMillis()
+        val broken = dao.observeAll().first()
+            .filter { it.status == ModelStatus.READY.name }
+            .filter { !readyRecordIsConsistent(it.filePath, snapshot) }
+        broken.forEach { dao.updateStatusById(it.id, ModelStatus.ERROR.name, now) }
+        if (broken.isNotEmpty()) {
+            Timber.w(
+                "READY-записи без файлов на диске переведены в ERROR: " +
+                    broken.joinToString { "${it.id} (${it.filePath})" }
+            )
+        }
+        return broken.map { it.id }
     }
 
     /**
@@ -188,6 +223,10 @@ internal fun ModelEntity.toDomainOrNull(): InstalledModel? {
         )
         return null
     }
+    // Разделитель списков — «\n», legacy-строки с ',' разбираются fallback'ом
+    // (см. splitDelimitedList).
+    val languagesValue = splitDelimitedList(languages).filter { it.isNotBlank() }
+    val urlsValue = splitDelimitedList(urls).filter { it.isNotBlank() }
     return InstalledModel(
         id = id,
         category = categoryValue,
@@ -196,11 +235,11 @@ internal fun ModelEntity.toDomainOrNull(): InstalledModel? {
         runtime = runtimeValue,
         sizeBytes = sizeBytes,
         ramRequiredMb = ramRequiredMb,
-        languages = languages.split(',').filter { it.isNotBlank() },
+        languages = languagesValue,
         quality = quality,
         speed = speed,
         url = url,
-        urls = urls.split(',').filter { it.isNotBlank() },
+        urls = urlsValue,
         sha256 = sha256,
         sha256s = sha256sFromCsv(sha256s),
         license = license,
@@ -214,6 +253,32 @@ internal fun ModelEntity.toDomainOrNull(): InstalledModel? {
     )
 }
 
+/**
+ * Снимок файлового пути для проверки согласованности READY-записи
+ * (ревью, п.1) — позволяет подменить ФС в unit-тесте.
+ */
+internal data class FileSnapshot(
+    val isDirectory: Boolean,
+    val size: Long,
+    val childCount: Int
+)
+
+/**
+ * Чистая проверка: READY-запись с [filePath] согласована с диски-снимком из
+ * [snapshot]. filePath == null — проверять нечем (не считается ошибкой);
+ * snapshot == null — путь недоступен (storage отмонтирован/не читается),
+ * вердикт не выносится. Файл обязан существовать и быть непустым; каталог —
+ * непустым. internal — покрыто unit-тестом с фейковым DAO без Android.
+ */
+internal fun readyRecordIsConsistent(
+    filePath: String?,
+    snapshot: (String) -> FileSnapshot?
+): Boolean {
+    val path = filePath ?: return true
+    val snap = snapshot(path) ?: return true
+    return if (snap.isDirectory) snap.childCount > 0 else snap.size > 0
+}
+
 private fun InstalledModel.toEntity(createdAt: Long, updatedAt: Long): ModelEntity =
     ModelEntity(
         id = id,
@@ -223,11 +288,11 @@ private fun InstalledModel.toEntity(createdAt: Long, updatedAt: Long): ModelEnti
         runtime = runtime.name,
         sizeBytes = sizeBytes,
         ramRequiredMb = ramRequiredMb,
-        languages = languages.joinToString(","),
+        languages = joinDelimitedList(languages),
         quality = quality,
         speed = speed,
         url = url,
-        urls = urls.joinToString(","),
+        urls = joinDelimitedList(urls),
         sha256 = sha256,
         sha256s = sha256sToCsv(sha256s),
         license = license,

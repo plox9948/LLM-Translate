@@ -32,6 +32,14 @@ sealed class DownloadOutcome {
      *        false — mismatch после свежей полной загрузки, повтор не поможет.
      */
     data class Mismatch(val message: String, val wasResumed: Boolean = false) : DownloadOutcome()
+
+    /**
+     * Переполнение диска (ENOSPC) при записи файла (ревью, п.3): повтор без
+     * освобождения места бесполезен — воркер обязан пометить модель ERROR за
+     * одну попытку. `.part` не отбрасывается: после освобождения места
+     * докачка продолжится с места обрыва.
+     */
+    data class InsufficientStorage(val message: String) : DownloadOutcome()
 }
 
 /**
@@ -82,7 +90,13 @@ abstract class BaseDownloader {
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка скачивания $url")
-                DownloadOutcome.NetworkError("Ошибка скачивания $fileName: ${e.message}")
+                if (isOutOfSpaceError(e)) {
+                    DownloadOutcome.InsufficientStorage(
+                        "Недостаточно места на диске при загрузке $fileName"
+                    )
+                } else {
+                    DownloadOutcome.NetworkError("Ошибка скачивания $fileName: ${e.message}")
+                }
             }
             when (result) {
                 is TransferOutcome.Restart -> {
@@ -92,6 +106,12 @@ abstract class BaseDownloader {
                 }
                 is TransferOutcome.Network -> {
                     outcome = DownloadOutcome.NetworkError(result.message)
+                    break
+                }
+                is TransferOutcome.InsufficientStorage -> {
+                    // .part и .part.meta НЕ отбрасываются: после освобождения
+                    // места докачка продолжится с байта обрыва.
+                    outcome = DownloadOutcome.InsufficientStorage(result.message)
                     break
                 }
                 is TransferOutcome.Complete -> {
@@ -153,6 +173,7 @@ abstract class BaseDownloader {
         data class Complete(val reusedPartBytes: Boolean) : TransferOutcome()
         object Restart : TransferOutcome()
         data class Network(val message: String) : TransferOutcome()
+        data class InsufficientStorage(val message: String) : TransferOutcome()
     }
 
     /**
@@ -251,25 +272,35 @@ abstract class BaseDownloader {
             } else {
                 partFile.outputStream()
             }
-            out.use { os ->
-                urlConn.inputStream.buffered().use { input ->
-                    val buffer = ByteArray(64 * 1024)
-                    var received = 0L
-                    while (true) {
-                        // Отмена WorkManager (cancelUniqueWork) прерывает цикл
-                        // на следующей итерации; частичный .part остаётся для
-                        // докачки — его чистит отмена скачивания в UI.
-                        currentCoroutineContext().ensureActive()
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        os.write(buffer, 0, read)
-                        received += read
-                        if (totalBytes > 0) {
-                            val percent = ((bytesDone + received) * 100 / totalBytes).toInt()
-                            onProgress(percent.coerceIn(0, 100))
+            try {
+                out.use { os ->
+                    urlConn.inputStream.buffered().use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        var received = 0L
+                        while (true) {
+                            // Отмена WorkManager (cancelUniqueWork) прерывает цикл
+                            // на следующей итерации; частичный .part остаётся для
+                            // докачки — его чистит отмена скачивания в UI.
+                            currentCoroutineContext().ensureActive()
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            os.write(buffer, 0, read)
+                            received += read
+                            if (totalBytes > 0) {
+                                val percent = ((bytesDone + received) * 100 / totalBytes).toInt()
+                                onProgress(percent.coerceIn(0, 100))
+                            }
                         }
                     }
                 }
+            } catch (e: Exception) {
+                // ENOSPC из FileOutputStream/ErrnoException (ревью, п.3):
+                // сеть тут ни при чём — повтор без освобождения места бессилен.
+                if (!isOutOfSpaceError(e)) throw e
+                Timber.e(e, "Место на диске закончилось на ${partFile.name}: записано ${partFile.length()} байт")
+                return TransferOutcome.InsufficientStorage(
+                    "Недостаточно свободного места: ${partFile.name} (записано ${partFile.length()} байт)"
+                )
             }
             TransferOutcome.Complete(reusedPartBytes)
         } finally {
@@ -372,6 +403,7 @@ abstract class BaseDownloader {
                 is DownloadOutcome.Success -> Unit
                 is DownloadOutcome.NetworkError -> return fileOutcome
                 is DownloadOutcome.Mismatch -> return fileOutcome
+                is DownloadOutcome.InsufficientStorage -> return fileOutcome
             }
         }
         onProgress(100)
@@ -411,4 +443,26 @@ abstract class BaseDownloader {
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
             actual.equals(expected, ignoreCase = true)
         }
+}
+
+/**
+ * Классификация сбоя как переполнения диска (ENOSPC) — ревью, п.3.
+ * Просматривается вся цепочка причин: Android-`ErrnoException` даёт сообщение
+ * вида «write failed: ENOSPC (No space left on device)», обычные IOException —
+ * тот же текст; строковые признаки покрывают оба случая без обращения к
+ * android.system.* (unit-тест на JVM без Android-классов).
+ */
+internal fun isOutOfSpaceError(error: Throwable?): Boolean {
+    var t: Throwable? = error
+    while (t != null) {
+        val message = t.message
+        if (message != null &&
+            (message.contains("No space left on device", ignoreCase = true) ||
+                message.contains("ENOSPC", ignoreCase = true))
+        ) {
+            return true
+        }
+        t = t.cause
+    }
+    return false
 }

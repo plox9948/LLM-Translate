@@ -61,3 +61,12 @@ internal fun DownloadOutcome.Mismatch.toInstallFailure(): InstallResult.Failure 
         message,
         permanent = DownloadResumePolicy.mismatchIsPermanent(wasResumed)
     )
+
+/**
+ * Переполнение диска при скачивании (ревью, п.3): повтор без освобождения
+ * места бессилен — permanent=true, воркер ставит ERROR за одну попытку.
+ * `.part` сохранён инсталлятором — после освобождения места докачка
+ * продолжится с байта обрыва.
+ */
+internal fun DownloadOutcome.InsufficientStorage.toInstallFailure(): InstallResult.Failure =
+    InstallResult.Failure(message, permanent = true)

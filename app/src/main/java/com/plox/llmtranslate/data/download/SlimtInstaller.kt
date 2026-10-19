@@ -55,6 +55,9 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
 
                 is DownloadOutcome.Mismatch ->
                     return outcome.toInstallFailure()
+
+                is DownloadOutcome.InsufficientStorage ->
+                    return outcome.toInstallFailure()
             }
             val downloaded = File(modelDir, archiveName)
             try {

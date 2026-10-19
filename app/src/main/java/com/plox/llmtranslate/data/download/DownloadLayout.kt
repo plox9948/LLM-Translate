@@ -1,8 +1,10 @@
 package com.plox.llmtranslate.data.download
 
+import com.plox.llmtranslate.domain.model.ArchiveFormats
 import com.plox.llmtranslate.domain.model.RuntimeType
 import timber.log.Timber
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * Единая раскладка файлов загрузки инсталляторов.
@@ -15,10 +17,43 @@ import java.io.File
 object DownloadLayout {
 
     /** Файл-архив (.tar.bz2/.tar.gz/.zip) — единственный, который распаковывает ArchiveInstaller. */
-    fun isArchive(fileName: String): Boolean =
-        fileName.endsWith(".tar.bz2") ||
-            fileName.endsWith(".tar.gz") ||
-            fileName.endsWith(".zip")
+    fun isArchive(fileName: String): Boolean = ArchiveFormats.isArchive(fileName)
+
+    /**
+     * Санитизированное имя целевого файла по URL (ревью, п.15): basename без
+     * query/fragment; пустое, «.», «..» или имя после очистки — детерминированное
+     * имя из SHA-256 URL, чтобы небезопасное/пустое имя не попадало на диск.
+     */
+    fun sanitizedBasename(url: String, index: Int): String {
+        val raw = url.substringAfterLast('/').substringBefore('?').substringBefore('#')
+        val cleaned = raw.filter { it.isLetterOrDigit() || it in "._-" }
+        return if (cleaned.isEmpty() || cleaned.all { it == '.' }) {
+            val hash = MessageDigest.getInstance("SHA-256")
+                .digest(url.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+                .take(16)
+            "file_${index}_$hash"
+        } else {
+            cleaned
+        }
+    }
+
+    /** Имя модели в составе имени файла корня: всё вне [A-Za-z0-9_.-] → '_'. */
+    private fun sanitizeId(modelId: String): String =
+        modelId.map { if (it.isLetterOrDigit() || it in "._-") it else '_' }.joinToString("")
+
+    /**
+     * Имя целевого файла модели по URL. Для файлов, скачиваемых в общий корень
+     * каталога рантайма (одиночный ONNX/архив), добавляется префикс modelId —
+     * защита от коллизий одинаковых basename разных моделей в одном каталоге
+     * (ревью, п.15); в персональном каталоге модели префикс не нужен.
+     * Пути существующих установок в БД не переименовываются — новая схема
+     * действует только для новых загрузок.
+     */
+    fun targetFileName(modelId: String, url: String, index: Int, inModelDir: Boolean): String {
+        val base = sanitizedBasename(url, index)
+        return if (inModelDir) base else "${sanitizeId(modelId)}__$base"
+    }
 
     /** Каталог мультифайловой модели: `<каталог рантайма>/<modelId>`. */
     fun modelDir(runtimeDir: File, modelId: String): File = File(runtimeDir, modelId)
@@ -47,6 +82,23 @@ object DownloadLayout {
     }
 
     /**
+     * Кандидаты имён целевого файла в корне каталога рантайма: новое имя
+     * (префикс modelId + санитизированный basename, п.15), санитизированный
+     * basename без префикса и сырой basename URL (legacy-загрузки, начатые до
+     * смены схемы) — очистка обязана находить остатки обеих схем.
+     */
+    private fun rootNameCandidates(modelId: String, url: String, index: Int): List<String> {
+        val raw = url.substringAfterLast('/').substringBefore('?').substringBefore('#')
+        val legacy = if (raw.isBlank() || raw.all { it == '.' }) "file_$index" else raw
+        return buildList {
+            add(targetFileName(modelId, url, index, inModelDir = false))
+            val sanitized = sanitizedBasename(url, index)
+            if (sanitized !in this) add(sanitized)
+            if (legacy !in this) add(legacy)
+        }
+    }
+
+    /**
      * Удалить остатки незавершённой установки модели по раскладке этого же
      * [fileDir] (общая логика для ModelManagerImpl.deleteOrphanParts и очистки
      * отменённой загрузки в ModelDownloadWorker): части докачки `.part` и
@@ -55,6 +107,9 @@ object DownloadLayout {
      * (переименованные целевые файлы мультифайловой установки и распакованное
      * содержимое архива). Каталог модели принадлежит только этой записи
      * (ключ — id), поэтому сносится без разбора отдельных файлов.
+     *
+     * Имена в корне каталога перебираются по всем кандидатам обеих схем
+     * нейминга (ревью, п.15) — legacy-остатки не должны переживать очистку.
      *
      * Вызывается только когда живой загрузки по этому id нет (после
      * cancelUniqueWork) или запись удалена/не READY — иначе удаляются
@@ -71,7 +126,7 @@ object DownloadLayout {
 
         var usesModelDir = false
         urls.forEachIndexed { index, url ->
-            val fileName = url.substringAfterLast('/').ifBlank { "file_$index" }
+            val fileName = sanitizedBasename(url, index)
             val dir = fileDir(runtimeDir, runtime, modelId, urls, fileName)
             if (dir == modelDir) {
                 usesModelDir = true
@@ -80,14 +135,16 @@ object DownloadLayout {
             // Корень каталога рантайма: части докачки, метаданные докачки и
             // осиротевший целый целевой файл — одиночный ONNX или архив до
             // распаковки (для не READY-модели это остаток её же загрузки).
-            listOf(File(dir, "$fileName.part"), File(dir, "$fileName.part.meta")).forEach { part ->
-                if (part.isFile && !part.delete()) {
-                    Timber.w("Не удалось удалить осиротевший ${part.name}")
+            for (name in rootNameCandidates(modelId, url, index)) {
+                listOf(File(dir, "$name.part"), File(dir, "$name.part.meta")).forEach { part ->
+                    if (part.isFile && !part.delete()) {
+                        Timber.w("Не удалось удалить осиротевший ${part.name}")
+                    }
                 }
-            }
-            val doneFile = File(dir, fileName)
-            if (doneFile.isFile && !doneFile.delete()) {
-                Timber.w("Не удалось удалить осиротевший ${doneFile.name}")
+                val doneFile = File(dir, name)
+                if (doneFile.isFile && !doneFile.delete()) {
+                    Timber.w("Не удалось удалить осиротевший ${doneFile.name}")
+                }
             }
             // Архив лежит в корне каталога рантайма, но ArchiveInstaller
             // распаковывает его (и создаёт каталог модели ещё до распаковки)

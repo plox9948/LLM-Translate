@@ -5,6 +5,7 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.plox.llmtranslate.BuildConfig
 import com.plox.llmtranslate.data.catalog.RemoteCatalogProvider
+import com.plox.llmtranslate.data.model.FileSnapshot
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import dagger.hilt.android.HiltAndroidApp
@@ -108,9 +109,32 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
                 if (obsoletePaths.isNotEmpty()) {
                     Timber.d("Удалено файлов устаревших моделей: ${obsoletePaths.size}")
                 }
+                checkReadyRecordsAgainstDisk()
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка очистки устаревших моделей")
             }
+        }
+    }
+
+    /**
+     * Сверка READY-записей с фактическим наличием файлов на диске ПОСЛЕ
+     * синхронизации с каталогом (ревью, п.1): битые записи (файл удалён/пуст)
+     * переводятся в ERROR — пользователь увидит ошибку и сможет переустановить.
+     * Выполняется только когда внешний storage доступен: при отмонтованном
+     * разделе вердикт выносить нельзя, записи не трогаются.
+     */
+    private suspend fun checkReadyRecordsAgainstDisk() {
+        if (getExternalFilesDir("models") == null) {
+            Timber.w("Внешний storage недоступен — сверка READY-записей пропущена")
+            return
+        }
+        try {
+            val broken = modelRepository.markBrokenReadyRecords(::fileSnapshotOf)
+            if (broken.isNotEmpty()) {
+                Timber.w("Помечено ошибкой битых READY-записей: ${broken.size}")
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка сверки READY-записей с диском")
         }
     }
 
@@ -127,5 +151,25 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
                 Timber.w("Не удалось удалить остаток записи: ${file.name}")
             }
         }
+    }
+}
+
+/**
+ * Снимок файловой системы для сверки READY-записи (ревью, п.1):
+ * каталог — число непосредственных записей, файл — размер; отсутствующий
+ * путь — пустой снимок (запись битая). null — путь существует, но тип
+ * недоступен (спец-узел/читаемость), вердикт не выносится.
+ * internal — покрыто unit-тестом на временных файлах.
+ */
+internal fun fileSnapshotOf(path: String): FileSnapshot? {
+    val file = File(path)
+    return when {
+        file.isDirectory -> {
+            val children = file.listFiles() ?: return null
+            FileSnapshot(isDirectory = true, size = 0, childCount = children.size)
+        }
+        file.isFile -> FileSnapshot(isDirectory = false, size = file.length(), childCount = 0)
+        !file.exists() -> FileSnapshot(isDirectory = false, size = 0, childCount = 0)
+        else -> null
     }
 }

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Правила извлечения данных (API 31+). Семантика та же, что в backup_rules.xml:
+    файлы моделей во внешней директории в автобэкап не попадают, а база и
+    настройки (datastore) ссылаются на эти файлы и восстановлены быть не могут —
+    исключены из облачного бэкапа и переноса устройства.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" path="llm_translate.db" />
+        <exclude domain="file" path="datastore/model_prefs.preferences_pb" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="llm_translate.db" />
+        <exclude domain="file" path="datastore/model_prefs.preferences_pb" />
+    </device-transfer>
+</data-extraction-rules>

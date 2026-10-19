@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Правила автобэкапа (allowBackup, API < 30).
+
+    Файлы моделей лежат во внешней директории приложения
+    (Android/data/<id>/files/models) и в автобэкап НЕ попадают — их штатное
+    восстановление собственный ZIP-бэкап приложения («Резервная копия» в настройках).
+
+    База данных и настройки хранят пути/ссылки на эти файлы; при восстановлении
+    из автобэкапа на свежем устройстве они указывали бы на несуществующие файлы
+    (READY-записи битыми), поэтому тоже исключены.
+-->
+<full-backup-content>
+    <exclude domain="database" path="llm_translate.db" />
+    <exclude domain="file" path="datastore/model_prefs.preferences_pb" />
+</full-backup-content>

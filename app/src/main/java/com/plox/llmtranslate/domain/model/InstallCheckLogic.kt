@@ -50,6 +50,20 @@ object InstallCheckLogic {
     }
 
     /**
+     * Требуемый запас свободного места для начала скачивания в воркере
+     * (ревью, п.6): гейт InstallCheck.Warning остаётся предупреждением в UI,
+     * но сам воркер перед загрузкой обязан сверить фактическое место с пиком
+     * установки — для архивной распаковки пик ~(архив + содержимое) = 2x,
+     * для одиночного файла (скачивание в .part, пика распаковки нет) - 1.2x.
+     * Размер неизвестен (<=0) — проверка пропускается (0).
+     */
+    fun requiredDownloadFreeBytes(sizeBytes: Long, isArchiveLayout: Boolean): Long = when {
+        sizeBytes <= 0L -> 0L
+        isArchiveLayout -> sizeBytes * 2
+        else -> sizeBytes + sizeBytes / 5
+    }
+
+    /**
      * Проверить суммарную ОЗУ активных LLM+STT моделей.
      * @return предупреждение или null.
      */

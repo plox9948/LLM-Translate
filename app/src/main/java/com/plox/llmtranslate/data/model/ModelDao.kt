@@ -88,12 +88,18 @@ interface ModelDao {
      * Точечное завершение скачивания: статус, прогресс 100, путь и байты.
      * Каталогные поля не затрагиваются, см. [updateStatusById].
      *
-     * @return число обновлённых строк (0 или 1).
+     * Условие `status = 'DOWNLOADING'` — защита от гонки отмены: если к
+     * моменту завершения записи нет (удалена при cancel/delete) или она уже
+     * выведена из DOWNLOADING (ошибка/импорт с другой стороны), READY не
+     * выставляется — воркер получает 0 строк и чистит установленные файлы
+     * как осиротевшие.
+     *
+     * @return число обновлённых строк (0 — запись удалена или не в DOWNLOADING).
      */
     @Query(
         "UPDATE models SET status = :status, progress = :progress, " +
             "file_path = :filePath, bytes_done = :bytesDone, " +
-            "updated_at = :updatedAt WHERE id = :id"
+            "updated_at = :updatedAt WHERE id = :id AND status = 'DOWNLOADING'"
     )
     suspend fun finalizeDownloadById(
         id: String,

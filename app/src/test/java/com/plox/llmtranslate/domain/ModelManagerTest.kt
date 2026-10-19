@@ -2,12 +2,14 @@ package com.plox.llmtranslate.domain
 
 import android.content.Context
 import android.net.Uri
+import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.model.DeviceInfo
 import com.plox.llmtranslate.domain.model.InstalledModel
+import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
@@ -52,6 +54,7 @@ class ModelManagerTest {
     private val preferences = mockk<ModelPreferences>(relaxed = true)
     private val deviceInfoProvider = mockk<DeviceInfoProvider>(relaxed = true)
     private val runtimeRouter = mockk<RuntimeRouter>(relaxed = true)
+    private val workManager = mockk<WorkManager>(relaxed = true)
 
     private lateinit var manager: ModelManagerImpl
 
@@ -59,7 +62,7 @@ class ModelManagerTest {
     fun setup() {
         // WorkManager в юнит-тесте не инициализирован — мокаем getInstance().
         mockkStatic(WorkManager::class)
-        every { WorkManager.getInstance(any()) } returns mockk(relaxed = true)
+        every { WorkManager.getInstance(any()) } returns workManager
         every { catalogProvider.catalog } returns flowOf(emptyList())
         coEvery { deviceInfoProvider.get() } returns DeviceInfo(34, 8192, 6000, 10_000_000_000L)
         manager = ModelManagerImpl(
@@ -639,6 +642,66 @@ class ModelManagerTest {
         assertTrue(bundled.exists())
         assertArrayEquals(newContent, bundled.readBytes())
         modelsDir.deleteRecursively()
+    }
+
+    private fun cardForDownload(id: String) = ModelCard(
+        id = id,
+        category = ModelCategory.TRANSLATION,
+        displayName = "Card",
+        description = "",
+        runtime = RuntimeType.MARIAN_ONNX,
+        sizeBytes = 1000,
+        ramRequiredMb = 10,
+        languages = listOf("ru"),
+        quality = 3,
+        speed = 3,
+        url = "http://host/model.onnx",
+        urls = emptyList(),
+        sha256 = null,
+        license = "MIT",
+        minAndroidSdk = 26,
+        recommendedRamMb = 100
+    )
+
+    @Test
+    fun `startDownload updates DOWNLOADING after scheduling the worker`() = runTest {
+        // Ревью, п.4: upsert DOWNLOADING только после успешной постановки
+        // воркера — порядок фиксируется счётчиком вызовов.
+        val calls = mutableListOf<String>()
+        every {
+            workManager.enqueueUniqueWork(any(), any(), any<OneTimeWorkRequest>())
+        } answers {
+            calls.add("schedule")
+            mockk<androidx.work.Operation>(relaxed = true)
+        }
+        var upserted: InstalledModel? = null
+        coEvery { repository.upsert(any()) } coAnswers {
+            calls.add("upsert")
+            upserted = firstArg()
+        }
+
+        manager.startDownload(cardForDownload("dl1"))
+
+        assertEquals(listOf("schedule", "upsert"), calls)
+        assertEquals(ModelStatus.DOWNLOADING, upserted?.status)
+    }
+
+    @Test
+    fun `startDownload keeps record status when scheduling fails`() = runTest {
+        every {
+            workManager.enqueueUniqueWork(
+                any(),
+                any(),
+                any<OneTimeWorkRequest>()
+            )
+        } throws IllegalStateException("WorkManager недоступен")
+
+        manager.startDownload(cardForDownload("dl2"))
+
+        // Отказ schedule — статус не должен меняться: upsert (DOWNLOADING)
+        // не выполняется вовсе.
+        coVerify(exactly = 0) { repository.upsert(any()) }
+        coVerify(exactly = 0) { repository.updateDownloadStatus(any(), any()) }
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.data.download
 
 import android.content.Context
+import android.os.StatFs
 import androidx.hilt.work.HiltWorker
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -12,6 +13,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.plox.llmtranslate.data.model.ModelRepository
+import com.plox.llmtranslate.data.storage.ModelStorage
+import com.plox.llmtranslate.domain.model.InstallCheckLogic
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
@@ -61,10 +64,30 @@ class ModelDownloadWorker @AssistedInject constructor(
             return Result.failure()
         }
 
-        val modelsRoot = applicationContext.getExternalFilesDir("models")
-            ?: applicationContext.filesDir
+        val modelsRoot = ModelStorage.modelsRoot(applicationContext)
         val modelsDir = File(modelsRoot, runtime.name)
         val urls = urlsCsv.split(',').filter { it.isNotBlank() }
+
+        // Ревью, п.3: гейт места до начала скачивания — пик установки по той
+        // же формуле, что и подсказка в UI (InstallCheckLogic): архивная
+        // распаковка ~2x, одиночный файл 1.2x. Нехватка — permanent-отказ
+        // (повтор без освобождения места бессилен), модель сразу в ERROR.
+        val isArchiveLayout = urls
+            .mapIndexed { index, url -> DownloadLayout.sanitizedBasename(url, index) }
+            .any { DownloadLayout.isArchive(it) }
+        val requiredFreeBytes = InstallCheckLogic.requiredDownloadFreeBytes(sizeBytes, isArchiveLayout)
+        if (requiredFreeBytes > 0L) {
+            val stat = StatFs(modelsRoot.absolutePath)
+            val freeBytes = stat.availableBlocksLong * stat.blockSizeLong
+            if (freeBytes < requiredFreeBytes) {
+                Timber.e(
+                    "Модель $modelId: недостаточно места — требуется $requiredFreeBytes байт, " +
+                        "доступно $freeBytes"
+                )
+                markError(modelId)
+                return Result.failure(workDataOf(KEY_ERROR to "Недостаточно свободного места"))
+            }
+        }
 
         Timber.d("Запуск скачивания $modelId из ${urls.size} URL")
 
@@ -92,8 +115,15 @@ class ModelDownloadWorker @AssistedInject constructor(
 
         return when (result) {
             is InstallResult.Success -> {
+                // bytesDone — по ФАКТУ установленных файлов (обход пути и сумма
+                // length()), а не по каталожному sizeBytes: у архивных установок
+                // размер распакованного содержимого отличается от размера
+                // архива/пучка в каталоге.
+                val installedBytes = File(result.path).walkTopDown()
+                    .filter { it.isFile }
+                    .sumOf { it.length() }
                 val saved = try {
-                    repository.finalizeDownload(modelId, result.path, sizeBytes)
+                    repository.finalizeDownload(modelId, result.path, installedBytes)
                 } catch (e: CancellationException) {
                     // Отмена воркера между завершением установки и записью READY —
                     // файлы уже на диске, убираем их как осиротевшие.
@@ -101,12 +131,16 @@ class ModelDownloadWorker @AssistedInject constructor(
                     throw e
                 }
                 if (!saved) {
-                    // Запись удалена/отменена во время скачивания — не восстанавливаем
-                    // (отменённую загрузку чистит отмена). Узкая гонка (issue #40):
-                    // файловая очистка в ModelManagerImpl.cancelDownload/delete могла
-                    // выполниться до завершившегося здесь transfer+rename — повторяем
+                    // Гонка отмены (issue #40 + ревью п.3): к моменту finalize
+                    // запись удалена или уже не в DOWNLOADING (DAO-гейт
+                    // finalizeDownloadById) — READY не выставляем, иначе
+                    // отменённая/пересозданная запись воскресла бы с чужими
+                    // файлами. Установленные файлы результата удаляем как
+                    // осиротевшие: файловая очистка на стороне
+                    // ModelManagerImpl.cancelDownload/delete могла выполниться
+                    // до завершившегося здесь transfer+rename — повторяем
                     // очистку по той же раскладке после гонки.
-                    Timber.d("Запись $modelId удалена во время скачивания — состояние не сохраняем")
+                    Timber.d("Запись $modelId удалена или выведена из DOWNLOADING — READY не ставим")
                     cleanupCancelledModel(modelId, modelsDir, runtime, urls)
                 }
                 Result.success()

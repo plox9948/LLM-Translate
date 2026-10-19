@@ -3,11 +3,14 @@ package com.plox.llmtranslate.domain
 import android.content.Context
 import android.net.Uri
 import android.os.StatFs
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
 import com.plox.llmtranslate.data.download.DownloadLayout
 import com.plox.llmtranslate.data.download.ModelDownloadWorker
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
+import com.plox.llmtranslate.data.storage.ModelStorage
 import com.plox.llmtranslate.domain.model.DeviceInfo
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import com.plox.llmtranslate.domain.model.InstallCheck
@@ -35,6 +38,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import timber.log.Timber
 import java.io.File
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -57,6 +61,9 @@ class ModelManagerImpl @Inject constructor(
 ) : ModelManager {
 
     private companion object {
+        /** Таймаут ожидания WorkManager-фьючерса при проверке живой загрузки. */
+        const val WORK_INFO_TIMEOUT_SECONDS = 5L
+
         /** Имя записи с метаданными в ZIP-экспорте мультифайловой модели. */
         const val META_ENTRY_NAME = "model_meta.json"
 
@@ -64,8 +71,9 @@ class ModelManagerImpl @Inject constructor(
         const val IMPORT_FILE_PREFIX = "imported_"
     }
 
+    /** Единый корень моделей ([ModelStorage]) — без дублирующего разрешения. */
     private val modelsDir: File
-        get() = context.getExternalFilesDir("models") ?: context.filesDir
+        get() = ModelStorage.modelsRoot(context)
 
     /**
      * Issue #75: сериализация импортов — promoteExtractedDir работает с общим
@@ -193,14 +201,57 @@ class ModelManagerImpl @Inject constructor(
         )
         scope.launch {
             try {
-                repository.upsert(model)
+                // Ревью, п.4: сначала постановка в WorkManager, затем upsert
+                // DOWNLOADING — при исключении schedule статус записи не
+                // меняется (нет висячего «скачивания» без воркера). Воркер
+                // получает все входные данные из inputData, а не из БД,
+                // поэтому upsert после schedule не ломает скачивание.
+                //
+                // ExistingWorkPolicy.KEEP — сознательная политика: повторный
+                // тап «Скачать» при живой загрузке НЕ пересоздаёт unique work,
+                // живой воркер сохраняет исходные inputData (URL, SHA-256).
+                // При этом upsert(DOWNLOADING) перезаписал бы строку нулевым
+                // прогрессом и визуально сбросил прогресс живой загрузки,
+                // поэтому при живом unique work upsert не выполняется (строка
+                // уже DOWNLOADING); если же строку успели удалить — upsert всё
+                // равно создаёт её.
+                val liveWork = hasLiveDownloadWork(model.id)
                 ModelDownloadWorker.schedule(context, model)
+                if (!liveWork || repository.getById(model.id) == null) {
+                    repository.upsert(model)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "Не удалось поставить на скачивание модель ${card.id}")
             }
         }
+    }
+
+    /**
+     * Есть ли живая unique-загрузка модели в WorkManager (ENQUEUED/RUNNING/
+     * BLOCKED) — см. [startDownload]. Неинициализированный/недоступный
+     * WorkManager считается «живой работы нет» (обычный путь schedule).
+     * Блокирующий [.get] будущего допустим: вызывается только из app-scope
+     * на [Dispatchers.IO], фьючерс WorkManager читает локальную БД.
+     */
+    private suspend fun hasLiveDownloadWork(modelId: String): Boolean = try {
+        WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWork(ModelDownloadWorker.workName(modelId))
+            .get(WORK_INFO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .any { info ->
+                info.state == WorkInfo.State.ENQUEUED ||
+                    info.state == WorkInfo.State.RUNNING ||
+                    info.state == WorkInfo.State.BLOCKED
+            }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Timber.w(
+            e,
+            "Не удалось проверить живую загрузку $modelId — считаю, что живой работы нет"
+        )
+        false
     }
 
     override fun cancelDownload(modelId: String) {
@@ -857,8 +908,7 @@ class AndroidDeviceInfoProvider @Inject constructor(
         val memInfo = android.app.ActivityManager.MemoryInfo()
         am.getMemoryInfo(memInfo)
 
-        val modelsDir = context.getExternalFilesDir("models")
-            ?: context.filesDir
+        val modelsDir = ModelStorage.modelsRoot(context)
         val stat = StatFs(modelsDir.absolutePath)
         val freeBytes = stat.availableBlocksLong * stat.blockSizeLong
 

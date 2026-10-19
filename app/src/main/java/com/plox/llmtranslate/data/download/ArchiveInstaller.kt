@@ -72,6 +72,18 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                                 Timber.w("Не удалось удалить архив после отмены: ${archiveFile.name}")
                             }
                             throw e
+                        } catch (e: SecurityException) {
+                            // zip-slip: содержимое архива того же источника не
+                            // изменится — повтор бессмысленен, permanent=true
+                            // (маппинг toInstallFailure этот случай не покрывает).
+                            Timber.e(e, "Небезопасный путь в архиве: $fileName")
+                            if (!archiveFile.delete()) {
+                                Timber.w("Не удалось удалить архив после zip-slip: ${archiveFile.name}")
+                            }
+                            return InstallResult.Failure(
+                                "Небезопасный путь в архиве: $fileName",
+                                permanent = true
+                            )
                         }
                         archiveFile.delete()
                         if (!extracted) {
@@ -84,6 +96,8 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                         return InstallResult.Failure("Не удалось скачать архив: $fileName")
                     is DownloadOutcome.Mismatch ->
                         return outcome.toInstallFailure()
+                    is DownloadOutcome.InsufficientStorage ->
+                        return outcome.toInstallFailure()
                 }
             } else {
                 when (val outcome = downloadFile(url, modelDir, fileName, hashes[index]) { fileProgress ->
@@ -93,6 +107,8 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                     is DownloadOutcome.NetworkError ->
                         return InstallResult.Failure("Не удалось скачать: $fileName")
                     is DownloadOutcome.Mismatch ->
+                        return outcome.toInstallFailure()
+                    is DownloadOutcome.InsufficientStorage ->
                         return outcome.toInstallFailure()
                 }
             }
@@ -152,7 +168,10 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         }
     }
 
-    private suspend fun extractTar(archiveFile: File, destDir: File, bzip2: Boolean): Boolean {
+    /**
+     * Распаковать tar(.gz/.bz2). internal — покрыто unit-тестом без сети.
+     */
+    internal suspend fun extractTar(archiveFile: File, destDir: File, bzip2: Boolean): Boolean {
         val createdFiles = mutableListOf<File>()
         return try {
             archiveFile.inputStream().buffered().use { fileInput ->
@@ -174,13 +193,24 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             // Отмена воркера: убираем полу-распакованные файлы и всплываем выше.
             discardPartial(createdFiles)
             throw e
+        } catch (e: SecurityException) {
+            // zip-slip тоже чистит осколки и всплывает — install() переведёт
+            // его в permanent-отказ.
+            discardPartial(createdFiles)
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "Ошибка распаковки tar: ${archiveFile.name}")
+            // Обычный сбой распаковки без очистки оставил бы полу-распакованные
+            // файлы, которые смешиваются со следующим распакованным деревом.
+            discardPartial(createdFiles)
             false
         }
     }
 
-    private suspend fun extractZip(archiveFile: File, destDir: File): Boolean {
+    /**
+     * Распаковать zip. internal — покрыто unit-тестом без сети.
+     */
+    internal suspend fun extractZip(archiveFile: File, destDir: File): Boolean {
         val createdFiles = mutableListOf<File>()
         return try {
             ZipInputStream(archiveFile.inputStream().buffered()).use { zip ->
@@ -196,8 +226,16 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             // Отмена воркера: убираем полу-распакованные файлы и всплываем выше.
             discardPartial(createdFiles)
             throw e
+        } catch (e: SecurityException) {
+            // zip-slip тоже чистит осколки и всплывает — install() переведёт
+            // его в permanent-отказ.
+            discardPartial(createdFiles)
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "Ошибка распаковки zip: ${archiveFile.name}")
+            // Обычный сбой распаковки без очистки оставил бы полу-распакованные
+            // файлы, которые смешиваются со следующим распакованным деревом.
+            discardPartial(createdFiles)
             false
         }
     }

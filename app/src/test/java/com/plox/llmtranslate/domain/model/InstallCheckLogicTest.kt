@@ -117,4 +117,14 @@ class InstallCheckLogicTest {
         )
         assertNull(warning)
     }
+
+    @Test
+    fun `required download free bytes by layout`() {
+        // Ревью, п.3 (гейт воркера): архивная раскладка — пик 2x,
+        // одиночный файл — 1.2x, неизвестный размер — пропуск проверки.
+        assertEquals(2_000_000L, InstallCheckLogic.requiredDownloadFreeBytes(1_000_000L, true))
+        assertEquals(1_200_000L, InstallCheckLogic.requiredDownloadFreeBytes(1_000_000L, false))
+        assertEquals(0L, InstallCheckLogic.requiredDownloadFreeBytes(0L, true))
+        assertEquals(0L, InstallCheckLogic.requiredDownloadFreeBytes(-5L, false))
+    }
 }

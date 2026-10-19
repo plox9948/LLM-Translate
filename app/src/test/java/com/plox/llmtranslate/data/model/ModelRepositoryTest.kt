@@ -161,7 +161,8 @@ class ModelRepositoryTest {
         repo.upsert(model.copy(sha256s = listOf("dd", "ee")))
         val restored = repo.getById("m1")
         assertEquals(listOf("dd", "ee"), restored?.sha256s)
-        assertEquals("dd,ee", dao.store.getValue("m1").sha256s)
+        // Разделитель колонки — «\n» (URL/хэши не содержат переносов).
+        assertEquals("dd\nee", dao.store.getValue("m1").sha256s)
 
         // Пустая колонка — пустой список (старые строки после миграции).
         assertEquals(emptyList<String?>(), entity(sha256s = "").toDomainOrNull()?.sha256s)
@@ -312,5 +313,62 @@ class ModelRepositoryTest {
         assertFalse(repo.updateDownloadProgress("keep", ModelStatus.DOWNLOADING, 10))
         assertFalse(repo.finalizeDownload("keep", "/files/keep", 5))
         assertNull(dao.getById("keep"))
+    }
+
+    @Test
+    fun `ready record consistency pure checks`() {
+        // Файл непустой — согласовано; пустой или отсутствует — нет.
+        assertTrue(readyRecordIsConsistent("/f/model.onnx") {
+            FileSnapshot(isDirectory = false, size = 10, childCount = 0)
+        })
+        assertFalse(readyRecordIsConsistent("/f/model.onnx") {
+            FileSnapshot(isDirectory = false, size = 0, childCount = 0)
+        })
+        // Каталог мультифайловой модели: непустой — ок, пустой — битая запись.
+        assertTrue(readyRecordIsConsistent("/f/model") {
+            FileSnapshot(isDirectory = true, size = 0, childCount = 3)
+        })
+        assertFalse(readyRecordIsConsistent("/f/model") {
+            FileSnapshot(isDirectory = true, size = 0, childCount = 0)
+        })
+        // filePath == null — проверять нечем; snapshot == null — путь
+        // недоступен (storage отмонтирован): вердикт не выносится.
+        assertTrue(readyRecordIsConsistent(null) { null })
+        assertTrue(readyRecordIsConsistent("/f/model") { null })
+    }
+
+    @Test
+    fun `markBrokenReadyRecords moves disk-inconsistent ready records to error`() = runTest {
+        val dao = FakeDao()
+        dao.upsert(entity(id = "ok-file")) // /files/m1 — непустой файл
+        dao.upsert(entity(id = "empty-file", filePath = "/files/empty"))
+        dao.upsert(entity(id = "missing-dir", filePath = "/files/dir"))
+        dao.upsert(entity(id = "no-path", filePath = null))
+        dao.upsert(
+            entity(id = "downloading", status = ModelStatus.DOWNLOADING.name,
+                filePath = "/files/partial")
+        )
+        dao.upsert(entity(id = "offline", filePath = "/files/external"))
+        val repo = ModelRepository(dao)
+
+        val broken = repo.markBrokenReadyRecords { path ->
+            when (path) {
+                "/files/m1" -> FileSnapshot(isDirectory = false, size = 1000, childCount = 0)
+                "/files/empty" -> FileSnapshot(isDirectory = false, size = 0, childCount = 0)
+                "/files/dir" -> FileSnapshot(isDirectory = true, size = 0, childCount = 0)
+                "/files/partial" -> FileSnapshot(isDirectory = false, size = 1, childCount = 0)
+                "/files/external" -> null // недоступный снимок — не трогаем
+                else -> FileSnapshot(isDirectory = false, size = 0, childCount = 0)
+            }
+        }
+
+        assertEquals(listOf("empty-file", "missing-dir"), broken)
+        assertEquals(ModelStatus.ERROR.name, dao.store.getValue("empty-file").status)
+        assertEquals(ModelStatus.ERROR.name, dao.store.getValue("missing-dir").status)
+        // Целые, без-path, не-READY и недоступные для verdict — не тронуты.
+        assertEquals(ModelStatus.READY.name, dao.store.getValue("ok-file").status)
+        assertEquals(ModelStatus.READY.name, dao.store.getValue("no-path").status)
+        assertEquals(ModelStatus.READY.name, dao.store.getValue("offline").status)
+        assertEquals(ModelStatus.DOWNLOADING.name, dao.store.getValue("downloading").status)
     }
 }

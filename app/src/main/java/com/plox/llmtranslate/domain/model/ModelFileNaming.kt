@@ -1,13 +1,13 @@
 package com.plox.llmtranslate.domain.model
 
-import com.plox.llmtranslate.data.download.DownloadLayout
-
 /**
  * Чистые правила именования файлов моделей для экспорта и распознавания
  * формата при импорте одиночного файла (ревью раунд 9: экспорт готовой
  * модели с путём без расширения получал имя с выдуманным «.gguf», который
  * импорт отвергал — цикл экспорт→импорт own-моделей был сломан).
  * Вынесено в объект для unit-теста round-trip без Android-специфики.
+ * Расширения архивов — общий источник [ArchiveFormats] (ревью, п.13:
+ * импорт data-слоя `DownloadLayout` из domain устранён).
  */
 object ModelFileNaming {
 
@@ -45,7 +45,7 @@ object ModelFileNaming {
         val lower = fileName.lowercase()
         return when {
             lower.contains("indictrans") -> RuntimeType.INDICTRANS_ONNX
-            lower.contains("sherpa") || DownloadLayout.isArchive(lower) ->
+            lower.contains("sherpa") || ArchiveFormats.isArchive(lower) ->
                 // Архивы (.zip/.tar.bz2/.tar.gz) без явных признаков ONNX/Marian
                 // — пачки sherpa.
                 RuntimeType.SHERPA
@@ -57,7 +57,7 @@ object ModelFileNaming {
     /** Имя заканчивается известным расширением модели или архива. */
     private fun isKnownExtension(fileName: String): Boolean {
         val lower = fileName.lowercase()
-        if (DownloadLayout.isArchive(lower)) return true
+        if (ArchiveFormats.isArchive(lower)) return true
         return lower.substringAfterLast('.', "") in KNOWN_EXTENSIONS
     }
 }
