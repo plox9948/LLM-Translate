@@ -61,9 +61,6 @@ class MarianOnnxRuntime @Inject constructor(
          */
         private const val REPETITION_PENALTY = 1.2f
 
-        /** Ёмкость LRU-кэша: два направления перевода + активная модель. */
-        private const val MODEL_CACHE_CAPACITY = 3
-
         /**
          * Лимит позиционных эмбеддингов Marian/opus-mt: модельный конфиг
          * задаёт `max_source_positions = 512` (таблица `embed_positions` —
@@ -117,7 +114,7 @@ class MarianOnnxRuntime @Inject constructor(
      * release() вызывается вне главного потока.
      */
     private val engineCache = EngineCacheScaffold<ModelBundle>(
-        capacity = MODEL_CACHE_CAPACITY,
+        capacity = EngineCacheScaffold.DEFAULT_MODEL_CACHE_CAPACITY,
         retentionProvider = retentionProvider,
         logLabel = "Marian",
         releaseBundle = ModelBundle::release,

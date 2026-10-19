@@ -19,6 +19,12 @@
     <string name="option_en">English</string>
     <string name="option_ne">नेपाली</string>
 
+    <!-- Языки перевода: двуязычные подписи чипов (ревью #21) -->
+    <string name="lang_title_auto">Авто (Auto)</string>
+    <string name="lang_title_ru">Русский (Russian)</string>
+    <string name="lang_title_en">English (English)</string>
+    <string name="lang_title_ne">नेपाली (Nepali)</string>
+
     <!-- Единицы измерения -->
     <string name="unit_gb">ГБ</string>
     <string name="unit_mb">МБ</string>
@@ -39,7 +45,7 @@
     <string name="translate_speak_cd">Озвучить</string>
     <string name="translate_copy_cd">Скопировать перевод</string>
     <string name="translate_copy_input_cd">Скопировать исходный текст</string>
-    <string name="translate_recording_hint">● Идёт запись… Нажмите на микрофон, чтобы остановить</string>
+    <string name="translate_recording_hint">● Идёт запись… %1$s — нажмите на микрофон, чтобы остановить</string>
     <string name="translate_mic_permission_denied">Нет разрешения на запись с микрофона. Разрешите доступ к микрофону в настройках приложения</string>
     <string name="translate_mic_missing_stt_model">Для распознавания речи скачайте модель распознавания на экране «Модели»</string>
     <string name="translate_select_language">Выберите язык</string>
@@ -115,6 +121,7 @@
     <string name="models_backup_import_done">Импортировано: %1$d, пропущено: %2$d</string>
     <string name="models_backup_import_done_settings">Импортировано: %1$d, пропущено: %2$d, настройки восстановлены</string>
     <string name="models_status_error">Ошибка скачивания</string>
+    <string name="models_status_busy">…</string>
     <string name="models_retry_download">Повторить</string>
     <string name="models_export_cancelled">Экспорт отменён</string>
 
@@ -127,6 +134,7 @@
     <string name="settings_theme">Тема</string>
     <string name="settings_theme_light">Светлая</string>
     <string name="settings_theme_dark">Тёмная</string>
+    <string name="settings_observe_failed">Не удалось загрузить настройки. Обновите экран</string>
     <string name="settings_unload_models">Выгрузка моделей</string>
     <string name="settings_unload_now">Сразу</string>
     <plurals name="settings_unload_after_default">

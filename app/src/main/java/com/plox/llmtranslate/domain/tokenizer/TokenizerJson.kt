@@ -91,8 +91,9 @@ class TokenizerJson {
     fun encode(text: String): List<Int> {
         if (!isLoaded) return emptyList()
         val normalized = normalizer?.normalize(text) ?: text
-        val words = normalized.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val words = normalized.split(WHITESPACE_REGEX).filter { it.isNotEmpty() }
         val ids = ArrayList<Int>(words.size * 2)
+        var unknownWarned = false
         for (word in words) {
             // Added-токены (языковые коды, спец-токены) — целиком по id.
             val specialId = addedTokenIdsByContent[word]
@@ -103,7 +104,16 @@ class TokenizerJson {
             val piece = metaspaceReplacement + word
             for (token in tokenizePiece(piece)) {
                 val id = vocab[token] ?: unkId
-                if (id != null) ids.add(id)
+                if (id != null) {
+                    ids.add(id)
+                } else if (!unknownWarned) {
+                    // unkId отсутствует: неизвестный токен выпадает из
+                    // последовательности — это не должно быть молчаливым
+                    // (при наличии <unk> вывод не меняется). Предупреждение
+                    // одно на encode, иначе лог тонет на мусорном входе.
+                    unknownWarned = true
+                    Timber.w("TokenizerJson: токен \"%s\" отсутствует в vocab, <unk> не задан — пропускается", token)
+                }
             }
         }
         return ids
@@ -126,7 +136,9 @@ class TokenizerJson {
         } else {
             joined
         }
-        return decoded.trim()
+        // Эталон HF/sentencepiece Metaspace-декодера — lstrip: снимается только
+        // ведущий пробел от префикса replacement; концевые пробелы значимы.
+        return decoded.trimStart()
     }
 
     /**
@@ -152,7 +164,9 @@ class TokenizerJson {
             val obj = el.jsonObject
             val id = (obj["id"] as? JsonPrimitive)?.intOrNull ?: return@forEach
             val content = (obj["content"] as? JsonPrimitive)?.contentOrNull ?: ""
-            val isSpecial = (obj["special"] as? JsonPrimitive)?.booleanOrNull ?: true
+            // Дефолт special — false, как в HF: added-токен без поля
+            // "special" не считается спец-токеном.
+            val isSpecial = (obj["special"] as? JsonPrimitive)?.booleanOrNull ?: false
             if (content.isNotEmpty()) {
                 byContent[content] = id
                 when (content) {
@@ -289,24 +303,40 @@ class TokenizerJson {
 
     // --- Unigram (Viterbi) ---
 
+    /**
+     * Юниты сегментации — code points, а не UTF-16 блоки: символы вне BMP
+     * (суррогатные пары) иначе расщепляются пополам и теряются при поиске в
+     * vocab (HF-токенизаторы работают по code points). Для BMP-входа — что и
+     * раньше (паритетные тесты не затрагиваются).
+     */
     private fun unigramTokenize(text: String): List<String> {
         if (text.isEmpty()) return emptyList()
-        val n = text.length
+        // offsets[k] — UTF-16-позиция начала k-го code point; offsets[n] — конец строки.
+        val offsets = ArrayList<Int>()
+        run {
+            var i = 0
+            while (i < text.length) {
+                offsets.add(i)
+                i += Character.charCount(text.codePointAt(i))
+            }
+        }
+        val n = offsets.size
+        fun cpEnd(k: Int): Int = if (k == n) text.length else offsets[k]
+
         val NEG_INF = -Float.MAX_VALUE
         val bestScore = FloatArray(n + 1) { NEG_INF }
-        val bestId = IntArray(n + 1) { -1 }
+        // Мёртвый маркер bestId удалён (ревью): признак покрытия — bestStart != -1.
         val bestStart = IntArray(n + 1) { -1 }
         bestScore[0] = 0f
 
         for (i in 0 until n) {
             if (bestScore[i] == NEG_INF) continue
             for (j in i + 1..n) {
-                val token = text.substring(i, j)
+                val token = text.substring(offsets[i], cpEnd(j))
                 val score = unigramScores[token] ?: continue
                 val newScore = bestScore[i] + score
                 if (newScore > bestScore[j]) {
                     bestScore[j] = newScore
-                    bestId[j] = 1
                     bestStart[j] = i
                 }
             }
@@ -315,12 +345,12 @@ class TokenizerJson {
         val tokens = ArrayList<String>()
         var i = n
         while (i > 0) {
-            if (bestId[i] == -1) {
-                // Не покрыто моделью — символ как есть.
-                tokens.add(text.substring(i - 1, i))
+            if (bestStart[i] == -1) {
+                // Не покрыто моделью — code point целиком.
+                tokens.add(text.substring(offsets[i - 1], cpEnd(i)))
                 i -= 1
             } else {
-                tokens.add(text.substring(bestStart[i], i))
+                tokens.add(text.substring(offsets[bestStart[i]], cpEnd(i)))
                 i = bestStart[i]
             }
         }
@@ -332,7 +362,15 @@ class TokenizerJson {
 
     private fun bpeTokenize(piece: String): List<String> {
         if (piece.isEmpty()) return emptyList()
-        var symbols = piece.map { it.toString() }.toMutableList()
+        // Начальные символы — по code points (см. комментарий к unigramTokenize):
+        // не-BMP символ должен оставаться одним юнитом, а не двумя суррогатами.
+        val symbols = ArrayList<String>()
+        var pos = 0
+        while (pos < piece.length) {
+            val cp = piece.codePointAt(pos)
+            symbols.add(String(Character.toChars(cp)))
+            pos += Character.charCount(cp)
+        }
         if (symbols.size <= 1) return symbols
 
         while (symbols.size > 1) {
@@ -353,6 +391,9 @@ class TokenizerJson {
     }
 
     private companion object {
+        /** Компилируется один раз (ревью): Regex на каждый вызов encode(). */
+        val WHITESPACE_REGEX = Regex("\\s+")
+
         val SPECIAL_TOKEN_CONTENTS = setOf(
             "<s>", "</s>", "<pad>", "<unk>", "<eos>", "<bos>", "<sep>", "<cls>"
         )
@@ -443,6 +484,8 @@ class TokenizerJson {
         /**
          * Обход darts-clone по байтам ключа; возвращает значения leaf-юнитов
          * по возрастанию длины совпавшего префикса (последнее — самое длинное).
+         * Границы массива проверяются перед КАЖДЫМ чтением trie — некорректный
+         * offset выводит_index за пределы (ревью).
          */
         private fun commonPrefixSearch(key: ByteArray): List<Int> {
             var nodePos = 0
@@ -450,25 +493,31 @@ class TokenizerJson {
             var unit = trie[nodePos]
             nodePos = nodePos xor unitOffset(unit)
             for (c in key) {
+                if (nodePos < 0 || nodePos >= trie.size) return results
                 val b = c.toInt() and 0xFF
                 if (b == 0) break
                 nodePos = nodePos xor b
-                if (nodePos >= trie.size) return results
+                if (nodePos < 0 || nodePos >= trie.size) return results
                 unit = trie[nodePos]
                 if (unitLabel(unit) != b) return results
                 nodePos = nodePos xor unitOffset(unit)
-                if (unitHasLeaf(unit) && nodePos < trie.size) results.add(unitValue(trie[nodePos]))
+                if (unitHasLeaf(unit) && nodePos in trie.indices) {
+                    results.add(unitValue(trie[nodePos]))
+                }
             }
             return results
         }
 
-        private fun unitHasLeaf(unit: Int): Boolean = (unit shr 8) and 1 == 1
+        private fun unitHasLeaf(unit: Int): Boolean = (unit ushr 8) and 1 == 1
         private fun unitValue(unit: Int): Int = unit and 0x7FFFFFFF
         private fun unitLabel(unit: Int): Int = unit and 0x800000FF.toInt()
 
-        // Смещение юнита darts-clone: сдвиг 0 или 1 в зависимости от флага
-        // метки (бит 9).
-        private fun unitOffset(unit: Int): Int = (unit shr 10) shl ((unit shr 9) and 1)
+        // Смещение юнита darts-lite: сдвиг 0 или ×2 в зависимости от флага
+        // (бит 9). Логический сдвиг и маска поля offset (22 бита, 0x3FFFFF):
+        // при установленном бите 31 арифметический shr давал отрицательное
+        // смещение и ArrayIndexOutOfBoundsException при encode (ревью).
+        private fun unitOffset(unit: Int): Int =
+            ((unit ushr 10) shl ((unit ushr 9) and 1)) and 0x3FFFFF
 
         private fun readU32(b: ByteArray, off: Int): Int =
             (b[off].toInt() and 0xFF) or

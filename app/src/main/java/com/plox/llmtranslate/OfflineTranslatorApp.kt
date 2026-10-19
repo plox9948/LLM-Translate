@@ -8,6 +8,7 @@ import com.plox.llmtranslate.data.catalog.RemoteCatalogProvider
 import com.plox.llmtranslate.data.model.FileSnapshot
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
+import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -139,18 +140,15 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
     }
 
     /**
-     * Очистка остатков WAV-записей распознавания в каталоге «audio»:
-     * обычно файл удаляется сразу после распознавания (TranslateViewModel),
-     * но остатки от процесса, убитого во время записи/распознавания,
-     * удаляются здесь при старте.
+     * Очистка osиротевших WAV-записей распознавания: рекордер пишет
+     * recording_*.wav в каталог кэша (cacheDir) и удаляет живой файл после
+     * распознавания; остатки от процесса, убитого во время записи, чистит
+     * общий хелпер [AudioRecorder.cleanupOrphanRecordings] — вызывается и
+     * здесь при старте (файлы старше суточного порога), и при старте самой
+     * записи. Логика одна, каталога «audio» в приложении нет (ревью).
      */
     private fun cleanupAudioRecords() {
-        val files = getExternalFilesDir("audio")?.listFiles() ?: return
-        files.forEach { file ->
-            if (file.isFile && !file.delete()) {
-                Timber.w("Не удалось удалить остаток записи: ${file.name}")
-            }
-        }
+        AudioRecorder.cleanupOrphanRecordings(cacheDir)
     }
 }
 

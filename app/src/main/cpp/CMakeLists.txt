@@ -31,7 +31,7 @@ endif()
 set(SLIMT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/slimt)
 
 # sentencepiece (встроенный, protobuf-lite) + ruy
-set(SPM_USE_BUILTIN_PROTOBUF ON)
+set(SPM_USE_BUILTIN_PROTOBUF ON CACHE BOOL "" FORCE)
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 add_subdirectory(${SLIMT_ROOT}/3rd-party ${CMAKE_CURRENT_BINARY_DIR}/3rd-party)
 

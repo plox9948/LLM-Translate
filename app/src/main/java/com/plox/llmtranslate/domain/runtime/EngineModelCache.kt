@@ -50,9 +50,12 @@ class EngineModelCache<T>(private val capacity: Int) {
      * @return вытесненные пары (id, значение) в порядке вытеснения.
      */
     fun evictOverCapacity(): List<Pair<String, T>> {
-        val evicted = mutableListOf<Pair<String, T>>()
-        while (map.size > capacity) {
-            val iterator = map.entries.iterator()
+        if (map.size <= capacity) return emptyList()
+        // Один итератор с начала (наименее давно использованные — первые):
+        // прежняя версия создавала новый итератор на каждую итерацию (ревью).
+        val evicted = ArrayList<Pair<String, T>>(map.size - capacity)
+        val iterator = map.entries.iterator()
+        while (map.size > capacity && iterator.hasNext()) {
             val eldest = iterator.next()
             evicted += eldest.key to eldest.value
             iterator.remove()

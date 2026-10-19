@@ -77,9 +77,6 @@ class IndicTransOnnxRuntime @Inject constructor(
         private val PAST_SUFFIXES = listOf(
             "decoder.key", "decoder.value", "encoder.key", "encoder.value"
         )
-
-        /** Ёмкость LRU-кэша: два направления перевода + активная модель. */
-        private const val MODEL_CACHE_CAPACITY = 3
     }
 
     /**
@@ -113,7 +110,7 @@ class IndicTransOnnxRuntime @Inject constructor(
      * release() вызывается вне главного потока.
      */
     private val engineCache = EngineCacheScaffold<ModelBundle>(
-        capacity = MODEL_CACHE_CAPACITY,
+        capacity = EngineCacheScaffold.DEFAULT_MODEL_CACHE_CAPACITY,
         retentionProvider = retentionProvider,
         logLabel = "IndicTrans",
         releaseBundle = ModelBundle::release,
@@ -252,14 +249,12 @@ class IndicTransOnnxRuntime @Inject constructor(
      * тексту не видела добавленные пунктуацией токены и допускала превышение
      * лимита). Сверху накладывается [CHUNK_BUDGET_CAP] = 250 как страховка.
      */
-    private fun chunkBudget(srcTok: TokenizerJson, srcLang: String, tgtLang: String): Int {
-        val prefixTokens = srcTok.encode("$srcLang $tgtLang").size
+    private fun chunkBudget(srcTok: TokenizerJson): Int {
         val eosTokens = if (srcTok.eosId() != null) 1 else 0
         val budget = minOf(CHUNK_BUDGET_CAP, EMBED_POSITION_LIMIT - eosTokens)
         Timber.d(
             "IndicTrans: бюджет чанка (пост-preprocess, префикс включён)=$budget " +
-                "(prefix=$prefixTokens, eos=$eosTokens, " +
-                "cap=$CHUNK_BUDGET_CAP, лимит=$EMBED_POSITION_LIMIT)"
+                "(eos=$eosTokens, cap=$CHUNK_BUDGET_CAP, лимит=$EMBED_POSITION_LIMIT)"
         )
         return budget
     }
@@ -300,23 +295,30 @@ class IndicTransOnnxRuntime @Inject constructor(
 
                 try {
                     // Flores-коды языков (по схеме IndicTransToolkit).
-                    // Неизвестный язык подменяется английским — подмена явна в логе,
-                    // чтобы тихая подстановка не выглядела как корректный перевод.
+                    // Неизвестный язык — явная DirectionMismatch (ревью): прежняя
+                    // тихая подмена на английский давала «корректный» перевод
+                    // не тем префиксом; main-путь отсекается directionMismatch
+                    // активного пучка выше, сюда доходят только импортированные
+                    // паки без объявленных языков.
                     val srcLang = when (from) {
                         "ne" -> IndicProcessorLite.NEPALI
                         "en" -> IndicProcessorLite.ENGLISH
-                        else -> {
-                            Timber.w("IndicTrans: неизвестный язык источника \"$from\" — подмена на английский")
-                            IndicProcessorLite.ENGLISH
-                        }
+                        else -> return@withContext Result.failure(
+                            RuntimeError.DirectionMismatch(
+                                "indictrans",
+                                "IndicTrans не поддерживает язык \"$from\""
+                            )
+                        )
                     }
                     val tgtLang = when (to) {
                         "ne" -> IndicProcessorLite.NEPALI
                         "en" -> IndicProcessorLite.ENGLISH
-                        else -> {
-                            Timber.w("IndicTrans: неизвестный язык цели \"$to\" — подмена на английский")
-                            IndicProcessorLite.ENGLISH
-                        }
+                        else -> return@withContext Result.failure(
+                            RuntimeError.DirectionMismatch(
+                                "indictrans",
+                                "IndicTrans не поддерживает язык \"$to\""
+                            )
+                        )
                     }
 
                     // План чанков: tokenCount — длина ПОЛНОГО входа энкодера
@@ -325,7 +327,7 @@ class IndicTransOnnxRuntime @Inject constructor(
                     // Суммарная оценка в planChunks с префиксом в каждом
                     // слагаемом завышена — это консервативно: реальный
                     // encode склейки всегда не больше оценки (ревью #79).
-                    val budget = chunkBudget(srcTok, srcLang, tgtLang)
+                    val budget = chunkBudget(srcTok)
                     val plan = planChunks(
                         text,
                         { t -> srcTok.encode(IndicProcessorLite.preprocess(t, srcLang, tgtLang)).size },
@@ -337,10 +339,11 @@ class IndicTransOnnxRuntime @Inject constructor(
                         )
                     }
 
+                    // Полная токенизация входа в лог не вычисляется: аргументы
+                    // Timber.d строятся всегда (в т.ч. без установленного дерева) —
+                    // лишний encode всего текста (ревью).
                     Timber.d(
-                        "IndicTrans: вход разбит на ${plan.chunks.size} чанков " +
-                            "(budget=$budget, длина входа после preprocess=" +
-                            "${srcTok.encode(IndicProcessorLite.preprocess(text, srcLang, tgtLang)).size} токенов)"
+                        "IndicTrans: вход разбит на ${plan.chunks.size} чанков (budget=$budget)"
                     )
                     val merged = StringBuilder()
                     for (index in plan.chunks.indices) {
@@ -355,6 +358,12 @@ class IndicTransOnnxRuntime @Inject constructor(
                                 if (index > 0) merged.append(plan.separators[index - 1])
                                 merged.append(chunkText.trim())
                             },
+                            // Один сбойный чанк роняет весь перевод (overall-failure):
+                            // частичный результат («склейка готовых + явная ошибка»)
+                            // требует двойного контракта Result у TranslationEngine
+                            // и доработки UI — дороже, чем польза на редких сбоях
+                            // среднего чанка. TODO: частичный результат при
+                            // сбое НЕ-первого чанка.
                             onFailure = { return@withContext Result.failure(it) }
                         )
                     }
@@ -428,8 +437,10 @@ class IndicTransOnnxRuntime @Inject constructor(
         val (firstText, firstOutcome) = translateOnce(
             ortEnv, bundle, inputIds, attentionMask, noRepeatNgramSize = 0
         )
+        // sourceText — текст чанка: повторяющийся паттерн ВЫХОДА, присутствующий
+        // и во входе («no no no…»), не считается вырождением (ревью).
         val firstDegenerate = isDegenerateOutput(
-            firstText, firstOutcome.eosReached, firstOutcome.hitMaxLength
+            firstText, firstOutcome.eosReached, firstOutcome.hitMaxLength, sourceText = text
         )
         Timber.d(
             "IndicTrans: проход 1 вырожден=$firstDegenerate " +
@@ -447,7 +458,8 @@ class IndicTransOnnxRuntime @Inject constructor(
                 noRepeatNgramSize = NO_REPEAT_NGRAM_SIZE
             )
             val retryDegenerate = isDegenerateOutput(
-                retryText, retryOutcome.eosReached, retryOutcome.hitMaxLength
+                retryText, retryOutcome.eosReached, retryOutcome.hitMaxLength,
+                sourceText = text
             )
             Timber.d(
                 "IndicTrans: ретрай (ngram=$NO_REPEAT_NGRAM_SIZE) " +
@@ -456,14 +468,18 @@ class IndicTransOnnxRuntime @Inject constructor(
                     "hitMaxLength=${retryOutcome.hitMaxLength})"
             )
             if (retryDegenerate) {
-                return Result.failure(
-                    RuntimeError.InferenceFailed(
-                        "indictrans",
-                        "Декодер не смог построить устойчивый перевод"
-                    )
-                )
+                // Оба прохода вырождены (типично для легитимных повторов ВХОДА,
+                // где ретрай с маской тоже вырождается): ошибка теряла перевод
+                // целиком — берём лучший по доле уникальных слов из двух,
+                // при равенстве — первый (чистый greedy ближе к входу) (ревью).
+                if (uniqueWordRatio(retryText) > uniqueWordRatio(firstText)) {
+                    retryText
+                } else {
+                    firstText
+                }
+            } else {
+                retryText
             }
-            retryText
         }
 
         // Детокенизация строго после триммера: правилу 2

@@ -2,6 +2,8 @@
 // языковых паков Firefox Translations (Bergamot), как в offline-translator.
 #include <jni.h>
 
+#include <android/log.h>
+
 #include <atomic>
 #include <exception>
 #include <fstream>
@@ -36,6 +38,14 @@ void throw_java(JNIEnv *env, const char *message) {
     jclass cls = env->FindClass("java/lang/IllegalStateException");
     if (cls != nullptr) {
         env->ThrowNew(cls, message);
+    } else {
+        // FindClass вернул nullptr (pending-исключение потока): нативная
+        // ошибка иначе теряется без следа — снимаем JNI-состояние и пишем
+        // текст ошибки в logcat (ревью).
+        env->ExceptionClear();
+        __android_log_print(ANDROID_LOG_ERROR, "slimt_jni",
+                            "throw_java: FindClass failed, native error: %s",
+                            message);
     }
 }
 
@@ -86,6 +96,18 @@ std::string jstr_to_utf8(JNIEnv *env, jstring value) {
             i += 6;
             continue;
         }
+        // Одиночный (непарный) суррогат модифицированной UTF-8: ED A0-BF xx.
+        // Как отдельная 3-байтовая последовательность он не является валидным
+        // UTF-8, но раньше проходил молча — подменяем U+FFFD, как utf8_to_jstr
+        // при обратном преобразовании (ревью).
+        if (c == 0xED && i + 2 < cesu.size() && u8(cesu[i + 1]) >= 0xA0 &&
+            u8(cesu[i + 1]) <= 0xBF && is_continuation(i + 2)) {
+            utf8.push_back(static_cast<char>(0xEF));
+            utf8.push_back(static_cast<char>(0xBF));
+            utf8.push_back(static_cast<char>(0xBD));
+            i += 3;
+            continue;
+        }
         utf8.push_back(c);
         ++i;
     }
@@ -100,6 +122,12 @@ jstring utf8_to_jstr(JNIEnv *env, const std::string &text) {
         size_t len = 1;
         if (c < 0x80) {
             cp = c;
+        } else if (c == 0xC0 || c == 0xC1) {
+            // Overlong-кодирование (0xC0/0xC1 lead): младшие ASCII-байты,
+            // недопустимые как многобайтовая форма — U+FFFD (ревью).
+            units.push_back(static_cast<char16_t>(0xFFFD));
+            ++i;
+            continue;
         } else if ((c & 0xE0u) == 0xC0u) {
             cp = c & 0x1Fu;
             len = 2;
@@ -121,8 +149,20 @@ jstring utf8_to_jstr(JNIEnv *env, const std::string &text) {
             units.push_back(static_cast<char16_t>(0xFFFD));
             break;
         }
+        bool malformed = false;
         for (size_t j = 1; j < len; ++j) {
+            if ((static_cast<unsigned char>(text[i + j]) & 0xC0u) != 0x80u) {
+                malformed = true;
+                break;
+            }
             cp = (cp << 6) | (static_cast<unsigned char>(text[i + j]) & 0x3Fu);
+        }
+        if (malformed) {
+            // Битый continuation-байт: U+FFFD за lead-байтом, переосмысление
+            // продолжения со следующего байта (ревью).
+            units.push_back(static_cast<char16_t>(0xFFFD));
+            ++i;
+            continue;
         }
         i += len;
         if (cp > 0xFFFF) {
@@ -133,6 +173,10 @@ jstring utf8_to_jstr(JNIEnv *env, const std::string &text) {
             units.push_back(static_cast<char16_t>(cp));
         }
     }
+    // NewString может вернуть nullptr без pending-исключения при нехватке
+    // памяти в куче JVM (OOM при аллокации строки). ExceptionCheck здесь не
+    // делается намеренно: вызывающий трактует null как «нет результата»
+    // (см. KDoc SlimtNative.nativeTakeResult/nativeTakeError).
     return env->NewString(reinterpret_cast<const jchar *>(units.data()),
                           static_cast<jsize>(units.size()));
 }
@@ -173,7 +217,11 @@ Model::Config detect_config(const std::string &model_path) {
                 ++i;
                 any = true;
             }
-            if (any && i < head.size() && head[i] == '_' && num > best) {
+            // Имя слоя может завершаться ЛЮБЫМ нецифровым разделителем
+            // ('_', '.', '\0', конец прочитанного заголовка) — раньше
+            // требовался ровно '_'. Цикл выше остановился на нецифровом
+            // байте или на границе, значит разделитель корректен (ревью).
+            if (any && num > best) {
                 best = num;
             }
         }

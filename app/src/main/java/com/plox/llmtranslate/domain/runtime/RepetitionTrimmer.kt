@@ -52,6 +52,16 @@ package com.plox.llmtranslate.domain.runtime
  */
 internal object RepetitionTrimmer {
 
+    /** Разделитель слов: компилируется один раз (вызов после каждого декада). */
+    private val WHITESPACE = Regex("\\s+")
+
+    /**
+     * TODO(стоимость): [findDuplicate] — перебор start×period, O(n²) по числу
+     * слов вывода (итеративно, цепные дубли). Для декодов ≤256 токенов это
+     * доли миллисекунд; при росте лимита генерации — переписать на
+     * линейный/суффиксный поиск повторов.
+     */
+
     /** Минимальная длина дублируемого блока в словах (правило 1). */
     private const val MIN_BLOCK_WORDS = 2
 
@@ -65,7 +75,7 @@ internal object RepetitionTrimmer {
     fun trim(text: String): String {
         // Минимум для любого правила — два словесных токена
         // («Hello, Hello.» — даже два токена с прилипшей пунктуацией).
-        val words = text.trim().split(Regex("\\s+"))
+        val words = text.trim().split(WHITESPACE)
         if (words.size < 2) return text
 
         var current = words

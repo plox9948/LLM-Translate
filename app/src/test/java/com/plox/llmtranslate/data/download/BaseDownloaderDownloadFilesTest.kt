@@ -24,6 +24,13 @@ class BaseDownloaderDownloadFilesTest {
             modelId: String,
             sha256s: List<String?> = emptyList()
         ): DownloadOutcome = downloadFiles(urls, targetDir, modelId, sha256s) {}
+
+        suspend fun fetchSingle(
+            url: String,
+            targetDir: File,
+            fileName: String,
+            expectedSha: String?
+        ): DownloadOutcome = downloadFile(url, targetDir, fileName, expectedSha) {}
     }
 
     private val downloader = TestDownloader()
@@ -139,6 +146,35 @@ class BaseDownloaderDownloadFilesTest {
             )
 
             assertTrue(outcome is DownloadOutcome.Success)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `single downloadFile reuses done file matching sha without network`() = runBlocking {
+        val root = tempDir()
+        try {
+            // Ревью, п.4: одиночная загрузка (архив/одиночный ONNX) обязана
+            // переиспользовать целый целевой файл предыдущей попытки —
+            // URL на закрытый порт: любой факт перекачки дал бы NetworkError.
+            val payload = "payload".toByteArray()
+            File(root, "model.onnx").writeBytes(payload)
+            File(root, "model.onnx.part").writeBytes(byteArrayOf(7))
+            File(root, "model.onnx.part.meta").writeText("stale")
+
+            val outcome = downloader.fetchSingle(
+                url = deadUrl("model.onnx"),
+                targetDir = root,
+                fileName = "model.onnx",
+                expectedSha = sha256(payload)
+            )
+
+            assertTrue(outcome is DownloadOutcome.Success)
+            assertSameBytes(payload, File(root, "model.onnx").readBytes())
+            // Осиротевшие части докачки рядом с целым целевым файлом убраны.
+            assertFalse(File(root, "model.onnx.part").exists())
+            assertFalse(File(root, "model.onnx.part.meta").exists())
         } finally {
             root.deleteRecursively()
         }

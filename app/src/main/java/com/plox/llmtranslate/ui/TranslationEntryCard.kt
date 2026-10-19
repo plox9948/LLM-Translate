@@ -1,6 +1,5 @@
 package com.plox.llmtranslate.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,7 +19,8 @@ import androidx.compose.ui.unit.dp
  * Общий каркас карточки записи «История»/«Избранное»: строка направления,
  * слот [actions] кнопок справа в шапке и фрагменты исходного/переведённого
  * текстов. Клик по карточке вызывает [onUse] (подстановка записи на экран
- * «Перевод»).
+ * «Перевод») — через штатный [Card] с onClick (ревью #22), корректные ripple
+ * и accessibility-метки карточки.
  */
 @Composable
 internal fun TranslationEntryCard(
@@ -32,9 +32,8 @@ internal fun TranslationEntryCard(
     actions: @Composable () -> Unit
 ) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onUse),
+        onClick = onUse,
+        modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )

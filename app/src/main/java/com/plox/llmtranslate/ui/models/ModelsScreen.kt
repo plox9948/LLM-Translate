@@ -44,6 +44,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -67,6 +68,9 @@ import com.plox.llmtranslate.domain.model.RuntimeType
 import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
+import com.plox.llmtranslate.ui.ErrorBanner
+import com.plox.llmtranslate.ui.formatBytes
+import com.plox.llmtranslate.ui.translate.TranslateLanguage
 import kotlinx.coroutines.delay
 import java.util.Locale
 
@@ -175,7 +179,11 @@ fun ModelsScreen(
     }
 
     // Предупреждение о нехватке ОЗУ при одновременном нахождении в памяти LLM и STT.
-    val ramWarning = viewModel.checkRamWarning()
+    // Мемоизировано (ревью #16): домен-проверка только по загруженным моделям и
+    // снимку устройства, без пересчёта на каждой рекомпозиции.
+    val ramWarning = remember(uiState.loadedModels, deviceInfo) {
+        viewModel.checkRamWarning()
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -243,7 +251,8 @@ fun ModelsScreen(
                         ) { viewModel.clearStatusMessage() }
                 ) {
                     Text(
-                        text = uiState.statusMessage ?: "…",
+                        text = uiState.statusMessage
+                            ?: stringResource(R.string.models_status_busy),
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(12.dp)
@@ -305,13 +314,18 @@ fun ModelsScreen(
                 )
                 val isActive =
                     if (card.category == ModelCategory.TTS) tts.selected else activeId == card.id
-                val check = deviceInfo?.let { viewModel.checkInstall(card, it) }
+                // Проверка совместимости мемоизирована по карточке и снимку
+                // устройства (ревью #16): домен-вызов без пересчёта на каждой
+                // рекомпозиции списка.
+                val check = remember(card.id, deviceInfo) {
+                    deviceInfo?.let { viewModel.checkInstall(card, it) }
+                }
                 // Чипы «язык распознавания» — только на установленных STT-карточках
                 // по языкам самой модели (issue #28).
                 val sttChips = if (card.category == ModelCategory.STT &&
                     installedModel?.isReady == true
                 ) {
-                    STT_CHIP_LANGUAGES.filter { it in card.languages }
+                    TranslateLanguage.SUPPORTED_CODES.filter { it in card.languages }
                 } else {
                     emptyList()
                 }
@@ -455,36 +469,6 @@ private fun syntheticInstalledCard(model: InstalledModel): ModelCard = ModelCard
     recommendedRamMb = model.recommendedRamMb,
     hidden = false
 )
-
-/**
- * Баннер ошибки/предупреждения на весь экран.
- * @param onClick необязательный обработчик тапа (скрытие баннера).
- */
-@Composable
-private fun ErrorBanner(text: String, onClick: (() -> Unit)? = null) {
-    val content: @Composable () -> Unit = {
-        Text(
-            text = text,
-            color = MaterialTheme.colorScheme.onErrorContainer,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(12.dp)
-        )
-    }
-    if (onClick != null) {
-        Surface(
-            onClick = onClick,
-            color = MaterialTheme.colorScheme.errorContainer,
-            shape = MaterialTheme.shapes.medium,
-            modifier = Modifier.fillMaxWidth()
-        ) { content() }
-    } else {
-        Surface(
-            color = MaterialTheme.colorScheme.errorContainer,
-            shape = MaterialTheme.shapes.medium,
-            modifier = Modifier.fillMaxWidth()
-        ) { content() }
-    }
-}
 
 /**
  * Блок «Загружено в память»: модели, находящиеся в ОЗУ сейчас,
@@ -984,27 +968,19 @@ private fun categoryTitle(category: ModelCategory): String = stringResource(
     }
 )
 
-// Пороги форматирования размера (КиБ/МиБ/ГиБ в байтах).
-private const val BYTES_IN_KB = 1_024L
-private const val BYTES_IN_MB = 1_048_576L
-private const val BYTES_IN_GB = 1_073_741_824L
-
-/** Поддерживаемые языки для чипов назначения STT-модели (issue #28). */
-private val STT_CHIP_LANGUAGES = listOf("ru", "en", "ne")
-
-/** Поддерживаемые языки для чипов назначения Piper TTS-модели (issue #50). */
-private val TTS_CHIP_LANGUAGES = listOf("ru", "en", "ne")
+// Пороги форматирования размера вынесены в ui.formatBytes (ревью #19).
 
 /**
  * Языки чипов «язык озвучивания» карточки TTS: покрываемые карточкой RU/EN/NE.
  * Чипы есть у скачиваемых Piper-карточек (issue #50) и у карточки Системного
- * Android TTS (issue #53); у RHVOICE/eSpeak-ярлыков чипов нет.
+ * Android TTS (issue #53); у RHVOICE/eSpeak-ярлыков чипов нет. Общий список
+ * поддерживаемых языков — [TranslateLanguage.SUPPORTED_CODES] (ревью #20).
  */
 private fun ttsChipLanguages(card: ModelCard): List<String> =
     if (card.category == ModelCategory.TTS &&
         (card.runtime == RuntimeType.PIPER_ONNX || card.runtime == RuntimeType.SYSTEM_TTS)
     ) {
-        TTS_CHIP_LANGUAGES.filter { it in card.languages }
+        TranslateLanguage.SUPPORTED_CODES.filter { it in card.languages }
     } else {
         emptyList()
     }
@@ -1060,16 +1036,4 @@ private fun ttsCardState(
             chips.filter { modelReady && ttsByLanguage[it] == card.id }.toSet()
         }
     )
-}
-
-@Composable
-internal fun formatBytes(bytes: Long): String {
-    val unitGb = stringResource(R.string.unit_gb)
-    val unitMb = stringResource(R.string.unit_mb)
-    val unitKb = stringResource(R.string.unit_kb)
-    return when {
-        bytes >= BYTES_IN_GB -> String.format(Locale.US, "%.1f %s", bytes / BYTES_IN_GB.toDouble(), unitGb)
-        bytes >= BYTES_IN_MB -> String.format(Locale.US, "%.0f %s", bytes / BYTES_IN_MB.toDouble(), unitMb)
-        else -> String.format(Locale.US, "%.0f %s", bytes / BYTES_IN_KB.toDouble(), unitKb)
-    }
 }

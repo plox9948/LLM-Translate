@@ -4,7 +4,9 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.RuntimeType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -125,12 +127,39 @@ class RuntimeRouter @Inject constructor(
      */
     suspend fun releaseAll() {
         audioRecorder.cancel()
-        marianOnnxRuntime.release()
-        indicTransOnnxRuntime.release()
-        slimtRuntime.release()
-        sherpaSttEngine.release()
+        releaseSafely("Marian") { marianOnnxRuntime.release() }
+        releaseSafely("IndicTrans") { indicTransOnnxRuntime.release() }
+        releaseSafely("slimt") { slimtRuntime.release() }
+        releaseSafely("sherpa") { sherpaSttEngine.release() }
         // Piper release() не suspend: останавливает озвучку и асинхронно
         // освобождает нативный OfflineTts под своим мьютексом (issue #52).
         piperTtsRuntime.release()
+    }
+
+    /**
+     * Один release() движка под таймаутом и try/catch (ревью): зависший
+     * нативный инференс, удерживающий мьютекс движка, не должен блокировать
+     * разгрузку остальных рантаймов — по образцу ограниченного дренажа
+     * SlimtRuntime. Ошибка/таймаут одного движка логируются, остальные
+     * двигаются безусловно; отмена внешней корутины не проглатывается.
+     */
+    private suspend fun releaseSafely(label: String, release: suspend () -> Unit) {
+        try {
+            val completed = withTimeoutOrNull(RELEASE_TIMEOUT_MS) { release() }
+            if (completed == null) {
+                Timber.w("Разгрузка рантайма $label не завершилась за ${RELEASE_TIMEOUT_MS} мс — пропущена")
+            }
+        } catch (e: CancellationException) {
+            // Внутренняя отмена сгоревшего withTimeoutOrNull уже погашена им;
+            // сюда доходит только отмена внешней корутины — всплываем выше.
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "Ошибка разгрузки рантайма $label")
+        }
+    }
+
+    private companion object {
+        /** Лимит ожидания release() одного движка (по образцу дренажа slimt). */
+        const val RELEASE_TIMEOUT_MS = 10_000L
     }
 }

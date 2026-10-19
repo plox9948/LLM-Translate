@@ -77,10 +77,16 @@ class ModelDownloadWorker @AssistedInject constructor(
         // же формуле, что и подсказка в UI (InstallCheckLogic): архивная
         // распаковка ~2x, одиночный файл 1.2x. Нехватка — permanent-отказ
         // (повтор без освобождения места бессилен), модель сразу в ERROR.
-        val isArchiveLayout = urls
-            .mapIndexed { index, url -> DownloadLayout.sanitizedBasename(url, index) }
-            .any { DownloadLayout.isArchive(it) }
-        val requiredFreeBytes = InstallCheckLogic.requiredDownloadFreeBytes(sizeBytes, isArchiveLayout)
+        val fileNames = urls.mapIndexed { index, url -> DownloadLayout.sanitizedBasename(url, index) }
+        val isArchiveLayout = fileNames.any { DownloadLayout.isArchive(it) }
+        // gzip-артефакты slimt-пучков (ревью): DownloadLayout.isArchive их не
+        // учитывает, но пик при gunzip ≈1.5–1.7x размера — отдельный
+        // коэффициент InstallCheckLogic (архивная 2x здесь перерасходовала бы место).
+        val isGzipLayout = !isArchiveLayout &&
+            fileNames.any { DownloadLayout.isCompressedArtifact(it) }
+        val requiredFreeBytes = InstallCheckLogic.requiredDownloadFreeBytes(
+            sizeBytes, isArchiveLayout, isGzipLayout
+        )
         if (requiredFreeBytes > 0L) {
             val stat = StatFs(modelsRoot.absolutePath)
             val freeBytes = stat.availableBlocksLong * stat.blockSizeLong
@@ -116,6 +122,13 @@ class ModelDownloadWorker @AssistedInject constructor(
             // контекст воркера ещё жив (см. cleanupCancelledModel, issue #40).
             cleanupCancelledModel(modelId, modelsDir, runtime, urls)
             throw e
+        } catch (e: Exception) {
+            // Необработанный сбой инсталлятора (IOException, сбой ФС): без
+            // перехвата воркер падает терминально (WorkManager не повторяет
+            // упавший CoroutineWorker), а запись навеки остаётся DOWNLOADING.
+            Timber.e(e, "Необработанный сбой установки модели $modelId")
+            markErrorNonCancellable(modelId)
+            return Result.failure(workDataOf(KEY_ERROR to "Сбой установки: ${e.message}"))
         }
 
         return when (result) {
@@ -134,6 +147,14 @@ class ModelDownloadWorker @AssistedInject constructor(
                     // файлы уже на диске, убираем их как осиротевшие.
                     cleanupCancelledModel(modelId, modelsDir, runtime, urls)
                     throw e
+                } catch (e: Exception) {
+                    // Сбой записи READY (например, Room/диск): установка удалась,
+                    // но запись осталась бы в DOWNLOADING — помечаем ERROR.
+                    // Установленные файлы не удаляем: повторная попытка повторит
+                    // установку по той же раскладке и доведёт запись до READY.
+                    Timber.e(e, "Не удалось зафиксировать READY для модели $modelId")
+                    markErrorNonCancellable(modelId)
+                    return Result.failure(workDataOf(KEY_ERROR to "Сбой завершения установки: ${e.message}"))
                 }
                 if (!saved) {
                     // Гонка отмены (issue #40 + ревью п.3): к моменту finalize
@@ -179,6 +200,16 @@ class ModelDownloadWorker @AssistedInject constructor(
     private suspend fun markError(modelId: String) {
         repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
     }
+
+    /**
+     * Пометить ERROR после необработанного исключения: запись статуса — на
+     * [NonCancellable], чтобы она выполнилась даже при нестабильном/
+     * отменяющемся контексте воркера.
+     */
+    private suspend fun markErrorNonCancellable(modelId: String) =
+        withContext(NonCancellable + Dispatchers.IO) {
+            repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
+        }
 
     /**
      * Очистить остатки незавершённой установки модели по раскладке

@@ -30,13 +30,23 @@ internal fun <T> observeResilient(
     onValue: suspend (T) -> Unit
 ) {
     scope.launch {
+        // Первая штатная эмиссия после ретрая снимает сообщение сбоя (ревью #11):
+        // источник ожил — баннер «не удалось загрузить» больше не актуален.
+        var retrying = false
         while (isActive) {
             try {
-                source().collect { value -> onValue(value) }
+                source().collect { value ->
+                    if (retrying) {
+                        retrying = false
+                        errorState.value = null
+                    }
+                    onValue(value)
+                }
                 break
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 Timber.e(e, "Сбой наблюдения репозитория")
+                retrying = true
                 errorState.value = messageRes
                 delay(OBSERVE_RETRY_DELAY_MS)
             }

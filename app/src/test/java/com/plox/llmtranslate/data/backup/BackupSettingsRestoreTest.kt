@@ -8,9 +8,11 @@ import org.junit.Test
 
 /**
  * Тесты чистого маппинга поязыковых назначений ([assignmentOps]) и обратной
- * совместимости [BackupSettings] (ревью #53): presence-семантика «ключа нет —
- * не трогаем, пустая карта — снимаем всё», декод старого JSON без новых полей
- * и roundtrip новых полей (сенты TTS «system», тайм-аут 0, retention).
+ * совместимости [BackupSettings] (ревью #53, уточнение ревью #5):
+ * presence-семантика «ключа нет — не трогаем; операции только по языкам
+ * секции назначений архива, отсутствующий в бэкапе язык не снимается»,
+ * декод старого JSON без новых полей и roundtrip новых полей (сенты TTS
+ * «system», тайм-аут 0, retention).
  */
 class BackupSettingsRestoreTest {
 
@@ -18,25 +20,27 @@ class BackupSettingsRestoreTest {
 
     @Test
     fun `absent saved map yields no ops and settings stay untouched`() {
-        assertTrue(assignmentOps(mapOf("ru" to "stt-old"), null).isEmpty())
+        assertTrue(assignmentOps(null).isEmpty())
     }
 
     @Test
-    fun `saved map applies over union of languages and clears superseded`() {
+    fun `saved map yields ops only for its own languages`() {
+        // Явные null-значения секции снимаются, но язык, отсутствующий в
+        // частичном бэкапе (например «ne»), операции не получает.
         val ops = assignmentOps(
-            current = mapOf("en" to "old-en", "ne" to "old-ne"),
-            saved = mapOf("en" to "new-en", "ru" to "new-ru")
+            mapOf("en" to "new-en", "ru" to "new-ru", "ne" to null)
         )
         assertEquals(
-            setOf("en" to "new-en", "ne" to null, "ru" to "new-ru"),
+            setOf("en" to "new-en", "ru" to "new-ru", "ne" to null),
             ops.toSet()
         )
     }
 
     @Test
-    fun `empty saved map removes all current assignments`() {
-        val ops = assignmentOps(mapOf("ru" to "stt-ru-gigaam"), emptyMap())
-        assertEquals(listOf("ru" to null), ops)
+    fun `empty saved map yields no ops and current assignments stay`() {
+        // Пустая секция — ни одна операция: снятие возможно только для
+        // языка, явно присутствующего в манифесте бэкапа (ревью #5).
+        assertTrue(assignmentOps(emptyMap()).isEmpty())
     }
 
     @Test

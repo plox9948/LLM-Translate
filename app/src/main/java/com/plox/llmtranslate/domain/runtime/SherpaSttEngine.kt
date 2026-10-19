@@ -40,6 +40,16 @@ import javax.inject.Singleton
  * keep движок удерживает загруженные STT-модели и повторный выбор модели
  * не выполняет загрузку заново (быстрый путь [ensureLoaded]); при unload —
  * держит только текущую модель.
+ *
+ * TODO(ревью): движок дублирует логику [EngineCacheScaffold]
+ * (mutex + [EngineModelCache] + активный id + publish/eviction/retention).
+ * Перевод на каркас отложен намеренно (объём велик для текущего цикла):
+ * расхождения — каркас не покрывает пересоздание whisper-recognizer при
+ * смене языка (var-поля пучка вместо immutable), освобождение пучка здесь
+ * делегировано [ModelBundle.release] (шерпа-специфика), а у каркаса —
+ * коллбэку [releaseBundle]; быстрая ветка unload здесь повторяет
+ * [reuseCachedUnlocked] байт-в-байт. При переносе сохранить гарантию
+ * повторного release() в ветке смены языка (ревью).
  */
 @Singleton
 class SherpaSttEngine @Inject constructor(
@@ -59,9 +69,6 @@ class SherpaSttEngine @Inject constructor(
         private const val TYPE_TRANSDUCER = "transducer"
         private const val TYPE_NEMO_CTC = "nemo_ctc"
         private const val TYPE_WHISPER = "whisper"
-
-        /** Ёмкость LRU-кэша: несколько STT-моделей + активная модель. */
-        private const val MODEL_CACHE_CAPACITY = 3
     }
 
     /**
@@ -96,7 +103,7 @@ class SherpaSttEngine @Inject constructor(
     private val recognizerMutex = Mutex()
 
     /** LRU-кэш загруженных пучков моделей (issue #37). */
-    private val cache = EngineModelCache<ModelBundle>(MODEL_CACHE_CAPACITY)
+    private val cache = EngineModelCache<ModelBundle>(EngineCacheScaffold.DEFAULT_MODEL_CACHE_CAPACITY)
 
     /**
      * Id пучка, на котором работает [transcribe]; пишется и читается только
@@ -218,10 +225,25 @@ class SherpaSttEngine @Inject constructor(
                         bundle.whisperLanguage = effectiveLanguage
                         Timber.d("Whisper переключён на язык: $effectiveLanguage")
                     } catch (e: Exception) {
-                        // Старый распознаватель уже освобождён, новый не создан —
-                        // пучок неконсистентен: снимаем его с кэша и с активного
-                        // id (пучки других моделей не затрагиваются).
+                        // Старый распознаватель освобождён (или освобождение
+                        // бросило), новый не создан — пучок неконсистентен:
+                        // снимаем его с кэша и с активного id (пучки других
+                        // моделей не затрагиваются).
                         Timber.e(e, "Не удалось пересоздать whisper для языка $effectiveLanguage")
+                        // Если исключение бросил сам recognizer.release(), старый
+                        // нативный распознаватель мог пережить снятие пучка —
+                        // повторная попытка release() на удержанной ссылке
+                        // (повторный destroy у sherpa безвреден; неудача —
+                        // утечка логируется, ревью).
+                        try {
+                            bundle.recognizer.release()
+                        } catch (e2: Exception) {
+                            Timber.e(
+                                e2,
+                                "Не удалось освободить recognizer пучка ${bundle.info.modelId} — " +
+                                    "нативная память может утечь"
+                            )
+                        }
                         val failedId = activeId
                         if (failedId != null) {
                             cache.remove(failedId)

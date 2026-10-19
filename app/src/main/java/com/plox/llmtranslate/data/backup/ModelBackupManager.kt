@@ -2,9 +2,11 @@ package com.plox.llmtranslate.data.backup
 
 import android.content.Context
 import android.net.Uri
+import com.plox.llmtranslate.data.download.DownloadLayout
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.data.storage.ModelStorage
+import com.plox.llmtranslate.domain.model.ArchiveFormats
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
@@ -28,33 +30,72 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Чистый маппинг восстановительных операций поязыкового назначения (ревью #53):
- * [saved] == null (ключа нет в старом архиве) — операций нет, настройку не
- * трогаем; иначе — по каждому языку union(текущие, сохранённые) установка
- * сохранённого id либо null (снять). Пустая [saved] снимает все текущие
- * назначения. Вынесено для unit-теста без Android-специфики.
+ * Чистый маппинг восстановительных операций поязыкового назначения
+ * (ревью #53, уточнение ревью #5): операции строятся только по языкам
+ * секции назначений бэкапа [saved] — язык, отсутствующий в частичном
+ * архиве, остаётся как есть (снять назначение можно только для языка,
+ * явно присутствующего в манифесте). [saved] == null (секции нет в старом
+ * архиве) — операций нет, настройку не трогаем. Вынесено для unit-теста
+ * без Android-специфики.
  */
 internal fun assignmentOps(
-    current: Map<String, String>,
-    saved: Map<String, String>?
+    saved: Map<String, String?>?
 ): List<Pair<String, String?>> {
     if (saved == null) return emptyList()
-    return (current.keys + saved.keys).map { lang -> lang to saved[lang] }
+    return saved.map { (lang, id) -> lang to id }
 }
 
 /**
- * Сверка контрольной суммы распакованного файла модели с хэшем манифеста
- * (ревью раунд 9). ok=true когда сверка невозможна корректно: [BackupModelEntry.sha256]
- * пуст (импортированная модель без хэша) либо модель — каталог (хэш каталожных
- * установок относится к скачанному архиву/пачке URL, а не к отдельным файлам
- * содержимого). Для одиночного файла с непустым хэшем — строгое сравнение
- * SHA-256 байт файла с hex-хэшем манифеста (регистронезависимо).
+ * Сверка контрольных сумм распакованной записи модели с хэшами манифеста
+ * (ревью раунд 9 + ревью #3). Одиночный файл с непустым
+ * [BackupModelEntry.sha256] — строгое сравнение SHA-256 байт файла с
+ * hex-хэшем манифеста (регистронезависимо); пустой хэш (импортированная
+ * модель) — сверки нет. Каталог-пучок — пофайловая сверка по
+ * [BackupModelEntry.sha256s] (см. [bundleShaOk]); skip остаётся только
+ * там, где сверка формально невозможна: archive-установки и gzip-артефакты.
  */
 internal fun backupShaOk(entry: BackupModelEntry, file: File): Boolean {
+    if (file.isDirectory) return bundleShaOk(entry, file)
     val expected = entry.sha256?.takeIf { it.isNotBlank() } ?: return true
-    if (file.isDirectory) return true
     val actual = runCatching { sha256Hex(file) }.getOrNull() ?: return false
     return actual.equals(expected, ignoreCase = true)
+}
+
+/**
+ * Пофайловая сверка каталога-пучка по [BackupModelEntry.sha256s]
+ * (ревью #3: раньше каталоги не сверялись вовсе, хотя для пучков без
+ * gz-артефактов хэши соответствуют байтам установленных файлов).
+ * Индексы [BackupModelEntry.sha256s] соответствуют
+ * [BackupModelEntry.urls], имена файлов ищутся по кандидатам раскладки
+ * загрузок [DownloadLayout] (как при проверке импорта ZIP в
+ * ModelManagerImpl.verifyImportChecksums). Пропуск сверки — только для
+ * архивных URL (хэш относится к архиву до распаковки) и сжатых
+ * gzip-артефактов slimt (хэш сжатых байт, на диске — распакованные
+ * файлы, см. [ArchiveFormats.isCompressedArtifact]). Пустой sha у элемента
+ * или отсутствие непустых sha в списке — сверять нечем, ok.
+ */
+private fun bundleShaOk(entry: BackupModelEntry, dir: File): Boolean {
+    if (entry.urls.isEmpty() || entry.sha256s.none { hash -> !hash.isNullOrBlank() }) return true
+    entry.urls.forEachIndexed { index, url ->
+        val expected = entry.sha256s.getOrNull(index)?.takeIf { it.isNotBlank() }
+            ?: return@forEachIndexed
+        val fileName = DownloadLayout.sanitizedBasename(url, index)
+        if (ArchiveFormats.isArchive(fileName) || ArchiveFormats.isCompressedArtifact(fileName)) {
+            return@forEachIndexed
+        }
+        val candidates = buildList {
+            add(DownloadLayout.targetFileName(entry.id, url, index, inModelDir = false))
+            if (fileName !in this) add(fileName)
+            val raw = url.substringAfterLast('/')
+            if (raw.isNotBlank() && raw !in this) add(raw)
+        }
+        val installed = candidates.asSequence()
+            .map { name -> File(dir, name) }
+            .firstOrNull { it.isFile }
+        val actual = installed?.let { f -> runCatching { sha256Hex(f) }.getOrNull() }
+        if (actual == null || !actual.equals(expected, ignoreCase = true)) return false
+    }
+    return true
 }
 
 /**
@@ -92,9 +133,16 @@ class ModelBackupManager @Inject constructor(
 
     /**
      * Экспортировать все модели и настройки в ZIP по Uri.
+     *
+     * Ревью #4: архив сначала собирается целиком во временный файл в
+     * cacheDir, и только готовый копируется в выходной Uri — обрыв SAF-
+     * потока или ENOSPC при записи ZIP не оставляет пользователю битый
+     * архив (неполный документ). Временный файл удаляется в любом случае.
      * @return true при успехе.
      */
     suspend fun exportToUri(targetUri: Uri): Boolean = withContext(Dispatchers.IO) {
+        // Уникальный суффикс: параллельные экспорты не затирают общий temp.
+        val tempZip = File(context.cacheDir, "backup_export_${UUID.randomUUID()}.zip")
         try {
             val models = repository.observeAll().first().filter { it.isReady }
             if (models.isEmpty()) {
@@ -102,13 +150,11 @@ class ModelBackupManager @Inject constructor(
                 return@withContext false
             }
 
-            val output = context.contentResolver.openOutputStream(targetUri)
-                ?: return@withContext false
+            val manifest = buildManifest(models)
 
-            output.use { out ->
-                ZipOutputStream(out.buffered()).use { zip ->
+            tempZip.outputStream().buffered().use { out ->
+                ZipOutputStream(out).use { zip ->
                     // 1. Манифест.
-                    val manifest = buildManifest(models)
                     zip.putNextEntry(ZipEntry(MANIFEST_NAME))
                     zip.write(json.encodeToString(BackupManifest.serializer(), manifest).toByteArray())
                     zip.closeEntry()
@@ -119,24 +165,34 @@ class ModelBackupManager @Inject constructor(
                     zip.write(json.encodeToString(BackupSettings.serializer(), settings).toByteArray())
                     zip.closeEntry()
 
-                    // 3. Файлы моделей.
-                    models.forEach { model ->
-                        val file = model.filePath?.let(::File) ?: return@forEach
-                        if (!file.exists()) return@forEach
-                        val relativePath = toRelativePath(model)
+                    // 3. Файлы моделей — по относительным путям из манифеста
+                    // (после дедуппликации путей, ревью #2) — иначе ZIP-запись
+                    // и манифест могут разойтись.
+                    manifest.models.forEachIndexed { index, entry ->
+                        val file = models[index].filePath?.let(::File) ?: return@forEachIndexed
+                        if (!file.exists()) return@forEachIndexed
                         if (file.isDirectory) {
-                            writeDirectoryToZip(zip, file, relativePath)
+                            writeDirectoryToZip(zip, file, entry.relativePath)
                         } else {
-                            writeFileToZip(zip, file, relativePath)
+                            writeFileToZip(zip, file, entry.relativePath)
                         }
                     }
                 }
             }
+
+            val output = context.contentResolver.openOutputStream(targetUri)
+                ?: return@withContext false
+            output.use { out ->
+                tempZip.inputStream().use { it.copyTo(out) }
+            }
+
             Timber.d("Экспортировано ${models.size} моделей")
             true
         } catch (e: Exception) {
             Timber.e(e, "Ошибка экспорта бэкапа")
             false
+        } finally {
+            tempZip.delete()
         }
     }
 
@@ -226,12 +282,12 @@ class ModelBackupManager @Inject constructor(
                     return@forEach
                 }
 
-                // Контрольная сумма из манифеста (ревью раунд 9): битый файл
-                // модели в архиве не должен регистрироваться READY. Каталоги
-                // не проверяем — [BackupModelEntry.sha256] у archive/мультифайловых
-                // установок это хэш скачанного файла (архива), а не распакованного
-                // содержимого; одиночные файлы без хэша (импортированные модели)
-                // сверить нечем.
+                // Контрольная сумма из манифеста (ревью раунд 9, ревью #3):
+                // битый файл модели в архиве не должен регистрироваться READY.
+                // Одиночные файлы сверяются с sha256, каталоги-пучки —
+                // пофайлово с sha256s; без сверки остаются только archive-
+                // установки и gzip-артефакты (хэш относится к скачанному
+                // архиву/сжатым байтам, а не к содержимому), см. [backupShaOk].
                 if (!backupShaOk(entry, tempFile)) {
                     Timber.w(
                         "SHA-256 файла модели ${entry.id} в архиве не совпала с манифестом — пропуск"
@@ -309,9 +365,27 @@ class ModelBackupManager @Inject constructor(
 
     /**
      * Построить манифест из моделей.
+     *
+     * Ревью #2: фолбэк [toRelativePath] для файлов вне корня моделей теряет
+     * структуру каталога — одноимённые файлы разных моделей (например
+     * model.onnx у двух установок) получают одинаковый relativePath и
+     * затирают друг друга в ZIP, а при импорте оба upsert резолвятся в
+     * один файл. Коллизию разрешаем уникальным путём с id модели (id
+     * уникален в БД), о чём пишем в лог.
      */
     private fun buildManifest(models: List<InstalledModel>): BackupManifest {
+        val usedPaths = mutableSetOf<String>()
         val entries = models.map { model ->
+            val basePath = toRelativePath(model)
+            val relativePath = when {
+                basePath.isBlank() || usedPaths.add(basePath) -> basePath
+                else -> {
+                    val unique = MODELS_PREFIX + model.id + "/" + File(model.filePath.orEmpty()).name
+                    Timber.w("Путь $basePath в манифесте уже занят — модель ${model.id} пишется как $unique")
+                    usedPaths += unique
+                    unique
+                }
+            }
             BackupModelEntry(
                 id = model.id,
                 category = model.category.name,
@@ -330,7 +404,7 @@ class ModelBackupManager @Inject constructor(
                 license = model.license,
                 minAndroidSdk = model.minAndroidSdk,
                 recommendedRamMb = model.recommendedRamMb,
-                relativePath = toRelativePath(model),
+                relativePath = relativePath,
                 isBuiltin = model.isBuiltin
             )
         }
@@ -363,9 +437,10 @@ class ModelBackupManager @Inject constructor(
     }
 
     /**
-     * Восстановить настройки. Presence-семантика (ревью #53): ключ в JSON =
-     * установить (пустая карта = снять все назначения), отсутствие ключа
-     * (null из старого архива) = не трогать.
+     * Восстановить настройки. Presence-семантика (ревью #53, уточнение
+     * ревью #5): ключ секции в JSON = применять по языкам самой секции;
+     * отсутствие ключа (null из старого архива) = не трогать; язык,
+     * отсутствующий в секции частично-языкового бэкапа, остаётся как есть.
      * Модельные id (активные модели и поязыковые назначения) применяются
      * только для моделей, реально восстановленных в этом импорте
      * ([restoredIds]): иначе настройка осталась бы висячей на отсутствующую
@@ -378,12 +453,12 @@ class ModelBackupManager @Inject constructor(
         preferences.setTtsEngine(settings.ttsEngine)
         preferences.setUiLanguage(settings.uiLanguage)
         preferences.setTheme(settings.theme)
-        // Поязыковые назначения: поверх union(текущие, сохранённые) языков —
-        // сохранённое значение либо null (снять); так пустая сохранённая карта
-        // снимает все текущие назначения. Id не восстановленных в этом импорте
-        // моделей пропускаем (сентинель «system» назначается всегда).
+        // Поязыковые назначения: только языки из секции назначений архива
+        // (ревью #5: язык, отсутствующий в частичном бэкапе, не снимается).
+        // Id не восстановленных в этом импорте моделей пропускаем
+        // (сентинель «system» назначается всегда).
         settings.sttByLanguage?.let { saved ->
-            assignmentOps(preferences.sttByLanguage.first(), saved).forEach { (lang, id) ->
+            assignmentOps(saved).forEach { (lang, id) ->
                 if (!isRestoredOrSentinel(id, restoredIds, null)) {
                     Timber.w(
                         "Назначение STT $id языку $lang пропущено: модель не восстановлена в этом импорте"
@@ -394,7 +469,7 @@ class ModelBackupManager @Inject constructor(
             }
         }
         settings.ttsByLanguage?.let { saved ->
-            assignmentOps(preferences.ttsByLanguage.first(), saved).forEach { (lang, id) ->
+            assignmentOps(saved).forEach { (lang, id) ->
                 if (!isRestoredOrSentinel(id, restoredIds, TtsModelSelector.SYSTEM_SENTINEL)) {
                     Timber.w(
                         "Назначение TTS $id языку $lang пропущено: модель не восстановлена в этом импорте"
@@ -452,12 +527,17 @@ class ModelBackupManager @Inject constructor(
 
     /**
      * Относительный путь модели в архиве.
+     *
+     * Ревью #1: корень моделей считается через единую точку
+     * [ModelStorage.modelsRoot] (с фолбэком на filesDir), а не прямым
+     * вызовом getExternalFilesDir — иначе при недоступном external storage
+     * экспорт теряет подпуть, а импорт возвращает null для всех записей.
      */
     private fun toRelativePath(model: InstalledModel): String {
         val path = model.filePath ?: return ""
         val file = File(path)
-        val modelsRoot = context.getExternalFilesDir("models")
-        return if (modelsRoot != null && file.absolutePath.startsWith(modelsRoot.absolutePath)) {
+        val modelsRoot = ModelStorage.modelsRoot(context)
+        return if (file.absolutePath.startsWith(modelsRoot.absolutePath)) {
             MODELS_PREFIX + file.absolutePath.removePrefix(modelsRoot.absolutePath).removePrefix(File.separator)
         } else {
             // Используем имя файла (с расширением), чтобы путь не менялся после импорта.
@@ -467,11 +547,15 @@ class ModelBackupManager @Inject constructor(
 
     /**
      * Целевой путь модели при импорте.
+     *
+     * Ревью #1: единая точка расчёта корня [ModelStorage.modelsRoot] вместо
+     * прямого getExternalFilesDir — при недоступном external storage
+     * фолбэк на filesDir, импорт не возвращает null для всех записей.
      * @return абсолютный путь внутри каталога моделей или null,
      *   если путь из манифеста выходит за его пределы (zip-slip).
      */
     private fun resolveTargetPath(entry: BackupModelEntry): String? {
-        val modelsRoot = context.getExternalFilesDir("models") ?: return null
+        val modelsRoot = ModelStorage.modelsRoot(context)
         val relative = entry.relativePath.removePrefix(MODELS_PREFIX)
         val target = File(modelsRoot, relative)
         return try {

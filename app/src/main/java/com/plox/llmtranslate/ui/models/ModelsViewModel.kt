@@ -234,19 +234,28 @@ class ModelsViewModel @Inject constructor(
             // блокирует, выполняется на IO-диспетчере.
             _deviceInfo.value = modelManager.deviceInfo()
         }
-        // Прямые подписки «поток → StateFlow» (общий каркас — [collectInto]):
-        // движок TTS — та же настройка, что на экране «Настройки»;
-        // назначения STT/TTS по языкам — для подсветки чипов на карточках.
-        collectInto(preferences.ttsEngine, _ttsEngine)
-        collectInto(modelManager.sttByLanguage, _sttByLanguage)
-        collectInto(modelManager.ttsByLanguage, _ttsByLanguage)
-    }
-
-    /** Подписка потока [source] с прямой записью каждого значения в [target]. */
-    private fun <T> collectInto(source: Flow<T>, target: MutableStateFlow<T>) {
-        viewModelScope.launch {
-            source.collect { value -> target.value = value }
-        }
+        // Прямые подписки «поток → StateFlow» (ревью #4): назначения STT/TTS по
+        // языкам — те же Room/DataStore-источники, что на экране «Перевод», и
+        // наблюдаются устойчиво (сбой источника не роняет процесс); движок TTS —
+        // та же настройка, что на экране «Настройки».
+        observeResilient(
+            scope = viewModelScope,
+            source = { preferences.ttsEngine },
+            messageRes = R.string.models_observe_failed,
+            errorState = _observeErrorRes
+        ) { value -> _ttsEngine.value = value }
+        observeResilient(
+            scope = viewModelScope,
+            source = { modelManager.sttByLanguage },
+            messageRes = R.string.models_observe_failed,
+            errorState = _observeErrorRes
+        ) { value -> _sttByLanguage.value = value }
+        observeResilient(
+            scope = viewModelScope,
+            source = { modelManager.ttsByLanguage },
+            messageRes = R.string.models_observe_failed,
+            errorState = _observeErrorRes
+        ) { value -> _ttsByLanguage.value = value }
     }
 
     /**

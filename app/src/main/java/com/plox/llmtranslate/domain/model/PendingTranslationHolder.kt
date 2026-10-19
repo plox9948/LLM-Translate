@@ -25,10 +25,13 @@ class PendingTranslationHolder @Inject constructor() {
         _pending.value = entry
     }
 
-    /** Забрать и одновременно очистить текущий запрос. */
-    fun consume(): TranslationHistoryEntry? {
-        val value = _pending.value
-        _pending.value = null
-        return value
-    }
+    /**
+     * Забрать и очистить текущий запрос, только если он не изменился:
+     * атомарный compareAndSet [expected] (ревью) — прежний read-then-clear
+     * терял запрос, поставленный параллельно между чтением и очисткой.
+     * Несовпадение — false, новый запрос останется в потоке и будет
+     * доставлен коллектору следующей эмиссией.
+     */
+    fun consume(expected: TranslationHistoryEntry?): Boolean =
+        _pending.compareAndSet(expected, null)
 }

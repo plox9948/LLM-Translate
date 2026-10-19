@@ -14,7 +14,6 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,6 +30,7 @@ import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.FavoriteEntry
 import com.plox.llmtranslate.ui.EmptyListPlaceholder
 import com.plox.llmtranslate.ui.ErrorDialog
+import com.plox.llmtranslate.ui.FavoriteStarIcon
 import com.plox.llmtranslate.ui.TranslationEntryCard
 
 /**
@@ -195,16 +195,12 @@ private fun FavoriteItem(
                 contentDescription = stringResource(R.string.favorites_speak_result_cd)
             )
         }
-        // Убрать из избранного.
+        // Убрать из избранного — общая иконка звезды (ревью #18).
         IconButton(
             onClick = onRemove,
             modifier = Modifier.width(40.dp)
         ) {
-            Icon(
-                imageVector = Icons.Filled.Star,
-                contentDescription = stringResource(R.string.favorites_remove_cd),
-                tint = MaterialTheme.colorScheme.primary
-            )
+            FavoriteStarIcon(isFavorite = true)
         }
     }
 }

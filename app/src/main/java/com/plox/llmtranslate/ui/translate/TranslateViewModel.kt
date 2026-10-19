@@ -29,15 +29,19 @@ import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
 import com.plox.llmtranslate.domain.runtime.trackEnginePreference
+import com.plox.llmtranslate.ui.launchGuarded
 import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
@@ -45,11 +49,19 @@ import javax.inject.Inject
 /**
  * Поддерживаемые языки перевода.
  */
-enum class TranslateLanguage(val code: String, val title: String) {
-    AUTO("auto", "Авто (Auto)"),
-    RU("ru", "Русский (Russian)"),
-    EN("en", "English (English)"),
-    NE("ne", "नेपाली (Nepali)")
+enum class TranslateLanguage(val code: String, val titleRes: Int) {
+    AUTO("auto", R.string.lang_title_auto),
+    RU("ru", R.string.lang_title_ru),
+    EN("en", R.string.lang_title_en),
+    NE("ne", R.string.lang_title_ne);
+
+    companion object {
+        /**
+         * Поддерживаемые коды языков перевода без AUTO — общий список чипов
+         * назначения STT/TTS-моделей (ревью: не дублировать литералы).
+         */
+        val SUPPORTED_CODES: List<String> = entries.filter { it != AUTO }.map { it.code }
+    }
 }
 
 /**
@@ -140,6 +152,11 @@ data class TranslateUiState(
 
 /**
  * ViewModel экрана «Перевод»: конвейер текст/аудио → STT → LLM → TTS.
+ *
+ * TODO(объём, ревью #25): покрывает несколько несвязанных сценариев
+ * (направление, STT-запись, TTS-плейбек, избранное, восстановление состояния)
+ * и выросла до ~1100 строк; декомпозиция сознательно отложена — общий каркас
+ * устойчивых подписок и guard'ов вынесен в observeResilient/launchGuarded.
  */
 @HiltViewModel
 class TranslateViewModel @Inject constructor(
@@ -228,16 +245,15 @@ class TranslateViewModel @Inject constructor(
 
     // Ключи избранного «направление|исходный текст» для звёздочки результата
     // (issue #38).
+    // TODO(review): хранить полный ключ избранного («направление» + полные
+    //  тексты ввода и перевода) вместо усечённых текстов в паре ключа.
     private var favoriteKeys: Set<String> = emptySet()
 
-    // Анти-повтор sticky-состояний синглтон-координатора (ревью #55): id
-    // ошибки TTS и стадии ERROR скачивания, уже показанные этим ViewModel.
-    // -1 — базовая линия ещё не зафиксирована: на первой эмиссии текущие id
-    // статус считаются уже показанными, поэтому ошибка/сбой скачивания из
-    // прошлой жизни экрана (смена вкладки, пересоздание ViewModel) повторно
-    // не показываются; новый экземпляр (id вырос) показывается как обычно.
-    private var shownTtsErrorId = -1L
-    private var shownTtsDownloadErrorId = -1L
+    // Анти-повтор sticky-состояний синглтон-координатора (ревью #55, правка #8):
+    // якоря показанных id хранятся в самом TtsPlaybackCoordinator (monotonic id),
+    // а не в базовой линии ViewModel: ошибка/сбой скачивания, слученный, когда
+    // экран был на другой вкладке, показывается новому ViewModel, а уже показанный
+    // экземпляр не воспроизводится при пересоздании ViewModel (возврат на вкладку).
 
     // Ресурс сообщения сбоя наблюдения Room-потоков (issue #67): observeResilient
     // пишет сюда id текста, коллектор ниже переводит его в человекочитаемую
@@ -333,7 +349,9 @@ class TranslateViewModel @Inject constructor(
             pendingHolder.pending.collect { entry ->
                 if (entry != null) {
                     useHistoryEntry(entry)
-                    pendingHolder.consume()
+                    // Атомарная очистка обработанного значения (compareAndSet):
+                    // запрос, поставленный во время useHistoryEntry, не теряется.
+                    pendingHolder.consume(entry)
                 }
             }
         }
@@ -355,13 +373,29 @@ class TranslateViewModel @Inject constructor(
             // Состояние записи из рекордера — потоком (ревью раунд 2): внешний
             // AudioRecorder.cancel() (разгрузка рантаймов при ON_STOP) гасит
             // индикатор «идёт запись», не давая ему залипться в UI экрана.
+            // Эмит начального состояния переживает смену вкладки (ревью #9):
+            // ViewModel пересоздан при живой записи — коллектор поднимает
+            // индикатор и перезапускает потолок длительности с учётом уже
+            // отсчитанных рекордером секунд.
             audioRecorder.recordingFlow.collect { recording ->
-                if (!recording) {
+                if (recording) {
+                    scheduleRecordingLimit()
+                    update { it.copy(isRecording = true) }
+                } else {
                     // Запись снята извне — авто-остановка по потолку не нужна.
                     recordingLimitJob?.cancel()
                     recordingLimitJob = null
+                    val wasRecording = _uiState.value.isRecording
+                    update {
+                        it.copy(
+                            isRecording = false,
+                            // Таймер обнуляется только на реальном переходе
+                            // true→false (ревью #13): повторная эмиссия «false»
+                            // не стирает восстановленный из рекордера elapsedMs.
+                            recordingElapsedMs = if (wasRecording) 0L else it.recordingElapsedMs
+                        )
+                    }
                 }
-                update { it.copy(isRecording = recording, recordingElapsedMs = 0L) }
             }
         }
         viewModelScope.launch {
@@ -377,20 +411,17 @@ class TranslateViewModel @Inject constructor(
         viewModelScope.launch {
             // Статус общего TTS-плейбека (issue #50): флаг озвучивания,
             // автоскачивание Piper-модели и ошибки, не покрытые фолбэком.
-            // Анти-повтор sticky-значений (ревью #55): показываем только
-            // новые экземпляры ошибки/ERROR-стадии (monotonic id в статусе).
+            // Анти-повтор sticky-значений (ревью #55, правка #8): экземпляр
+            // ошибки/ERROR-стадии (monotonic id в статусе) показывается ровно
+            // один раз — якорь показанных id живёт в синглтон-координаторе,
+            // поэтому ошибка, случившаяся на другой вкладке, не теряется.
             ttsCoordinator.status.collect { s ->
-                val baseline = shownTtsErrorId < 0
-                if (baseline) {
-                    shownTtsErrorId = s.errorId
-                    shownTtsDownloadErrorId = s.downloadErrorId
-                }
-                val newTtsError = !baseline && s.error != null && s.errorId != shownTtsErrorId
-                if (newTtsError) shownTtsErrorId = s.errorId
-                val newDownloadError = !baseline &&
+                val newTtsError = s.error != null && !ttsCoordinator.isTtsErrorShown(s.errorId)
+                if (newTtsError) ttsCoordinator.markTtsErrorShown(s.errorId)
+                val newDownloadError =
                     s.downloadStatus == TtsDownloadStatus.ERROR &&
-                    s.downloadErrorId != shownTtsDownloadErrorId
-                if (newDownloadError) shownTtsDownloadErrorId = s.downloadErrorId
+                        !ttsCoordinator.isTtsDownloadErrorShown(s.downloadErrorId)
+                if (newDownloadError) ttsCoordinator.markTtsDownloadErrorShown(s.downloadErrorId)
                 update {
                     it.copy(
                         isSpeaking = s.isSpeaking,
@@ -467,20 +498,18 @@ class TranslateViewModel @Inject constructor(
     fun toggleResultFavorite() {
         val st = _uiState.value
         if (st.sourceLang == TranslateLanguage.AUTO || st.resultText.isBlank()) return
-        viewModelScope.launch {
-            try {
-                val added = favoritesRepository.toggle(
-                    st.sourceLang.code, st.targetLang.code, st.resultInputText, st.resultText
-                )
-                update { it.copy(resultFavorite = added) }
-            } catch (e: Exception) {
-                // Сбой Room: процесс не роняем, лог + sticky-ошибка в UI (ревью #65).
-                if (e is CancellationException) throw e
-                Timber.e(e, "Не удалось переключить избранность перевода")
-                update {
-                    it.copy(error = appContext.getString(R.string.favorites_update_failed))
-                }
-            }
+        // Сбой Room: процесс не роняем, лог + sticky-ошибка в UI (ревью #65);
+        // общий каркас guard + мост id ресурса в uiState.error (ревью #23).
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.favorites_update_failed,
+            errorState = _observeErrorRes,
+            logMessage = "Не удалось переключить избранность перевода"
+        ) {
+            val added = favoritesRepository.toggle(
+                st.sourceLang.code, st.targetLang.code, st.resultInputText, st.resultText
+            )
+            update { it.copy(resultFavorite = added) }
         }
     }
 
@@ -531,15 +560,18 @@ class TranslateViewModel @Inject constructor(
      * (latest без debounce — значения небольшие) для восстановления после
      * гибели процесса; сверх [MAX_RESTORED_TEXT_CHARS] обрезается, полный
      * текст перевода и так остаётся в истории.
+     * [resolvedSourceLang] — фактический разрешённый язык источника AUTO-перевода:
+     * в снимок направления пишется он, а не raw AUTO (ревью #2).
      */
-    private fun persistRestorableTexts() {
+    private fun persistRestorableTexts(resolvedSourceLang: TranslateLanguage? = null) {
         val state = _uiState.value
         savedStateHandle[KEY_INPUT_TEXT] = state.inputText.take(MAX_RESTORED_TEXT_CHARS)
         savedStateHandle[KEY_RESULT_TEXT] = state.resultText.take(MAX_RESTORED_TEXT_CHARS)
         // Направление результата сохраняется вместе с текстами (issue #81):
         // без него восстановленный снимок ложно привязывается к направлению
         // по умолчанию и несогласованная пара проходит гейт visibleResult.
-        savedStateHandle[KEY_RESULT_SOURCE_LANG] = state.resultSourceLang?.code
+        savedStateHandle[KEY_RESULT_SOURCE_LANG] =
+            (resolvedSourceLang ?: state.resultSourceLang)?.code
         savedStateHandle[KEY_RESULT_TARGET_LANG] = state.resultTargetLang?.code
     }
 
@@ -683,7 +715,14 @@ class TranslateViewModel @Inject constructor(
                             resultInputText = state.inputText
                         )
                     }
-                    persistRestorableTexts()
+                    // В снимок направления пишем РАЗРЕШЁННЫЙ язык источника
+                    // (ревью #2): для AUTO-перевода сохраняется фактический
+                    // определённый язык (prefs AUTO не хранят, и восстановленный
+                    // «auto» не совпал бы ни с каким направлением из настроек —
+                    // гейт visibleResult прятал бы результат после гибели
+                    // процесса). Живому ViewModel остаётся raw направление
+                    // чипов — гейт issue #59 для AUTO-сессии работает как раньше.
+                    persistRestorableTexts(resolvedSourceLang = sourceLang)
                     refreshResultFavorite()
                     // Сбой сохранения в историю (Room) не должен терять уже
                     // успешный перевод и ронять приложение: ошибка только
@@ -708,6 +747,12 @@ class TranslateViewModel @Inject constructor(
                 // состояние возвращается в idle без показа ошибки.
                 Timber.d("Перевод отменён пользователем")
                 update { it.copy(isTranslating = false, canCancelTranslation = false) }
+            } catch (e: Exception) {
+                // Неотмеченное исключение движка/селектора иначе роняет процесс
+                // (ревью #5): лог + ошибка в UI, рабочие флаги сбрасывает
+                // endTranslationJobWithError.
+                Timber.e(e, "Непредвиденная ошибка перевода")
+                endTranslationJobWithError(appContext.getString(R.string.translate_failed))
             } finally {
                 translationJob = null
             }
@@ -726,8 +771,11 @@ class TranslateViewModel @Inject constructor(
         // не перезаписываем translationJob — иначе быстрый тап «Перевести» в окне
         // stopRecording() порождает гонку двух задач на один Job.
         if (state.isTranslating) {
-            // Распознавание не начинаем — WAV этой записи уже не нужен.
-            File(wavPath).delete()
+            // Распознавание не начинаем — WAV этой записи уже не нужен
+            // (удаление файла — на IO, ревью #12).
+            viewModelScope.launch {
+                withContext(Dispatchers.IO) { File(wavPath).delete() }
+            }
             return
         }
         translationJob = viewModelScope.launch {
@@ -790,13 +838,24 @@ class TranslateViewModel @Inject constructor(
                 // Отмена пользователем (кнопка «Отмена») — тихий возврат в idle.
                 Timber.d("Распознавание отменено пользователем")
                 update { it.copy(isTranslating = false, canCancelTranslation = false) }
+            } catch (e: Exception) {
+                // Неотмеченное исключение движка иначе роняет процесс (ревью #5).
+                Timber.e(e, "Непредвиденная ошибка распознавания")
+                endTranslationJobWithError(
+                    (e as? RuntimeError)?.userMessage()
+                        ?: appContext.getString(R.string.translate_stt_failed)
+                )
             } finally {
                 translationJob = null
                 // WAV нужен движку только на время transcribe() — удаляем сразу
-                // после её завершения (успех, ошибка или отмена), иначе каталог
-                // «audio» растёт с каждой записью.
-                if (!File(wavPath).delete()) {
-                    Timber.w("Не удалось удалить WAV после распознавания: $wavPath")
+                // после её завершения (успех, ошибка или отмена), иначе
+                // recording_*.wav накапливаются в каталоге кэша. Файловая
+                // операция — на IO, в NonCancellable чтобы удаление состоялось
+                // и на пути отмены (ревью #12).
+                withContext(NonCancellable + Dispatchers.IO) {
+                    if (!File(wavPath).delete()) {
+                        Timber.w("Не удалось удалить WAV после распознавания: $wavPath")
+                    }
                 }
             }
         }
@@ -834,17 +893,9 @@ class TranslateViewModel @Inject constructor(
             return false
         }
         update { it.copy(isRecording = true, error = null, recordingElapsedMs = 0L) }
-        // Авто-остановка по жёсткому потолку рекордера (issue #68): STT-аудио
-        // длиннее MAX_RECORDING_MS не распознаётся осмысленно; сценарий
-        // идентичен ручному тапу по микрофону.
-        recordingLimitJob?.cancel()
-        recordingLimitJob = viewModelScope.launch {
-            delay(AudioRecorder.MAX_RECORDING_MS)
-            if (audioRecorder.isRecording && !stopRecordingInProgress) {
-                Timber.d("Достигнут потолок длительности записи — авто-остановка")
-                stopRecordingAndTranscribe()
-            }
-        }
+        // Потолок записи ставится коллектором recordingFlow (ревью #9) —
+        // он же восстанавливает таймер при пересоздании ViewModel на живой
+        // записи (уход на другой таб не оставляет микрофон без потолка).
         return true
     }
 
@@ -862,6 +913,24 @@ class TranslateViewModel @Inject constructor(
      * (issue #68); снимается при остановке/снятии записи.
      */
     private var recordingLimitJob: Job? = null
+
+    /**
+     * Поставить авто-остановку по потолку длительности (issue #68, ревью #9):
+     * отсчёт от фактической длительности рекордера — при пересоздании ViewModel
+     * на живой записи (возврат на вкладку) оставшиеся секунды не теряются.
+     */
+    private fun scheduleRecordingLimit() {
+        recordingLimitJob?.cancel()
+        val remainingMs =
+            AudioRecorder.MAX_RECORDING_MS - audioRecorder.recordingElapsedMs.value
+        recordingLimitJob = viewModelScope.launch {
+            delay(remainingMs.coerceAtLeast(0L))
+            if (audioRecorder.isRecording && !stopRecordingInProgress) {
+                Timber.d("Достигнут потолок длительности записи — авто-остановка")
+                stopRecordingAndTranscribe()
+            }
+        }
+    }
 
     /**
      * Остановить запись и сразу распознать речь.
@@ -908,6 +977,10 @@ class TranslateViewModel @Inject constructor(
 
     fun clearError() {
         update { it.copy(error = null) }
+        // Сброс и моста сбоя наблюдения (ревью #6): StateFlow дедуплицирует
+        // повторную запись того же res — без обнуления следующий сбой источника
+        // с тем же текстом не показался бы в UI.
+        _observeErrorRes.value = null
         // Синхронно снимаем ошибку и в координаторе, чтобы следующий
         // эмит статуса не воспроизвёл диалог (issue #50).
         ttsCoordinator.clearError()
@@ -955,6 +1028,14 @@ class TranslateViewModel @Inject constructor(
         }
         persistRestorableTexts()
         refreshResultFavorite()
+        // Гонка направления (ревью #1, критично): применённое направление записи
+        // пишется в настройки — асинхронный коллектор lastSourceLang/lastTargetLang
+        // иначе перезаписывает его Previously сохранённым направлением (тап по
+        // записи EN→NE откатывался на ru→en и прятал карточку результата).
+        // Настройки после записи согласованы с экраном, потеря секунд/результата
+        // исчезает; сохранение через saveLastDirection совпадает с обычным
+        // выбором чипов (AUTO-источник в настройки не пишется).
+        saveLastDirection()
     }
 
     /**
@@ -1080,5 +1161,19 @@ class TranslateViewModel @Inject constructor(
 
     private fun update(transform: (TranslateUiState) -> TranslateUiState) {
         _uiState.value = transform(_uiState.value)
+    }
+
+    /**
+     * Перевод/распознавание привязаны к viewModelScope и отменяются вместе с
+     * ViewModel (смена вкладки, закрытие экрана) — осознанный компромисс
+     * (ревью #10): длинный инференс не переживает уход с экрана, но и не
+     * роняет его поздним результатом. TODO:translation-lifecycle: перенос
+     * инференса в app-scope синглтон с реаттачем статуса при пересоздании VM.
+     */
+    override fun onCleared() {
+        if (_uiState.value.isTranslating) {
+            Timber.w("ViewModel закрыта во время перевода/распознавания — операция отменена")
+        }
+        super.onCleared()
     }
 }

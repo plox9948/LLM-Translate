@@ -71,9 +71,24 @@ internal fun closePartiallyCreated(label: String, vararg sessions: OrtSession?) 
  * декодера: все выходы, кроме logits, — четвёрки
  * `present.{layer}.{decoder,encoder}.{key,value}` (общая формула Marian
  * и IndicTrans).
+ *
+ * Аномальная структура выходов (хвост не кратен четвёркам или слоёв ноль) —
+ * явное исключение: вызывающий ensureLoaded оборачивает его в
+ * [RuntimeError.LoadFailed] ([guardOrtModelLoad]); прежняя целочисленная
+ * формула молча давала 0/неверное число слоёв, и инференс падал на пустых
+ * past_key_values (ревью).
  */
-internal fun numLayersFromDecoderOutputs(decoder: OrtSession): Int =
-    (decoder.outputNames.size - 1) / 4
+internal fun numLayersFromDecoderOutputs(decoder: OrtSession): Int {
+    val pastOutputs = decoder.outputNames.size - 1
+    val layers = pastOutputs / 4
+    if (pastOutputs % 4 != 0 || layers <= 0) {
+        throw IllegalStateException(
+            "Некорректная структура выходов декодера: ${decoder.outputNames.size} " +
+                "выходов (ожидались logits + четвёрки past_key_values)"
+        )
+    }
+    return layers
+}
 
 /**
  * Закрыть сессии активного пучка модельного движка при его разгрузке

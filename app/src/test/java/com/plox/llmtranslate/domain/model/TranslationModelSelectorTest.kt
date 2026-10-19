@@ -113,6 +113,29 @@ class TranslationModelSelectorTest {
     }
 
     @Test
+    fun `missing chain offers link when other link covered by imported model`() {
+        // Ревью: звено ru→en закрыто ИМПОРТИРОВАННОЙ моделью (её id нет в
+        // каталоге) — каталог не покрывает это звено карточкой, но раньше
+        // отсутствие карточки делало всю цепочку «непокрываемой» и реально
+        // недостающая карточка en→ne не предлагалась.
+        val importedRuEn = model("imported_ru_en", "Русский → английский", listOf("ru", "en"))
+            .copy(isBuiltin = false)
+        val noRuEnCards = listOf(catalogAll[1], catalogAll[2], catalogAll[3])
+        val missing = TranslationModelSelector.missingChain(noRuEnCards, listOf(importedRuEn), "ru", "ne")
+        assertEquals(listOf(catalogAll[3]), missing)
+    }
+
+    @Test
+    fun `missing chain skips hidden catalog cards`() {
+        // Ревью: скрытые (hidden) карточки не предлагаются к скачиванию.
+        val hiddenIndic = catalogAll.map {
+            if (it.id == "indictrans2-en-indic-int8") it.copy(hidden = true) else it
+        }
+        val missing = TranslationModelSelector.missingChain(hiddenIndic, listOf(ruEn), "ru", "ne")
+        assertTrue(missing.isEmpty())
+    }
+
+    @Test
     fun `missing chain empty for same language`() {
         assertTrue(TranslationModelSelector.missingChain(catalogAll, emptyList(), "ru", "ru").isEmpty())
     }

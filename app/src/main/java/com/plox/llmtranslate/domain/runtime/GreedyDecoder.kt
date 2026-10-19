@@ -162,6 +162,10 @@ internal suspend fun <I : AutoCloseable, R : AutoCloseable> greedyDecodeCore(
             }
             stepsDone++
 
+            // TODO(осознанный долг, ревью): retention первого результата — общий
+            // контракт; IndicTrans из него past не читает и держит один лишний
+            // результат шага до конца цикла. Персональный keepFirstResult не
+            // вводим намеренно (см. абзац ниже).
             // Первый результат держится до конца цикла ОБЩИМ контрактом
             // владения: у Marian из него берут неизменные encoder-past.
             // У IndicTrans encoder-past подаётся из prevResult (граф

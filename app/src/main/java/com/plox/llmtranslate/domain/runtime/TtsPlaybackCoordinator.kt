@@ -46,8 +46,8 @@ enum class TtsDownloadStatus {
  * @param error ошибка последнего озвучивания, не покрытая автофолбэком
  *   (null — ошибки нет); UI показывает её через [RuntimeError.userMessage].
  * @param errorId монотонный номер [error] (ревью #55): 0 — ошибки никогда не
- *   было; UI-экраны запоминают показанный id и не показывают ту же ошибку
- *   повторно при пересоздании ViewModel.
+ *   было; экраны сверяют его с якорем показанных id в координаторе
+ *   ([isTtsErrorShown]/[markTtsErrorShown]) и показывают экземпляр ровно один раз.
  * @param downloadModelId id карточки, которую координатор автоскачивает (issue #50).
  * @param downloadProgress прогресс автоскачивания, %.
  * @param downloadStatus стадия автоскачивания.
@@ -204,6 +204,37 @@ class TtsPlaybackCoordinator @Inject constructor(
     private val errorSeq = AtomicLong(0)
     private val downloadErrorSeq = AtomicLong(0)
 
+    /**
+     * Якоря анти-повтора показа (ревью #55, правка #8): максимальный id
+     * экземпляра ошибки / стадии ERROR, уже ПОКАЗАННЫЙ экраном. Id из [errorSeq]
+     * и [downloadErrorSeq] монотонны, поэтому экземпляр показывается ровно один
+     * раз на процесс: id больше якоря ещё не показывался (в том числе ошибка,
+     * случившаяся, когда экран был на другой вкладке), тот же id при
+     * пересоздании ViewModel повторно не воспроизводится. Якорь живёт здесь,
+     * а не в ViewModel, — пересоздание экрана его не сбрасывает.
+     */
+    @Volatile
+    private var shownErrorId = 0L
+    @Volatile
+    private var shownDownloadErrorId = 0L
+
+    /** Экземпляр [TtsPlaybackStatus.error] с id [errorId] уже показан экраном. */
+    fun isTtsErrorShown(errorId: Long): Boolean = errorId <= shownErrorId
+
+    /** Зафиксировать показ экземпляра ошибки с id [errorId]. */
+    fun markTtsErrorShown(errorId: Long) {
+        if (errorId > shownErrorId) shownErrorId = errorId
+    }
+
+    /** Экземпляр стадии [TtsDownloadStatus.ERROR] с id [downloadErrorId] уже показан. */
+    fun isTtsDownloadErrorShown(downloadErrorId: Long): Boolean =
+        downloadErrorId <= shownDownloadErrorId
+
+    /** Зафиксировать показ стадии ERROR автоскачивания с id [downloadErrorId]. */
+    fun markTtsDownloadErrorShown(downloadErrorId: Long) {
+        if (downloadErrorId > shownDownloadErrorId) shownDownloadErrorId = downloadErrorId
+    }
+
     init {
         scope.launch {
             modelManager.ttsByLanguage.collect { assignments ->
@@ -272,6 +303,11 @@ class TtsPlaybackCoordinator @Inject constructor(
         speakJob?.cancel()
         speakJob = null
         pendingRetry = null
+        // Инвалидация токена фразы (ревью): speak() отменой джоба не прерывает
+        // уже выполняющийся синхронный ttsRuntime.speak() — его поздний
+        // фолбэк (startFallback) не должен ставить pendingRetry/watch после
+        // stop(); гейт по токену отсекает и его статусные обновления.
+        utteranceToken.incrementAndGet()
         ttsRuntime.stop()
         piperRuntime.stop()
         markNotSpeaking()
@@ -338,6 +374,13 @@ class TtsPlaybackCoordinator @Inject constructor(
         token: Long,
         engineError: RuntimeError
     ) {
+        // Фолбэк пост-остановки/пост-новой-фразы (speak() рантайма завершился
+        // после stop()/смены фразы): фраза неактуальна — не ставим ни
+        // pendingRetry, ни watch на скачивание (ревью).
+        if (token != utteranceToken.get()) {
+            Timber.d("Фолбэк Piper пропущен: фраза устарела (stop или новая фраза)")
+            return
+        }
         // Default-карточка языка: сначала поле каталога default_for_language,
         // резервная константа селектора — только если каталог default не задаёт.
         val cardId = TtsModelSelector.defaultCardId(language, catalogCards)

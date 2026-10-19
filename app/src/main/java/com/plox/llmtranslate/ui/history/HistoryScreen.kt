@@ -19,7 +19,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,8 +49,9 @@ fun HistoryScreen(
     val errorMessageRes by viewModel.errorMessageRes.collectAsStateWithLifecycle()
 
     // Диалог подтверждения очистки: действие необратимо — одним тапом
-    // теряется вся история.
-    var showClearDialog by remember { mutableStateOf(false) }
+    // теряется вся история. Диалог переживает конфигурационные изменения,
+    // не открываясь заново после поворота (ревью #17).
+    var showClearDialog by rememberSaveable { mutableStateOf(false) }
     if (showClearDialog) {
         AlertDialog(
             onDismissRequest = { showClearDialog = false },

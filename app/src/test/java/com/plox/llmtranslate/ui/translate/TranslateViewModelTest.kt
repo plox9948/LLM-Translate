@@ -66,6 +66,13 @@ class TranslateViewModelTest {
     @Before
     fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
+        // Реальные потоки рекордера по умолчанию: relaxed-дочерний мок
+        // StateFlow<Long> при обращении к .value роняет ClassCastException
+        // в потолке длительности; точечные тесты переопределяют стаб позже.
+        every { audioRecorder.recordingFlow } returns
+            kotlinx.coroutines.flow.MutableStateFlow(false)
+        every { audioRecorder.recordingElapsedMs } returns
+            kotlinx.coroutines.flow.MutableStateFlow(0L)
     }
 
     /** Создать ViewModel (коллекторы init стартуют здесь — стабы должны быть готовы). */
@@ -506,11 +513,30 @@ class TranslateViewModelTest {
         assertFalse(viewModel.uiState.value.isRecording)
     }
 
-    // ── Анти-повтор sticky-статусов координатора (ревью #55) ──
+    // ── Анти-повтор sticky-статусов координатора (ревью #55, правка #8) ──
+    // Якоря показанных id живут в синглтон-координаторе; тест подменяет их
+    // фасетчатым хранилищем в моке, имитируя переживание якорей между VM.
+
+    /** Заглушка якорей показано показанных id координатора. */
+    private fun stubCoordinatorShownAnchors() {
+        var shownErrorId = 0L
+        var shownDownloadErrorId = 0L
+        every { ttsCoordinator.isTtsErrorShown(any()) } answers { firstArg<Long>() <= shownErrorId }
+        every { ttsCoordinator.markTtsErrorShown(any()) } answers {
+            shownErrorId = maxOf(shownErrorId, firstArg())
+        }
+        every { ttsCoordinator.isTtsDownloadErrorShown(any()) } answers {
+            firstArg<Long>() <= shownDownloadErrorId
+        }
+        every { ttsCoordinator.markTtsDownloadErrorShown(any()) } answers {
+            shownDownloadErrorId = maxOf(shownDownloadErrorId, firstArg())
+        }
+    }
 
     @Test
-    fun `stale coordinator tts error not reshown but new error id shown once`() {
+    fun `tts error shown once per id and not reshown after local dismiss`() {
         every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        stubCoordinatorShownAnchors()
         val status = kotlinx.coroutines.flow.MutableStateFlow(
             TtsPlaybackStatus(
                 error = RuntimeError.LanguageNotSupported("system", "ru"),
@@ -520,8 +546,9 @@ class TranslateViewModelTest {
         every { ttsCoordinator.status } returns status
         createViewModel()
 
-        // Ошибка случилась до создания экрана — повторно не показывается.
-        org.junit.Assert.assertNull(viewModel.uiState.value.error)
+        // Ошибка случилась, когда экран был на другой вкладке, а якорь её ещё
+        // не показывал (правка #8) — новый ViewModel обязан её показать.
+        org.junit.Assert.assertNotNull(viewModel.uiState.value.error)
 
         // Новый экземпляр ошибки (id вырос) — показывается.
         status.value = status.value.copy(
@@ -530,15 +557,17 @@ class TranslateViewModelTest {
         )
         assertEquals("Модель не готова", viewModel.uiState.value.error)
 
-        // Локальное снятие баннера + новая эмиссия со СТАРЫМ id — не показывается.
+        // Локальное снятие баннера + новая эмиссия с УЖЕ показанным id — не
+        // показывается повторно (анти-повтор по якорю координатора).
         viewModel.onInputTextChanged("новый текст")
         status.value = status.value.copy(downloadProgress = 10)
         org.junit.Assert.assertNull(viewModel.uiState.value.error)
     }
 
     @Test
-    fun `stale download failure not shown in new view model, new failure shown`() {
+    fun `shown download error not repeated in recreated view model, new failure shown`() {
         every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        stubCoordinatorShownAnchors()
         val status = kotlinx.coroutines.flow.MutableStateFlow(
             TtsPlaybackStatus(
                 downloadStatus = TtsDownloadStatus.ERROR,
@@ -548,8 +577,8 @@ class TranslateViewModelTest {
         every { ttsCoordinator.status } returns status
         createViewModel()
 
-        // ERROR скачивания из прошлого визита — флаг не поднимается.
-        assertFalse(viewModel.uiState.value.ttsDownloadFailed)
+        // ERROR-стадия, случившаяся при живой сессии, показывается один раз (id 2).
+        assertTrue(viewModel.uiState.value.ttsDownloadFailed)
 
         // Новая ERROR-стадия — показывается и сохраняется при промежуточных
         // эмиссиях того же экземпляра.
@@ -563,6 +592,15 @@ class TranslateViewModelTest {
 
         // Выход из ERROR — флаг снимается.
         status.value = status.value.copy(downloadStatus = TtsDownloadStatus.NONE)
+        assertFalse(viewModel.uiState.value.ttsDownloadFailed)
+
+        // Пересоздание ViewModel: уже показанная ERROR id=3 повторно не
+        // поднимается (якорь переживает ViewModel), якорь не «забывает» id.
+        status.value = status.value.copy(
+            downloadStatus = TtsDownloadStatus.ERROR,
+            downloadErrorId = 3
+        )
+        createViewModel()
         assertFalse(viewModel.uiState.value.ttsDownloadFailed)
     }
 

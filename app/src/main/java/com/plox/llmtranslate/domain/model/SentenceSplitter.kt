@@ -47,6 +47,13 @@ object SentenceSplitter {
     )
 
     /**
+     * Длина самого длинного сокращения в [ABBREVIATIONS] — предел обратного
+     * скана в [isAbbreviation] (ревью): слово длиннее любого сокращения
+     * границей точно является, длинный обратный скан не нужен.
+     */
+    private val MAX_ABBREVIATION_LENGTH = ABBREVIATIONS.maxOf { it.length }
+
+    /**
      * Разбить текст на предложения.
      * @return список непустых сегментов в исходном порядке; пустой список для
      *         пустого ввода.
@@ -64,11 +71,31 @@ object SentenceSplitter {
      * кавычка, скобка) остаётся как есть. Пустой/пробельный ввод не трогаем.
      * Возвращается нормализованная копия — исходный ввод для истории не
      * меняется; нормализуется только текст, идущий в движок.
+     * Десятичное число на конце («3.14», «версия 1.2») не расширяется точкой
+     * (ревью): его финальная цифра уже стоит после разделительной точки.
      */
     fun ensureTrailingTerminator(text: String): String {
         val trimmed = text.trimEnd()
         val last = trimmed.lastOrNull() ?: return text
-        return if (last.isLetterOrDigit()) "$trimmed." else trimmed
+        if (last.isLetterOrDigit() && !endsWithDecimalNumber(trimmed)) return "$trimmed."
+        return trimmed
+    }
+
+    /**
+     * Текст заканчивается десятичным числом: цифра, точка, затем цифры до
+     * конца строки. Точка внутри числа — не граница предложения, вторую точку
+     * дописывать не нужно.
+     */
+    private fun endsWithDecimalNumber(text: String): Boolean {
+        if (text.length < 3) return false
+        if (!text.last().isDigit()) return false
+        val dot = text.length - 2
+        // Пропускаем цифры дробной части назад до разделительной точки.
+        var i = text.length - 1
+        while (i >= 0 && text[i].isDigit()) i--
+        if (i < 0 || text[i] != '.') return false
+        // Целая часть — минимум одна цифра.
+        return i - 1 >= 0 && text[i - 1].isDigit()
     }
 
     /**
@@ -150,9 +177,14 @@ object SentenceSplitter {
      */
     private fun isAbbreviation(text: String, dotIndex: Int): Boolean {
         var j = dotIndex - 1
-        while (j >= 0 && text[j].isLetter()) {
+        // Обратный скан ограничен длиной максимального сокращения (ревью):
+        // длинное слово заранее не может им быть.
+        while (j >= 0 && text[j].isLetter() && dotIndex - j <= MAX_ABBREVIATION_LENGTH) {
             j--
         }
+        // Слева от окна скана всё ещё буква — слово длиннее любого
+        // сокращения и не может им быть.
+        if (j >= 0 && text[j].isLetter()) return false
         // Одиночная заглавная буква — инициал («А. С. Пушкин»); строчная —
         // обычное слово («это я. ты где?») и границей как раз является.
         if (dotIndex - j - 1 == 1 && text[j + 1].isUpperCase()) return true

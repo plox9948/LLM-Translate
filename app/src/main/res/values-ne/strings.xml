@@ -19,6 +19,12 @@
     <string name="option_en">English</string>
     <string name="option_ne">नेपाली</string>
 
+    <!-- भाषा चिप शीर्षकहरू (समीक्षा #21) -->
+    <string name="lang_title_auto">स्वतः (Auto)</string>
+    <string name="lang_title_ru">रूसी (Russian)</string>
+    <string name="lang_title_en">अङ्ग्रेजी (English)</string>
+    <string name="lang_title_ne">नेपाली (Nepali)</string>
+
     <!-- Единицы измерения -->
     <string name="unit_gb">जि.बि.</string>
     <string name="unit_mb">मे.बि.</string>
@@ -39,7 +45,7 @@
     <string name="translate_speak_cd">सुनाउनुहोस्</string>
     <string name="translate_copy_cd">अनुवाद कपी गर्नुहोस्</string>
     <string name="translate_copy_input_cd">मूल पाठ कपी गर्नुहोस्</string>
-    <string name="translate_recording_hint">● रिकर्डिङ चलिरहेको छ… रोक्न माइक्रोफोनमा ट्याप गर्नुहोस्</string>
+    <string name="translate_recording_hint">● रिकर्डिङ चलिरहेको छ… %1$s — रोक्न माइक्रोफोनमा ट्याप गर्नुहोस्</string>
     <string name="translate_mic_permission_denied">माइक्रोफोनबाट रिकर्डिङको अनुमति छैन। एप सेटिङमा माइक्रोफोन अनुमति दिनुहोस्</string>
     <string name="translate_mic_missing_stt_model">बोली पहिचानको लागि «मोडेलहरू» स्क्रीनबाट बोली पहिचान मोडेल डाउनलोड गर्नुहोस्</string>
     <string name="translate_select_language">भाषा चयन गर्नुहोस्</string>
@@ -115,6 +121,7 @@
     <string name="models_backup_import_done">आयात: %1$d, छोडिएको: %2$d</string>
     <string name="models_backup_import_done_settings">आयात: %1$d, छोडिएको: %2$d, सेटिङहरू पुनर्स्थापित</string>
     <string name="models_status_error">डाउनलोड त्रुटि</string>
+    <string name="models_status_busy">…</string>
     <string name="models_retry_download">पुनःप्रयास गर्नुहोस्</string>
     <string name="models_export_cancelled">निर्यात रद्द भयो</string>
 
@@ -127,6 +134,7 @@
     <string name="settings_theme">थिम</string>
     <string name="settings_theme_light">उज्यालो</string>
     <string name="settings_theme_dark">अँध्यारो</string>
+    <string name="settings_observe_failed">सेटिङ लोड गर्न सकिएन। स्क्रिन ताजा पार्नुहोस्</string>
     <string name="settings_unload_models">मोडेल अनलोडिङ</string>
     <string name="settings_unload_now">तुरुन्तै</string>
     <plurals name="settings_unload_after_default">

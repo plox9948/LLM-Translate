@@ -134,7 +134,15 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
             }
             archiveFile.delete()
             if (!extracted) {
-                return@run InstallResult.Failure("Ошибка распаковки: $fileName")
+                // Содержимое архива уже прошло SHA-256 — сбой формата
+                // детерминирован: повтор лишь 5 раз перекачает гигабайтный
+                // архив к тому же результату (ревью, п.4). Без контрольной
+                // суммы повреждение могло возникать при передаче — повтор
+                // имеет смысл.
+                return@run InstallResult.Failure(
+                    "Ошибка распаковки: $fileName",
+                    permanent = !expectedSha.isNullOrBlank()
+                )
             }
             // Архивы sherpa содержат единственный подкаталог — подтягиваем его наверх.
             flattenModelDir(modelDir)
@@ -166,20 +174,25 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         is DownloadOutcome.InsufficientStorage -> outcome.toInstallFailure()
     }
 
-    private suspend fun extractArchive(archiveFile: File, destDir: File, fileName: String): Boolean =
-        when {
-            fileName.endsWith(".tar.bz2") -> extractTar(archiveFile, destDir, bzip2 = true)
-            fileName.endsWith(".tar.gz") -> extractTar(archiveFile, destDir, bzip2 = false)
-            fileName.endsWith(".zip") -> extractZip(archiveFile, destDir)
+    private suspend fun extractArchive(archiveFile: File, destDir: File, fileName: String): Boolean {
+        // Суффикс сравнивается без учёта регистра: классификация
+        // DownloadLayout.isArchive/ArchiveFormats регистронезависима, и архив
+        // «X.TAR.GZ» иначе доходил до dispatch и проваливался в else (ревью, п.3).
+        val lower = fileName.lowercase()
+        return when {
+            lower.endsWith(".tar.bz2") -> extractTar(archiveFile, destDir, bzip2 = true)
+            lower.endsWith(".tar.gz") -> extractTar(archiveFile, destDir, bzip2 = false)
+            lower.endsWith(".zip") -> extractZip(archiveFile, destDir)
             else -> false
         }
+    }
 
     /**
      * Копирование записи архива в файл с проверкой отмены корутины на каждом
      * блоке — длинная распаковка прерывается сразу по cancel() воркера.
      */
     private suspend fun copyEntry(input: InputStream, output: OutputStream) {
-        val buffer = ByteArray(64 * 1024)
+        val buffer = ByteArray(TRANSFER_BUFFER_BYTES)
         while (true) {
             currentCoroutineContext().ensureActive()
             val read = input.read(buffer)

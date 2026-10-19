@@ -8,11 +8,21 @@ import java.util.Locale
 object InstallCheckLogic {
 
     /**
-     * Запас свободного места к размеру модели. Для archive-установок пик
-     * распаковки ~(архив + распакованное содержимое) ≈ 2x размера, прежний
-     * x1.2 пропускал загрузку, которая затем не помещалась при распаковке.
+     * Определить тип раскладки карточки по её URLам скачивания: одиночный
+     * файл, архив (unpack-пик 2x) или gz-артефакты slimt-пачки ( gunzip-пик
+     * ≈1.5–1.7x). Совпадает с классификацией гейта в ModelDownloadWorker и
+     * используется единой формулой [requiredDownloadFreeBytes] (ревью).
      */
-    private const val DISK_HEADROOM_FACTOR = 2.0
+    private fun cardLayoutFlags(card: ModelCard): Pair<Boolean, Boolean> {
+        val names = card.downloadUrls().map { url ->
+            url.substringAfterLast('/').substringBefore('?').substringBefore('#')
+        }
+        val isArchiveLayout = names.any { ArchiveFormats.isArchive(it) }
+        val isGzipLayout = !isArchiveLayout &&
+            names.any { ArchiveFormats.isCompressedArtifact(it) }
+        return isArchiveLayout to isGzipLayout
+    }
+
 
     /**
      * Проверить возможность установки модели на устройство.
@@ -27,13 +37,22 @@ object InstallCheckLogic {
             )
         }
         val warnings = mutableListOf<String>()
-        if (device.freeDiskBytes < card.sizeBytes * DISK_HEADROOM_FACTOR) {
-            // Требуемый запас в тексте — по тому же множителю, что и критерий
-            // (ревью раунд 2): прежний размер модели без запаса расходился
-            // с фактическим порогом и дезориентировал пользователя.
-            val requiredBytes = (card.sizeBytes * DISK_HEADROOM_FACTOR).toLong()
+        // Требуемое место считаем той же формулой, что и гейт скачивания в
+        // воркере (requiredDownloadFreeBytes), — прежний универсальный x2.0
+        // давал ложные предупреждения для одиночных файлов (фактический
+        // гейт 1.2x) и расходился с gz-гейтом 1.8x (ревью).
+        val (isArchiveLayout, isGzipLayout) = cardLayoutFlags(card)
+        val requiredBytes = requiredDownloadFreeBytes(card.sizeBytes, isArchiveLayout, isGzipLayout)
+        if (requiredBytes > 0L && device.freeDiskBytes < requiredBytes) {
+            // Текст предупреждения ветвится по типу раскладки (ревью):
+            // «распаковка» уместна только для архива и gz-артефактов.
+            val headroomText = when {
+                isArchiveLayout -> "с запасом на распаковку архива"
+                isGzipLayout -> "с запасом на распаковку gzip-артефактов"
+                else -> "с запасом на запись скачанного файла"
+            }
             warnings.add(
-                "Мало места на диске: нужно ${formatSize(requiredBytes)} (с запасом на распаковку)"
+                "Мало места на диске: нужно ${formatSize(requiredBytes)} ($headroomText)"
             )
         }
         // Порог ОЗУ перед скачиванием — 60% от ОБЪЁМА устройства (total):
@@ -63,11 +82,19 @@ object InstallCheckLogic {
      * но сам воркер перед загрузкой обязан сверить фактическое место с пиком
      * установки — для архивной распаковки пик ~(архив + содержимое) = 2x,
      * для одиночного файла (скачивание в .part, пика распаковки нет) - 1.2x.
+     * gzip-артефакты slimt-пучков (ревью): пик при gunzip ~(сжатый артефакт +
+     * распакованное содержимое) ≈ 1.5–1.7x размера — отдельный коэффициент 1.8x
+     * с запасом, НЕ смешивать с архивной 2x (иначе перерасход места).
      * Размер неизвестен (<=0) — проверка пропускается (0).
      */
-    fun requiredDownloadFreeBytes(sizeBytes: Long, isArchiveLayout: Boolean): Long = when {
+    fun requiredDownloadFreeBytes(
+        sizeBytes: Long,
+        isArchiveLayout: Boolean,
+        isCompressedArtifactLayout: Boolean = false
+    ): Long = when {
         sizeBytes <= 0L -> 0L
         isArchiveLayout -> sizeBytes * 2
+        isCompressedArtifactLayout -> sizeBytes + sizeBytes * 4 / 5
         else -> sizeBytes + sizeBytes / 5
     }
 

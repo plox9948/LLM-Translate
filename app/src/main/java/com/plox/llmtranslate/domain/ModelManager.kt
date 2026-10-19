@@ -77,7 +77,7 @@ interface ModelManager {
 
     /**
      * Экспортировать модель в SAF-uri, выбранный пользователем.
-      * Файл копируется напрямую; каталог (мультифайл ONNX/sherpa) — в zip.
+     * Файл копируется напрямую; каталог (мультифайл ONNX/sherpa) — в zip.
      * @return true при успехе.
      */
     suspend fun exportToUri(modelId: String, targetUri: android.net.Uri): Boolean

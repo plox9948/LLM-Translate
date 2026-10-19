@@ -9,6 +9,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.BufferedOutputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import timber.log.Timber
 
 /**
@@ -17,6 +18,8 @@ import timber.log.Timber
  * `lex.*.s2t.bin`, `vocab.*.spm`. Официальный CDN Mozilla отдаёт их
  * сжатыми gzip (`.gz`), поэтому каждый файл скачивается с проверкой
  * SHA-256 по байтам архива, затем распаковывается в каталог модели.
+ * Решение о gunzip — по суффиксу `.gz` (без учёта регистра) либо по
+ * магической сигнатуре gzip 0x1F 0x8B в начале файла (ревью, п.3, п.5).
  * Каждый URL сверяется со своим SHA-256 из [sha256s].
  */
 class SlimtInstaller : ModelInstaller, BaseDownloader() {
@@ -62,16 +65,38 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
                     return outcome.toInstallFailure()
             }
             val downloaded = File(modelDir, archiveName)
+            // Суффикс — без учёта регистра (классификация ArchiveFormats.
+            // isCompressedArtifact тоже регистронезависима, ревью, п.3);
+            // решение о gunzip дополнительно по магическим байтам 0x1F 0x8B:
+            // суффикс .gz мог отвалиться при редиректе URL (ревью, п.5).
+            val gzipSuffixBytes = if (archiveName.endsWith(".gz", ignoreCase = true)) 3 else 0
+            val needsGunzip = gzipSuffixBytes > 0 || hasGzipMagic(downloaded)
             try {
-                if (archiveName.endsWith(".gz")) {
-                    val unpacked = File(modelDir, archiveName.removeSuffix(".gz"))
+                if (needsGunzip) {
+                    val unpacked = File(modelDir, archiveName.dropLast(gzipSuffixBytes))
+                    // Gzip без суффикса .gz: имя распакованного совпадает с
+                    // источником — распаковываем во временный файл и заменяем
+                    // источник после успеха (иначе FileOutputStream затрёт
+                    // читаемый источник).
+                    val out = if (unpacked == downloaded) {
+                        File(modelDir, "$archiveName.gunzip.tmp")
+                    } else {
+                        unpacked
+                    }
                     // Регистрация в множестве отбраковки ДО распаковки:
                     // при отмене/сбое полу-распакованный файл не должен
                     // оставаться в каталоге.
-                    created += unpacked
-                    gunzip(unpack = downloaded, to = unpacked)
+                    created += out
+                    gunzip(unpack = downloaded, to = out)
                     currentCoroutineContext().ensureActive()
                     downloaded.delete()
+                    if (out != unpacked) {
+                        // Бросок имени на место: осколков после rename не остаётся.
+                        if (!out.renameTo(unpacked)) {
+                            throw IOException("Не удалось переименовать ${out.name} в ${unpacked.name}")
+                        }
+                        created -= out
+                    }
                 } else {
                     created += downloaded
                 }
@@ -90,10 +115,33 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
                         permanent = true
                     )
                 }
-                return InstallResult.Failure("Не удалось распаковать $archiveName")
+                // Байты файла уже совпали с SHA-256 — неgzip-содержимое
+                // детерминировано, повтор его перекачает к тому же сбою
+                // (ревью, п.4). Без контрольной суммы искажение могло
+                // прийти при передаче — повтор имеет смысл.
+                return InstallResult.Failure(
+                    "Не удалось распаковать $archiveName",
+                    permanent = !hashes[index].isNullOrBlank()
+                )
             }
         }
         return InstallResult.Success(modelDir.absolutePath)
+    }
+
+    /**
+     * Признак gzip-потока по сигнатуре формата: первые два байта 0x1F 0x8B
+     * (RFC 1952). Решения о распаковке по одному суффиксу имени файла
+     * недостаточно — ревью, п.5.
+     */
+    private fun hasGzipMagic(file: File): Boolean = try {
+        file.inputStream().use { input ->
+            val b0 = input.read()
+            val b1 = input.read()
+            b0 == 0x1F && b1 == 0x8B
+        }
+    } catch (e: IOException) {
+        Timber.w("Не удалось прочитать заголовок ${file.name}: ${e.message}")
+        false
     }
 
     /** Распаковка одного gzip-файла с границами отмены на каждом блоке. */
@@ -103,11 +151,13 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
         GZIPInputStream(unpack.inputStream().buffered()).use { gz ->
             FileOutputStream(to).use { out ->
                 BufferedOutputStream(out).use buffered@{ bo ->
-                    val buffer = ByteArray(64 * 1024)
+                    val buffer = ByteArray(TRANSFER_BUFFER_BYTES)
                     while (true) {
                         currentCoroutineContext().ensureActive()
                         val read = gz.read(buffer)
-                        if (read <= 0) break
+                        // EOF для InputStream.read(buffer) — строго < 0;
+                        // 0 для ненулевого буфера не возвращается (ревью, п.8).
+                        if (read < 0) break
                         bo.write(buffer, 0, read)
                     }
                 }

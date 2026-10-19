@@ -23,6 +23,9 @@ private const val MAX_CYCLE_PERIOD = 4
 /** Сколько повращений периода в хвосте считается зацикливанием. */
 private const val CYCLE_REPEATS = 4
 
+/** Разделитель слов: скомпилирован один раз (горячий путь детектора, ревью). */
+private val WHITESPACE = Regex("\\s+")
+
 /**
  * Жёсткая маска `no_repeat_ngram` (аналог HF forbid-ngram-idioms, НЕ штраф):
  * мутирует [logits] на месте. Если последние (n-1) токенов из [generated]
@@ -113,19 +116,29 @@ internal fun pickGreedyTokenSafe(
  * хвостовой цикл.
  *
  * Проверять по ТРИММЕННОМУ тексту (после RepetitionTrimmer, до postprocess).
+ *
+ * [sourceText] (текст чанка входа, если передан): повторяющийся паттерн
+ * входа переносится декодером в вывод легитимно («no no no…» → «no no no…») —
+ * если блок, повторяющийся в выводе, повторяется подряд и в нормализованном
+ * входе, вырождением НЕ считается (в т.ч. при упоре в лимит), иначе ретрай
+ * с no_repeat_ngram возвращал ошибку на корректном повторении входного
+ * паттерна (ревью).
  */
 internal fun isDegenerateOutput(
     text: String,
     eosReached: Boolean,
-    hitMaxLength: Boolean
+    hitMaxLength: Boolean,
+    sourceText: String? = null
 ): Boolean {
+    val words = wordsOf(text)
+    // Повтор пришёл из входа — не вырождение.
+    if (sourceText != null && repeatsComeFromInput(words, wordsOf(sourceText))) {
+        return false
+    }
     if (hitMaxLength) return true
     // Слова: split по пробельным, отбрасываем чисто пунктуационные токены.
-    val words = text.split(Regex("\\s+"))
-        .filter { w -> w.any { it.isLetterOrDigit() } }
     if (words.size >= MIN_WORDS_FOR_RATIO) {
-        val uniqueRatio = words.distinct().size.toFloat() / words.size
-        if (uniqueRatio < MIN_UNIQUE_RATIO) return true
+        if (uniqueWordRatio(words) < MIN_UNIQUE_RATIO) return true
     }
     for (period in 1..MAX_CYCLE_PERIOD) {
         val needed = period * CYCLE_REPEATS
@@ -141,4 +154,53 @@ internal fun isDegenerateOutput(
         if (cyclic) return true
     }
     return false
+}
+
+/** Доля уникальных слов в тексте (0 при отсутствии слов) — выбор best-of-two. */
+internal fun uniqueWordRatio(text: String): Float = uniqueWordRatio(wordsOf(text))
+
+private fun uniqueWordRatio(words: List<String>): Float =
+    if (words.isEmpty()) 0f else words.distinct().size.toFloat() / words.size
+
+/** Слова текста: по пробельным, без чисто пунктуационных токенов. */
+private fun wordsOf(text: String): List<String> =
+    text.split(WHITESPACE).filter { w -> w.any { it.isLetterOrDigit() } }
+
+/**
+ * Блоки, повторённые подряд >= 2 раз где-либо в [words]: множество
+ * нормализованных (в нижний регистр) последовательностей слов периодами
+ * 1..[MAX_CYCLE_PERIOD]. Чисто пунктуационные токены из блоков исключены
+ * ([wordsOf]).
+ */
+private fun repeatingBlocks(words: List<String>): Set<List<String>> {
+    val blocks = mutableSetOf<List<String>>()
+    if (words.isEmpty()) return blocks
+    for (start in words.indices) {
+        for (period in 1..MAX_CYCLE_PERIOD) {
+            val end = start + period
+            if (end > words.size) break
+            val block = words.subList(start, end).map { it.lowercase() }
+            var repeats = 1
+            while (end + repeats * period <= words.size &&
+                words.subList(end + (repeats - 1) * period, end + repeats * period)
+                    .map { it.lowercase() } == block
+            ) {
+                repeats++
+            }
+            if (repeats >= 2) blocks += block
+        }
+    }
+    return blocks
+}
+
+/**
+ * «Повтор пришёл из входа»: любое повторённое подряд слово/блок вывода
+ * встречается повторяется и в нормализованном входе (ревью — легитимные
+ * повторы входа вроде «no no no…»).
+ */
+private fun repeatsComeFromInput(outputWords: List<String>, sourceWords: List<String>): Boolean {
+    if (sourceWords.isEmpty() || outputWords.isEmpty()) return false
+    val sourceBlocks = repeatingBlocks(sourceWords)
+    if (sourceBlocks.isEmpty()) return false
+    return repeatingBlocks(outputWords).any { it in sourceBlocks }
 }

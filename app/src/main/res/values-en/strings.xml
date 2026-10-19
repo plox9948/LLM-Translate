@@ -19,6 +19,12 @@
     <string name="option_en">English</string>
     <string name="option_ne">नेपाली</string>
 
+    <!-- Language chip titles (review #21) -->
+    <string name="lang_title_auto">Auto</string>
+    <string name="lang_title_ru">Russian</string>
+    <string name="lang_title_en">English</string>
+    <string name="lang_title_ne">Nepali</string>
+
     <!-- Единицы измерения -->
     <string name="unit_gb">GB</string>
     <string name="unit_mb">MB</string>
@@ -39,7 +45,7 @@
     <string name="translate_speak_cd">Read aloud</string>
     <string name="translate_copy_cd">Copy translation</string>
     <string name="translate_copy_input_cd">Copy source text</string>
-    <string name="translate_recording_hint">● Recording… Tap the microphone to stop</string>
+    <string name="translate_recording_hint">● Recording… %1$s — tap the microphone to stop</string>
     <string name="translate_mic_permission_denied">Microphone recording permission is not granted. Allow microphone access in the app settings</string>
     <string name="translate_mic_missing_stt_model">To recognize speech, download a speech recognition model on the \"Models\" screen</string>
     <string name="translate_select_language">Select language</string>
@@ -115,6 +121,7 @@
     <string name="models_backup_import_done">Imported: %1$d, skipped: %2$d</string>
     <string name="models_backup_import_done_settings">Imported: %1$d, skipped: %2$d, settings restored</string>
     <string name="models_status_error">Download error</string>
+    <string name="models_status_busy">…</string>
     <string name="models_retry_download">Retry</string>
     <string name="models_export_cancelled">Export cancelled</string>
 
@@ -127,6 +134,7 @@
     <string name="settings_theme">Theme</string>
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_dark">Dark</string>
+    <string name="settings_observe_failed">Failed to load settings. Refresh the screen</string>
     <string name="settings_unload_models">Model unloading</string>
     <string name="settings_unload_now">Immediately</string>
     <plurals name="settings_unload_after_default">

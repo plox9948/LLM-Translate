@@ -77,6 +77,20 @@ abstract class BaseDownloader {
         val doneFile = File(targetDir, fileName)
         targetDir.mkdirs()
 
+        // Переиспользование целого целевого файла предыдущих попыток (ревью):
+        // та же логика, что в downloadFiles для пакетов, — теперь и для
+        // одиночных загрузок (архив, одиночный ONNX): детерминированный сбой
+        // распаковки sha-верифицированного архива не должен вызывать
+        // перекачку гигабайтного файла при каждой из пяти попыток.
+        if (doneFile.isFile && canReuseDownloaded(doneFile, expectedSha256)) {
+            Timber.d("Файл $fileName уже скачан ранее — пропуск загрузки")
+            // Мусор докачки от прерванной попытки рядом с целым целевым
+            // файлом больше не нужен.
+            discardPart(partFile, metaFile)
+            onProgress(100)
+            return@withContext DownloadOutcome.Success(doneFile)
+        }
+
         // Первая попытка — с докачкой, если у .part есть доверенные метаданные;
         // после отбраковки части — всегда одна попытка с нуля.
         var outcome: DownloadOutcome? = null
@@ -191,8 +205,8 @@ abstract class BaseDownloader {
         return try {
             val urlConn = URL(url).openConnection() as HttpURLConnection
             connection = urlConn
-            urlConn.connectTimeout = 30_000
-            urlConn.readTimeout = 120_000
+            urlConn.connectTimeout = HTTP_CONNECT_TIMEOUT_MS
+            urlConn.readTimeout = HTTP_READ_TIMEOUT_MS
 
             val resumeBytes = if (meta != null) partFile.length() else 0L
             if (resumeBytes > 0) {
@@ -266,6 +280,10 @@ abstract class BaseDownloader {
             )
 
             val totalBytes = if (announcedTotal > 0) announcedTotal else 0L
+            // Сколько байт уже учтено последним отчётом прогресса при
+            // неизвестном total (ревью, п.6) — следующий не раньше, чем
+            // через PROGRESS_UNKNOWN_TOTAL_STEP_BYTES новых байт.
+            var lastUnknownTotalReport = 0L
             // При докачке открываем файл в режиме append, иначе — с нуля.
             val out: OutputStream = if (bytesDone > 0) {
                 FileOutputStream(partFile, true)
@@ -275,7 +293,7 @@ abstract class BaseDownloader {
             try {
                 out.use { os ->
                     urlConn.inputStream.buffered().use { input ->
-                        val buffer = ByteArray(64 * 1024)
+                        val buffer = ByteArray(TRANSFER_BUFFER_BYTES)
                         var received = 0L
                         while (true) {
                             // Отмена WorkManager (cancelUniqueWork) прерывает цикл
@@ -289,6 +307,18 @@ abstract class BaseDownloader {
                             if (totalBytes > 0) {
                                 val percent = ((bytesDone + received) * 100 / totalBytes).toInt()
                                 onProgress(percent.coerceIn(0, 100))
+                            } else if (received - lastUnknownTotalReport >= PROGRESS_UNKNOWN_TOTAL_STEP_BYTES) {
+                                // chunked без Content-Length: total неизвестен —
+                                // редкие эскалирующие вызовы (ревью, п.6): процент
+                                // от известных байт по эталонной оценке остатка,
+                                // монотонно растёт и не достигает 100 (100 —
+                                // только по завершении файла), UI видит живой
+                                // прогресс вместо зависания на нуле.
+                                lastUnknownTotalReport = received
+                                val known = bytesDone + received
+                                val percent = (known * 100 /
+                                    (known + PROGRESS_UNKNOWN_TOTAL_REFERENCE_BYTES)).toInt()
+                                onProgress(percent.coerceIn(0, 99))
                             }
                         }
                     }
@@ -370,7 +400,8 @@ abstract class BaseDownloader {
      * пересчитываются по SHA-256 (дорого, но дешевле повторной загрузки GB-файла)
      * и пропускаются; без контрольной суммы доверяемся целому целевому файлу
      * (он появляется только после полной загрузки, переименованием из `.part`)
-     * при отсутствии не завершённой докачки рядом.
+     * при отсутствии не завершённой докачки рядом — сам пропуск реализован
+     * в [downloadFile] (единая точка проверки, без двойного пересчёта SHA).
      * @return результат: [DownloadOutcome.Success] с путём к каталогу.
      */
     protected suspend fun downloadFiles(
@@ -388,15 +419,8 @@ abstract class BaseDownloader {
             // DownloadLayout (каталог модели персональный — префикс не нужен).
             val fileName = DownloadLayout.sanitizedBasename(url, index)
             val expectedSha = sha256s.getOrNull(index)
-            val doneFile = File(modelDir, fileName)
-            if (doneFile.isFile && canReuseDownloaded(doneFile, expectedSha)) {
-                Timber.d("Файл $fileName уже скачан ранее — пропуск загрузки")
-                // Мусор докачки от прерванной попытки рядом с целым целевым
-                // файлом больше не нужен.
-                discardPart(File(modelDir, "$fileName.part"), File(modelDir, "$fileName.part.meta"))
-                onProgress(scaleFileProgress(index, urls.size, 100))
-                return@forEachIndexed
-            }
+            // Пропуск уже скачанного целевого файла — внутри downloadFile
+            // (canReuseDownloaded), прогресс 100 оттуда масштабируется ниже.
             val fileOutcome = downloadFile(url, modelDir, fileName, expectedSha) { fileProgress ->
                 // Прогресс по всем файлам: вес каждого файла одинаков.
                 onProgress(scaleFileProgress(index, urls.size, fileProgress))
@@ -432,7 +456,7 @@ abstract class BaseDownloader {
             if (expected.isNullOrBlank()) return@withContext true
             val digest = MessageDigest.getInstance("SHA-256")
             file.inputStream().buffered().use { input ->
-                val buffer = ByteArray(64 * 1024)
+                val buffer = ByteArray(TRANSFER_BUFFER_BYTES)
                 while (true) {
                     // Хеширование больших файлов занимает десятки секунд —
                     // отмена воркера должна прерывать и этот цикл.

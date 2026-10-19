@@ -43,15 +43,18 @@ object SlimtNative {
     external fun nativePoll(handle: Long): Int
 
     /**
-     * Забрать текст завершённого перевода. null — только при некорректном
-     * handle (с выброшенным [IllegalStateException]); пустая строка —
-     * легитимный пустой результат.
+     * Забрать текст завершённого перевода. null — при некорректном handle
+     * (с выброшенным [IllegalStateException]) либо при нехватке памяти в
+     * куче JVM: JNI NewString возвращает null без проброса исключения
+     * (utf8_to_jstr в slimt_jni.cpp); пустая строка — легитимный пустой
+     * результат.
      */
     external fun nativeTakeResult(handle: Long): String?
 
     /**
-     * Забрать текст ошибки последней операции. null — только при
-     * некорректном handle (с выброшенным [IllegalStateException]).
+     * Забрать текст ошибки последней операции. null — при некорректном
+     * handle (с выброшенным [IllegalStateException]) либо при OOM в
+     * куче JVM (NewString вернул null без исключения).
      */
     external fun nativeTakeError(handle: Long): String?
 

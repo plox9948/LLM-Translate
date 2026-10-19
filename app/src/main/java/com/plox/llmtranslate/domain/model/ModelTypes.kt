@@ -324,7 +324,16 @@ data class DeviceInfo(
     val availableRamMb: Long,
     val freeDiskBytes: Long
 ) {
-    /** Суммарная ОЗУ, требуемая активными моделями, близка к лимиту. */
+    /**
+     * Суммарная ОЗУ, требуемая активными моделями, близка к лимиту.
+     * Порог — доля общего объёма ОЗУ, вынесена в именованную константу
+     * [NEAR_RAM_LIMIT_PERCENT] (ревью).
+     */
     fun isNearRamLimit(requiredMb: Long): Boolean =
-        requiredMb * 100 > totalRamMb * 70
+        requiredMb * 100 > totalRamMb * NEAR_RAM_LIMIT_PERCENT
+
+    companion object {
+        /** Процент общего объёма ОЗУ, при превышении которого модель считается «около лимита». */
+        private const val NEAR_RAM_LIMIT_PERCENT = 70
+    }
 }

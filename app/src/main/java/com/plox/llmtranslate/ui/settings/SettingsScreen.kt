@@ -34,6 +34,9 @@ import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.TtsEngines
 import com.plox.llmtranslate.domain.model.visibleTtsEngineIds
+import com.plox.llmtranslate.ui.ErrorBanner
+import com.plox.llmtranslate.ui.observeResilient
+import com.plox.llmtranslate.ui.translate.TranslateLanguage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,8 +50,8 @@ import javax.inject.Inject
 data class SettingsUiState(
     val ttsEngine: String = TtsEngines.SYSTEM,
     val catalog: List<ModelCard> = emptyList(),
-    val uiLanguage: String = "system",
-    val theme: String = "system",
+    val uiLanguage: String = ModelPreferences.DEFAULT_UI_LANGUAGE,
+    val theme: String = ModelPreferences.DEFAULT_THEME,
     val unloadTimeoutMinutes: Int = ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES,
     val directionRetention: String = ModelPreferences.DEFAULT_MODEL_DIRECTION_RETENTION
 )
@@ -79,9 +82,16 @@ class SettingsViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState
 
+    // Сообщение сбоя наблюдения потоков (ревью #3): id строкового ресурса,
+    // sticky до скрытия баннером — по образцу экранов «Модели»/«История».
+    private val _observeErrorRes = MutableStateFlow<Int?>(null)
+    val observeErrorRes: StateFlow<Int?> = _observeErrorRes
+
     init {
         // Все настройки наблюдаются одинаково: значение потока пишется в
-        // соответствующее поле состояния (общий каркас — [watch]).
+        // соответствующее поле состояния (общий каркас — [watch]). Room/DataStore
+        // поток без guard ронял процесс при сбое — observeResilient логирует,
+        // показывает ошибку и перезапускает подписку (ревью #3).
         watch(modelManager.catalog) { state, cards -> state.copy(catalog = cards) }
         watch(preferences.ttsEngine) { state, engine -> state.copy(ttsEngine = engine) }
         watch(preferences.uiLanguage) { state, lang -> state.copy(uiLanguage = lang) }
@@ -96,11 +106,19 @@ class SettingsViewModel @Inject constructor(
 
     /** Подписка потока настройки на запись в [uiState] без потери остальных полей. */
     private fun <T> watch(source: Flow<T>, assign: (SettingsUiState, T) -> SettingsUiState) {
-        viewModelScope.launch {
-            source.collect { value ->
-                _uiState.value = assign(_uiState.value, value)
-            }
+        observeResilient(
+            scope = viewModelScope,
+            source = { source },
+            messageRes = R.string.settings_observe_failed,
+            errorState = _observeErrorRes
+        ) { value ->
+            _uiState.value = assign(_uiState.value, value)
         }
+    }
+
+    /** Скрыть баннер сбоя наблюдения (тап по баннеру в UI). */
+    fun clearObserveError() {
+        _observeErrorRes.value = null
     }
 
     fun onTtsEngineChange(engine: String) {
@@ -148,6 +166,17 @@ private val TTS_ENGINE_LABELS = mapOf(
 )
 
 /**
+ * Подписи языков интерфейса (код → строковый ресурс); список языков —
+ * общий со списком чипов перевода [TranslateLanguage.SUPPORTED_CODES]
+ * (ревью #20).
+ */
+private val UI_LANGUAGE_LABELS = mapOf(
+    "ru" to R.string.option_ru,
+    "en" to R.string.option_en,
+    "ne" to R.string.option_ne
+)
+
+/**
  * Экран «Настройки»: TTS-движок, язык интерфейса, тема, выгрузка моделей,
  * поведение при смене направления перевода.
  */
@@ -156,6 +185,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val observeErrorRes by viewModel.observeErrorRes.collectAsStateWithLifecycle()
 
     Column(
         modifier = Modifier
@@ -170,6 +200,11 @@ fun SettingsScreen(
             fontWeight = FontWeight.Bold
         )
 
+        // Баннер сбоя наблюдения потоков настроек (ревью #3, тап — скрыть).
+        observeErrorRes?.let { res ->
+            ErrorBanner(text = stringResource(res), onClick = { viewModel.clearObserveError() })
+        }
+
         // TTS-движок: скрытые карточки каталога (hidden, issue #55) движки
         // не предлагают; уже выбранный движок остаётся в списке всегда.
         OptionCard(
@@ -180,17 +215,17 @@ fun SettingsScreen(
                 .map { engine -> engine to stringResource(TTS_ENGINE_LABELS.getValue(engine)) }
         )
 
-        // Язык интерфейса.
+        // Язык интерфейса: общий список поддерживаемых языков с чипами
+        // перевода (ревью #20).
         OptionCard(
             titleRes = R.string.settings_ui_language,
             selected = state.uiLanguage,
             onSelect = viewModel::onUiLanguageChange,
             options = listOf(
-                "system" to stringResource(R.string.option_system),
-                "ru" to stringResource(R.string.option_ru),
-                "en" to stringResource(R.string.option_en),
-                "ne" to stringResource(R.string.option_ne)
-            )
+                ModelPreferences.DEFAULT_UI_LANGUAGE to stringResource(R.string.option_system)
+            ) + TranslateLanguage.SUPPORTED_CODES.map { code ->
+                code to stringResource(UI_LANGUAGE_LABELS.getValue(code))
+            }
         )
 
         // Тема.
@@ -199,9 +234,9 @@ fun SettingsScreen(
             selected = state.theme,
             onSelect = viewModel::onThemeChange,
             options = listOf(
-                "system" to stringResource(R.string.option_system),
-                "light" to stringResource(R.string.settings_theme_light),
-                "dark" to stringResource(R.string.settings_theme_dark)
+                ModelPreferences.THEME_SYSTEM to stringResource(R.string.option_system),
+                ModelPreferences.THEME_LIGHT to stringResource(R.string.settings_theme_light),
+                ModelPreferences.THEME_DARK to stringResource(R.string.settings_theme_dark)
             )
         )
 

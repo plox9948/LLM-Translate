@@ -117,6 +117,16 @@ class PiperTtsRuntime @Inject constructor(
      */
     suspend fun load(modelDir: File, model: InstalledModel? = null): RuntimeError? =
         withContext(Dispatchers.IO) {
+            // playPcm выполняется под [engineMutex] всю фазу воспроизведения
+            // (перенос вне мьютекса рискован для stop-семантики с activeTrack,
+            // ревью). Чтобы смена каталога не ждала конца озвучки, гасим её
+            // флагом прерывания заранее: циклы playPcm проверяют
+            // [stopRequested] на каждом чанке/дренаже и освобождают мьютекс
+            // досрочно (тот же путь, что [releaseModel]/[release]).
+            val existing = loaded
+            if (existing != null && existing.dirPath != modelDir.absolutePath) {
+                stop()
+            }
             engineMutex.withLock {
                 val path = modelDir.absolutePath
                 val current = loaded

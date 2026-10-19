@@ -89,6 +89,42 @@ class SlimtRuntimeTest {
     }
 
     /**
+     * Сверка языковой пары из имён файлов (ревью): файлы из разных пачек,
+     * подмешанные в один каталог, — null (LoadFailed наверху), эквивалентные
+     * двусторонние метки (ruen/enru) — корректная пачка.
+     */
+    @Test
+    fun `mixed language pair files are rejected`() {
+        val dir = File.createTempFile("packmix", "").let {
+            it.delete()
+            it.mkdirs()
+            it
+        }
+        try {
+            touch(dir, "model.ruen.intgemm.alphas.bin")
+            touch(dir, "lex.50.50.ruen.s2t.bin")
+            touch(dir, "vocab.enzh.spm")
+            assertNull(runtime.resolvePackageFiles(dir))
+            // Исправляем vocab на пару модели (enru ≡ ruen) — пачка валидна.
+            File(dir, "vocab.enzh.spm").delete()
+            touch(dir, "vocab.enru.spm")
+            assertNotNull(runtime.resolvePackageFiles(dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `pack language pair extraction`() {
+        assertEquals(setOf("ru", "en"), runtime.packLanguagePair("model.ruen.intgemm.alphas.bin"))
+        assertEquals(setOf("en", "ru"), runtime.packLanguagePair("lex.50.50.enru.s2t.bin"))
+        assertEquals(setOf("ru", "en"), runtime.packLanguagePair("vocab.ruen.spm"))
+        // Неразложимые имена — null (сверка невозможна, не блокирует загрузку).
+        assertNull(runtime.packLanguagePair("model.bin"))
+        assertNull(runtime.packLanguagePair("readme.txt"))
+    }
+
+    /**
      * Эвик активного пучка при удалении модели (issue #40): пучок изымается
      * из кэша, активный id сбрасывается, [loadedModels] больше не содержит id.
      * Пучки с handle=0L не трогают JNI-слой (нативная библиотека в unit-тесте

@@ -6,7 +6,9 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
@@ -54,7 +56,17 @@ class BackgroundUnloadScheduler @Inject constructor(
         synchronized(lock) {
             pendingJob?.cancel()
             pendingJob = appScope.launch {
-                val minutes = timeoutProvider.timeoutMinutes()
+                val minutes = try {
+                    timeoutProvider.timeoutMinutes()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Ревью: сбой чтения настройки (DataStore повреждён/IO) не
+                    // должен выгружать рантаймы внезапно — безопасно считаем
+                    // «не выгружать», настройка прочитается при следующем schedule.
+                    Timber.e(e, "Не удалось прочитать тайм-аут выгрузки — считаю NEVER_UNLOAD")
+                    NEVER_UNLOAD
+                }
                 if (minutes < 0) {
                     Timber.d("Выгрузка при сворачивании отключена настройкой")
                     return@launch
@@ -63,6 +75,9 @@ class BackgroundUnloadScheduler @Inject constructor(
                     Timber.d("Выгрузка рантаймов отложена на %d мин", minutes)
                     delay(TimeUnit.MINUTES.toMillis(minutes.toLong()))
                 }
+                // Ревью: граница отмены после долгого delay — job мог быть
+                // снят (возврат в foreground) до входа в коллбэк выгрузки.
+                currentCoroutineContext().ensureActive()
                 Timber.d("Истёк тайм-аут фонового простоя: выгружаем рантаймы")
                 try {
                     onUnload()

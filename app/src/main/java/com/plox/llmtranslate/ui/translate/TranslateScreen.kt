@@ -4,6 +4,7 @@ import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,11 +25,12 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,7 +60,7 @@ import com.plox.llmtranslate.R
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.ui.ErrorDialog
 import com.plox.llmtranslate.ui.FavoriteStarIcon
-import com.plox.llmtranslate.ui.models.formatBytes
+import com.plox.llmtranslate.ui.formatBytes
 import java.util.Locale
 
 /**
@@ -242,17 +244,10 @@ fun TranslateScreen(
             )
         }
 
-        // Индикатор записи.
+        // Индикатор записи: таймер изолирован в дочерний composable (ревью #14) —
+        // рекомпозиция по тикам elapsed не затрагивает весь экран.
         if (state.isRecording) {
-            // таймер длительности записи (issue #68) — подсказка о потолке
-            // 3 минуты, после которого запись остановится автоматически.
-            val totalSec = (state.recordingElapsedMs / 1000L).toInt()
-            Text(
-                text = stringResource(R.string.translate_recording_hint) +
-                    " " + String.format(Locale.US, "%d:%02d", totalSec / 60, totalSec % 60),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error
-            )
+            RecordingIndicator(elapsedMs = state.recordingElapsedMs)
         }
 
         // Ошибка.
@@ -267,6 +262,25 @@ fun TranslateScreen(
             onSkip = viewModel::onOnboardingSkip
         )
     }
+}
+
+/**
+ * Индикатор записи: подпись с плейсхолдером таймера из ресурса (ревью #14) —
+ * подсказка о потолке длительности, после которого запись остановится
+ * автоматически (issue #68). Вынесен в отдельный composable, чтобы тики
+ * длительности приводили к рекомпозиции только этой строки.
+ */
+@Composable
+private fun RecordingIndicator(elapsedMs: Long) {
+    val totalSec = (elapsedMs / 1000L).toInt()
+    Text(
+        text = stringResource(
+            R.string.translate_recording_hint,
+            String.format(Locale.US, "%d:%02d", totalSec / 60, totalSec % 60)
+        ),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.error
+    )
 }
 
 /**
@@ -289,7 +303,7 @@ private fun InputCard(
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = sourceLang.title,
+                    text = stringResource(sourceLang.titleRes),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -362,7 +376,7 @@ private fun ResultCard(
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = targetLang.title,
+                    text = stringResource(targetLang.titleRes),
                     style = MaterialTheme.typography.labelMedium
                 )
                 Spacer(modifier = Modifier.weight(1f))
@@ -534,7 +548,8 @@ private fun MissingModelRow(
 }
 
 /**
- * Чип выбора языка.
+ * Чип выбора языка со штатным M3-меню (ревью #15): DropdownMenu вместо
+ * самодельного AlertDialog со списком TextButton.
  * @param allowAuto разрешать ли выбор автоопределения (только для исходного языка).
  */
 @Composable
@@ -543,37 +558,29 @@ private fun LanguageChip(
     onSelect: (TranslateLanguage) -> Unit,
     allowAuto: Boolean = false
 ) {
-    // Простой выбор языка через чипы.
     var expanded by remember { mutableStateOf(false) }
 
-    AssistChip(
-        onClick = { expanded = true },
-        label = { Text(selected.title) }
-    )
-
-    if (expanded) {
-        AlertDialog(
-            onDismissRequest = { expanded = false },
-            title = { Text(stringResource(R.string.translate_select_language)) },
-            text = {
-                Column {
-                    // Для целевого языка автоопределение недоступно.
-                    TranslateLanguage.entries
-                        .filter { allowAuto || it != TranslateLanguage.AUTO }
-                        .forEach { lang ->
-                            TextButton(
-                                onClick = {
-                                    onSelect(lang)
-                                    expanded = false
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(lang.title)
-                            }
-                        }
-                }
-            },
-            confirmButton = {}
+    Box {
+        AssistChip(
+            onClick = { expanded = true },
+            label = { Text(stringResource(selected.titleRes)) }
         )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            // Для целевого языка автоопределение недоступно.
+            TranslateLanguage.entries
+                .filter { allowAuto || it != TranslateLanguage.AUTO }
+                .forEach { lang ->
+                    DropdownMenuItem(
+                        text = { Text(stringResource(lang.titleRes)) },
+                        onClick = {
+                            onSelect(lang)
+                            expanded = false
+                        }
+                    )
+                }
+        }
     }
 }

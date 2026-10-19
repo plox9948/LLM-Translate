@@ -150,6 +150,25 @@ class CharsmapNormalizerTest {
         assertEquals("Z", mini.normalize("Z"))
     }
 
+    @Test
+    fun `corrupt root offset with bit 31 does not crash`() {
+        // Ревью (п.3): смещение darts юнита со знакомым старшим битом
+        // (арифметический shr) давало отрицательную позицию и
+        // ArrayIndexOutOfBoundsException при обходе три.
+        val trie = IntArray(256)
+        trie[0] = (1 shl 31) or (1 shl 10) // offset-поле с установленным битом 31.
+        val normalized = "A".toByteArray(StandardCharsets.UTF_8) + 0
+        val buf = java.nio.ByteBuffer.allocate(4 + trie.size * 4 + normalized.size)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(trie.size * 4)
+        trie.forEach { buf.putInt(it) }
+        buf.put(normalized)
+
+        val normalizer = TokenizerJson.CharsmapNormalizer(buf.array())
+        // Смещение за пределами массива — матч отсутствует, символы проходят.
+        assertEquals("ab", normalizer.normalize("ab"))
+    }
+
     // --- Валидность blob ---
 
     @Test

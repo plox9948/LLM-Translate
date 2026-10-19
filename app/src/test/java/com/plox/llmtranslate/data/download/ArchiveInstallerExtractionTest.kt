@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -110,6 +111,61 @@ class ArchiveInstallerExtractionTest {
 
             assertFalse(installer.extractTar(archive, outDir, bzip2 = false))
             assertEquals(0, outDir.walkTopDown().filter { it.isFile }.count())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+
+    /** Закрытый порт: любое фактическое скачивание даёт немедленный отказ. */
+    private fun deadUrl(name: String) = "http://127.0.0.1:1/$name"
+
+    @Test
+    fun `corrupted archive matching sha fails permanent without re-download`() = runBlocking {
+        val root = tempDir()
+        try {
+            // Целевой архив предыдущей попытки лежит в корне каталога рантайма
+            // и совпадает с SHA-256: downloadFile обязан переиспользовать его
+            // (URL на закрытый порт — любая перекачка дала бы NetworkError),
+            // а сбой формата после верификации — детерминирован, permanent.
+            val bytes = "not a gzip stream at all".toByteArray()
+            val url = deadUrl("pack.tar.gz")
+            val name = DownloadLayout.targetFileName("m1", url, 0, inModelDir = false)
+            File(root, name).writeBytes(bytes)
+            val sha = sha256Hex(bytes)
+
+            val result = installer.install(
+                listOf(url), sha, listOf(sha), root, "m1"
+            ) {}
+
+            assertTrue(result is InstallResult.Failure)
+            assertTrue((result as InstallResult.Failure).permanent)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `uppercase archive suffix is dispatched case-insensitively`() = runBlocking {
+        val root = tempDir()
+        try {
+            // Классификация isArchive регистронезависима, а dispatch по
+            // суффиксу раньше падал в else для «PACK.ZIP» (ревью, п.3).
+            val bytes = zipBytes(listOf("tokens.txt" to "ok".toByteArray()))
+            val url = deadUrl("PACK.ZIP")
+            val name = DownloadLayout.targetFileName("m1", url, 0, inModelDir = false)
+            File(root, name).writeBytes(bytes)
+            val sha = sha256Hex(bytes)
+
+            val result = installer.install(
+                listOf(url), sha, listOf(sha), root, "m1"
+            ) {}
+
+            assertTrue(result is InstallResult.Success)
+            assertEquals("ok", File(DownloadLayout.modelDir(root, "m1"), "tokens.txt").readText())
         } finally {
             root.deleteRecursively()
         }

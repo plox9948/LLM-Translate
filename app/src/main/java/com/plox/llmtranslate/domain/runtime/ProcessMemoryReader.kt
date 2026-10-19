@@ -18,6 +18,11 @@ private const val KB_IN_MB = 1024
  * Используется binder-запрос к AMS ([ActivityManager.getProcessMemoryInfo]),
  * а не Debug.getMemoryInfo: внутри процесса Debug не видит native-память
  * инференс-движков (ONNX/sherpa), а AMS возвращает полный PSS процесса.
+ *
+ * TODO(ревью): [ActivityManager.getProcessMemoryInfo] помечен deprecated в
+ * новых API (ограничения fproc); альтернативы без binder-запроса (Debug.*)
+ * native-память не видят — замена потребуется при подъеме targetSdk,
+ * сейчас единственный корректный источник.
  */
 @Singleton
 class ProcessMemoryReader @Inject constructor(

@@ -68,6 +68,32 @@ class DecodeGuardsTest {
         assertFalse(isDegenerateOutput("спасибо . . । !", eosReached = false, hitMaxLength = false))
     }
 
+    // === Ретрай против легитимных повторов ВХОДА (ревью) ===
+
+    @Test
+    fun `loop copied from input is not degenerate`() {
+        val input = "no no no no no no"
+        val output = "no ".repeat(12).trim()
+        // Без знания о входе — вырождение (хвостовой цикл).
+        assertTrue(isDegenerateOutput(output, eosReached = true, hitMaxLength = false))
+        // Повтор пришёл из входа — не вырождение (в т.ч. при упоре в лимит).
+        assertFalse(isDegenerateOutput(output, eosReached = false, hitMaxLength = true, sourceText = input))
+    }
+
+    @Test
+    fun `loop not present in input stays degenerate`() {
+        val input = "переведи эту фразу полностью корректно"
+        val output = "слово ".repeat(12).trim()
+        assertTrue(isDegenerateOutput(output, eosReached = true, hitMaxLength = false, sourceText = input))
+    }
+
+    @Test
+    fun `unique word ratio distinguishes better output`() {
+        assertTrue(
+            uniqueWordRatio("a b c d e f g h") > uniqueWordRatio("a a a a a a a a")
+        )
+    }
+
     // === Маска no_repeat_ngram ===
 
     @Test

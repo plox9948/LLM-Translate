@@ -47,8 +47,10 @@ class SlimtRuntime @Inject constructor(
          */
         private const val CANCEL_DRAIN_TIMEOUT_MS = 10_000L
 
-        /** Ёмкость LRU-кэша: два направления перевода + активная модель. */
-        private const val MODEL_CACHE_CAPACITY = 3
+        /** Имена файлов пачки с языковой меткой: model./lex.<nn>./vocab-. */
+        private val MODEL_NAME_RE = Regex("^model\\.([a-z]{2,6})\\.")
+        private val SHORTLIST_NAME_RE = Regex("^lex\\.(?:[0-9]+\\.)*([a-z]{2,6})\\.s2t\\.bin$")
+        private val VOCAB_NAME_RE = Regex("^(?:srcvocab|trgvocab|vocab)\\.([a-z]{2,6})\\.spm$")
     }
 
     /**
@@ -69,7 +71,7 @@ class SlimtRuntime @Inject constructor(
      * release() вызывается вне главного потока).
      */
     private val engineCache = EngineCacheScaffold<ModelBundle>(
-        capacity = MODEL_CACHE_CAPACITY,
+        capacity = EngineCacheScaffold.DEFAULT_MODEL_CACHE_CAPACITY,
         retentionProvider = retentionProvider,
         logLabel = "slimt",
         releaseBundle = { bundle ->
@@ -113,6 +115,22 @@ class SlimtRuntime @Inject constructor(
                         "slimt",
                         "Не найдены файлы модели (нужны model.*.intgemm.alphas.bin, lex.*.s2t.bin, vocab.*.spm)"
                     )
+                }
+                // Языковая пара из имени файла модели (model.<src><tgt>.intgemm…)
+                // сверяется с заявленными языками записи (ревью): подмешанная
+                // пачка другой пары переводила бы молча чужой моделью.
+                packLanguagePair(files.model.name)?.let { packPair ->
+                    val declared = modelInfo.languages.toSet()
+                    if (declared.isNotEmpty() && packPair != declared) {
+                        Timber.e(
+                            "slimt: языковая пара файлов пачки $packPair не совпадает " +
+                                "с заявленной $declared в $path"
+                        )
+                        return@withContext RuntimeError.LoadFailed(
+                            "slimt",
+                            "Файлы пачки не соответствуют языкам модели"
+                        )
+                    }
                 }
 
                 try {
@@ -182,7 +200,9 @@ class SlimtRuntime @Inject constructor(
                     var outcome: Result<String>? = null
                     while (outcome == null) {
                         currentCoroutineContext().ensureActive()
-                        when (SlimtNative.nativePoll(handle)) {
+                        when (val status = SlimtNative.nativePoll(handle)) {
+                            STATUS_PENDING -> delay(POLL_INTERVAL_MS)
+
                             STATUS_DONE -> {
                                 val result = SlimtNative.nativeTakeResult(handle)
                                     ?: return@withContext Result.failure(
@@ -205,7 +225,17 @@ class SlimtRuntime @Inject constructor(
                                 )
                             }
 
-                            else -> delay(POLL_INTERVAL_MS)
+                            else -> {
+                                // Неизвестный статус воркера — не PENDING:
+                                // бесконечный poll на испорченном статусе скрыл бы
+                                // сбой нативного слоя (ревью).
+                                Timber.e("slimt: неизвестный статус nativePoll: $status")
+                                outcome = Result.failure(
+                                    RuntimeError.InferenceFailed(
+                                        "slimt", "Неизвестный статус нативного воркера: $status"
+                                    )
+                                )
+                            }
                         }
                     }
                     outcome
@@ -218,8 +248,10 @@ class SlimtRuntime @Inject constructor(
                         // таймаутом: зависший нативный воркер не должен
                         // удерживать мьютекс движка вечно (ревью #79).
                         val deadline = System.currentTimeMillis() + CANCEL_DRAIN_TIMEOUT_MS
+                        var drainTimedOut = false
                         while (SlimtNative.nativePoll(handle) == STATUS_PENDING) {
                             if (System.currentTimeMillis() >= deadline) {
+                                drainTimedOut = true
                                 Timber.w(
                                     "slimt: отмена не завершилась за ${CANCEL_DRAIN_TIMEOUT_MS} мс — " +
                                         "дренаж прерван, следующий nativeStart может увидеть «already running»"
@@ -227,6 +259,18 @@ class SlimtRuntime @Inject constructor(
                                 break
                             }
                             delay(POLL_INTERVAL_MS)
+                        }
+                        if (drainTimedOut) {
+                            // Прерванный дренаж оставляет пучок «stale-running»:
+                            // каждый последующий nativeStart давал бы ошибку, и
+                            // движок оставался бы сломанным до общей разгрузки
+                            // (ревью). Выгружаем пучки движка: деструктор
+                            // slimt::Async дожидается (или убивает) воркер.
+                            // Мьютекс [engineCache] уже удерживаем этим translate —
+                            // releaseUnlocked без повторного захвата (reentrant
+                            // deadlock исключён).
+                            Timber.w("slimt: пучок после прерванного дренажа выгружается из кэша")
+                            engineCache.releaseUnlocked()
                         }
                     }
                     Timber.d("slimt: перевод отменён пользователем")
@@ -274,11 +318,45 @@ class SlimtRuntime @Inject constructor(
         val srcVocab = files.firstOrNull { it.name.startsWith("srcvocab") && it.name.endsWith(".spm") }
         val trgVocab = files.firstOrNull { it.name.startsWith("trgvocab") && it.name.endsWith(".spm") }
         val vocab = srcVocab ?: sharedVocab ?: return null
+        val targetVocab = if (srcVocab != null) trgVocab else null
+        // Сверка языковой пары из имён (ревью): файлы из разных пачек,
+        // подмешанные в один каталог (model.ruen + vocab.enzh), загружались
+        // как «корректная» модель и давали мусор перевода — метки всех
+        // извлекаемых файлов обязаны описывать одну и ту же пару
+        // (двусторонние паки ruen/enru эквивалентны).
+        val pairs = listOfNotNull(
+            packLanguagePair(model.name),
+            packLanguagePair(shortlist.name),
+            packLanguagePair(vocab.name),
+            targetVocab?.name?.let { packLanguagePair(it) }
+        ).distinct()
+        if (pairs.size >= 2) {
+            Timber.e("slimt: файлы пачки из разных языковых пар: $pairs")
+            return null
+        }
         return PackageFiles(
             model = model,
             vocab = vocab,
             shortlist = shortlist,
-            targetVocab = if (srcVocab != null) trgVocab else null
+            targetVocab = targetVocab
         )
+    }
+
+    /**
+     * Языковая пара пачки Bergamot из метки имени файла: `model.enru.intgemm…`,
+     * `lex.50.50.enru.s2t.bin`, `vocab.enru.spm` → `{en, ru}` (порядок метки
+     * не значим — паки двусторонние). null, если метка не извлекается или
+     * не делится на два кода языка — проверяющий трактует null как
+     * «сверка невозможна, не блокируем».
+     */
+    internal fun packLanguagePair(fileName: String): Set<String>? {
+        val tag = MODEL_NAME_RE.find(fileName)?.groupValues?.get(1)
+            ?: SHORTLIST_NAME_RE.find(fileName)?.groupValues?.get(1)
+            ?: VOCAB_NAME_RE.find(fileName)?.groupValues?.get(1)
+            ?: return null
+        if (tag.length % 2 != 0) return null
+        val half = tag.length / 2
+        if (half !in 2..3) return null
+        return setOf(tag.take(half), tag.drop(half))
     }
 }

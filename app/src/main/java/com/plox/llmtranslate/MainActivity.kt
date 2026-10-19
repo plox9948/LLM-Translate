@@ -45,12 +45,6 @@ class MainActivity : ComponentActivity() {
         private const val UI_LANGUAGE_CACHE_TIMEOUT_MS = 500L
 
         /**
-         * Язык интерфейса по умолчанию («по системе») — тот же дефолт, что
-         * в потоке [ModelPreferences.uiLanguage].
-         */
-        private const val DEFAULT_UI_LANGUAGE = "system"
-
-        /**
          * Исходная системная конфигурация, снятая при первом создании активности
          * в процессе. После updateConfiguration() локаль «прилипает» к процессу и
          * наследуется при recreate(), поэтому для возврата «по системе» нужен
@@ -136,7 +130,7 @@ class MainActivity : ComponentActivity() {
         val savedLanguage = runBlocking {
             withTimeoutOrNull(UI_LANGUAGE_CACHE_TIMEOUT_MS) {
                 preferences.awaitUiLanguageCache()
-            } ?: DEFAULT_UI_LANGUAGE
+            } ?: ModelPreferences.DEFAULT_UI_LANGUAGE
         }
         applyUiLanguage(savedLanguage)
 
@@ -152,7 +146,9 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            val theme by preferences.theme.collectAsStateWithLifecycle(initialValue = "system")
+            val theme by preferences.theme.collectAsStateWithLifecycle(
+                initialValue = ModelPreferences.DEFAULT_THEME
+            )
 
             OfflineTranslatorTheme(dark = resolveDark(theme)) {
                 Surface(
@@ -182,8 +178,8 @@ class MainActivity : ComponentActivity() {
      * Тёмная тема по настройке: true/false/null (по системе).
      */
     private fun resolveDark(theme: String): Boolean? = when (theme) {
-        "dark" -> true
-        "light" -> false
+        ModelPreferences.THEME_DARK -> true
+        ModelPreferences.THEME_LIGHT -> false
         else -> null
     }
 

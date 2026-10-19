@@ -36,6 +36,18 @@ internal class EngineCacheScaffold<T>(
     private val infoOf: (T) -> LoadedModelInfo,
 ) {
 
+    companion object {
+        /**
+         * Общая ёмкость LRU-кэша пучков для всех движков (ревью — была
+         * дублирована в четырёх): два направления перевода + активная модель
+         * (аналогично несколько STT-моделей + активная).
+         *
+         * TODO(осознанный долг): ёмкость считается по ЧИСЛУ пучков, байтовый
+         * лимит ОЗУ не учитывается (см. долговой абзац [EngineModelCache]).
+         */
+        const val DEFAULT_MODEL_CACHE_CAPACITY = 3
+    }
+
     /**
      * Защита нативных ресурсов: инференс, загрузка и разгрузка
      * сериализуются, поэтому release() ждёт окончания активного инференса
@@ -114,11 +126,14 @@ internal class EngineCacheScaffold<T>(
      * под [sessionMutex] (пучок уже в [cache]).
      */
     fun publishActiveUnlocked(modelId: String) {
-        activeId = modelId
+        // Вытеснение сверх ёмкости — ДО фиксации активного id (ревью):
+        // иначе [activeId] может остаться, ссылаясь на уже освобождённый
+        // (вытесненный) пучок.
         cache.evictOverCapacity().forEach { (evictedId, bundle) ->
             Timber.d("$logLabel: вытеснена из кэша модель $evictedId")
             releaseBundle(bundle)
         }
+        activeId = modelId
         publishLoadedUnlocked()
     }
 

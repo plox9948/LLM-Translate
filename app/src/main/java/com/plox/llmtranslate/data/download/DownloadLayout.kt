@@ -19,6 +19,10 @@ object DownloadLayout {
     /** Файл-архив (.tar.bz2/.tar.gz/.zip) — единственный, который распаковывает ArchiveInstaller. */
     fun isArchive(fileName: String): Boolean = ArchiveFormats.isArchive(fileName)
 
+    /** Сжатый gzip-артефакт (.gz — slimt-пачки с CDN), gunzip-ится при установке. */
+    fun isCompressedArtifact(fileName: String): Boolean =
+        ArchiveFormats.isCompressedArtifact(fileName)
+
     /**
      * Санитизированное имя целевого файла по URL (ревью, п.15): basename без
      * query/fragment; пустое, «.», «..» или имя после очистки — детерминированное

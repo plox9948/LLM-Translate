@@ -11,6 +11,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -97,6 +98,7 @@ object WavWriter {
             }
             true
         } catch (e: Exception) {
+            Timber.e(e, "Не удалось записать WAV: ${file.path}")
             false
         }
     }
@@ -189,7 +191,19 @@ class WavSink(
         get() = pcmBytes
 
     init {
-        stream.write(WavWriter.buildHeader(0, sampleRate, channels, bitsPerSample))
+        try {
+            stream.write(WavWriter.buildHeader(0, sampleRate, channels, bitsPerSample))
+        } catch (e: Exception) {
+            // Без закрытия FileOutputStream оставался незакрытым дескриптором
+            // при отказе записи заголовка (fd-утечка, ревью); конструктор
+            // бросает исходное исключение вызывающему.
+            try {
+                stream.close()
+            } catch (closeError: Exception) {
+                Timber.w(closeError, "Не удалось закрыть поток после сбоя заголовка: ${file.path}")
+            }
+            throw e
+        }
     }
 
     /** Дописать чанк PCM-данных. */
@@ -258,7 +272,45 @@ class AudioRecorder @Inject constructor(
         /** PCM-байт, соответствующих потолку [MAX_RECORDING_MS]. */
         val MAX_PCM_BYTES: Long =
             MAX_RECORDING_MS / 1000L * (SAMPLE_RATE * CHANNELS * BITS_PER_SAMPLE / 8).toLong()
+
+        /** Задержка ветки read==0, чтобы приём не превращался в busy-spin. */
+        private const val READ_IDLE_DELAY_MS = 10L
+
+        /**
+         * Возраст «осиротевших» recording_*.wav в кэше, удаляемых при старте
+         * записи и при старте приложения (ревью): файлы предыдущих
+         * поколений/убитых процессов иначе не чистятся никогда. Моложе порога
+         * не трогаем — это может быть живой файл конкурентной записи.
+         */
+        private const val ORPHAN_WAV_TTL_MS = 24 * 60 * 60 * 1000L
+
+        /**
+         * Общая точка очистки osиротевших временных WAV записей (cacheDir,
+         * префикс recording_): вызывается при старте записи (ниже) и при
+         * старте приложения (OfflineTranslatorApp) — логика в одном месте.
+         */
+        internal fun cleanupOrphanRecordings(cacheDir: File) {
+            val cutoff = System.currentTimeMillis() - ORPHAN_WAV_TTL_MS
+            val stale = cacheDir.listFiles()?.filter {
+                it.isFile && it.name.startsWith("recording_") &&
+                    it.name.endsWith(".wav") && it.lastModified() < cutoff
+            } ?: return
+            for (f in stale) {
+                if (!f.delete()) {
+                    Timber.w("Не удалось удалить osиротевшую запись: ${f.path}")
+                }
+            }
+            if (stale.isNotEmpty()) {
+                Timber.d("Удалено osиротевших временных WAV: ${stale.size}")
+            }
+        }
     }
+
+    /**
+     * Удалить из кэша osиротевшие временные WAV записей старше
+     * [ORPHAN_WAV_TTL_MS] (общий хелпер [cleanupOrphanRecordings], ревью).
+     */
+    private fun cleanupOrphanRecordings() = cleanupOrphanRecordings(context.cacheDir)
 
     /**
      * Флаг активной записи: пишет рекордер (start/cancel/stop), читают цикл
@@ -334,6 +386,11 @@ class AudioRecorder @Inject constructor(
             Timber.w("Нет разрешения RECORD_AUDIO — запись невозможна")
             return false
         }
+
+        // Osиротевшие WAV прошлых записей из кэша не удаляет никто
+        // (вызывающий снимает только свой живой файл) — чистим старые
+        // при старте (ревью).
+        cleanupOrphanRecordings()
 
         val minBuffer = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
@@ -451,6 +508,10 @@ class AudioRecorder @Inject constructor(
                         // остановка и сохранение — как обычно через stopRecording().
                         Timber.e("AudioRecord.read() вернул ошибку $read — цикл чтения остановлен")
                         break
+                    } else {
+                        // read == 0: данных в буфере нет, чтение вернулось бы
+                        // немедленно — без задержки это busy-spin по CPU (ревью).
+                        delay(READ_IDLE_DELAY_MS)
                     }
                 }
             }

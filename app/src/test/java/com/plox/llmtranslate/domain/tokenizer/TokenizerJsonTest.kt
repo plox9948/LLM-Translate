@@ -141,6 +141,74 @@ class TokenizerJsonTest {
         assertEquals(listOf(0, 1, 2), tokenizer.encode("hello"))
     }
 
+    @Test
+    fun `bpe segments non-bmp chars as whole code points`() {
+        // Символ вне BMP — один юнит (эмодзи = U+1F600), а не пара суррогатов:
+        // "▁" = 0, эмодзи отсутствует в vocab → один <unk> = 5 (раньше — два).
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(bpeJson))
+        assertEquals(listOf(0, 5), tokenizer.encode("\uD83D\uDE00"))
+    }
+
+    @Test
+    fun `unigram keeps non-bmp code point intact when uncovered`() {
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(unigramJson))
+        // "▁" покрыт (id 0), code point вне vocab — один пропуск через <unk> = 4.
+        assertEquals(listOf(0, 4), tokenizer.encode("\uD83D\uDE00"))
+    }
+
+    @Test
+    fun `encode without unk skips out-of-vocab token keeping others`() {
+        // Без <unk> в vocab/added_tokens неизвестный токен не попадает в
+        // последовательность (поведение с предупреждением в лог, ревью).
+        val json = """
+            {
+              "model": {
+                "type": "BPE",
+                "vocab": {"▁": 0, "he": 1},
+                "merges": []
+              },
+              "pre_tokenizer": {"type": "Metaspace", "replacement": "▁"}
+            }
+        """
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(json))
+        assertEquals(listOf(0), tokenizer.encode("x"))
+    }
+
+    @Test
+    fun `decode strips leading space but keeps trailing whitespace`() {
+        // Эталон HF Metaspace — lstrip: ведущий пробел от префикса снимается,
+        // концевые пробелы значимы и сохраняются.
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(bpeJson))
+        // 2 = "llo", 0 = "▁" → "llo▁" → "llo ".
+        assertEquals("llo ", tokenizer.decode(listOf(2, 0)))
+    }
+
+    @Test
+    fun `added token without special flag is not special`() {
+        // Дефолт special=false (как HF): не-спец added-токен декодируется,
+        // а не выкидывается из выхода.
+        val json = """
+            {
+              "model": {
+                "type": "BPE",
+                "vocab": {"▁": 0, "zz": 6},
+                "merges": []
+              },
+              "added_tokens": [{"id": 6, "content": "zz"}],
+              "pre_tokenizer": {"type": "Metaspace", "replacement": "▁"},
+              "decoder": {"type": "Metaspace", "replacement": "▁"}
+            }
+        """
+        val tokenizer = TokenizerJson()
+        tokenizer.load(writeTempTokenizer(json))
+        assertEquals(listOf(6), tokenizer.encode("zz"))
+        assertEquals("zz", tokenizer.decode(listOf(6)))
+    }
+
     private fun writeTempTokenizer(content: String): String {
         val file = Files.createTempFile("tokenizer", ".json")
         file.toFile().deleteOnExit()

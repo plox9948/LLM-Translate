@@ -21,6 +21,7 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelFileNaming
+import com.plox.llmtranslate.domain.model.ImportedModelDefaults
 import com.plox.llmtranslate.domain.model.ModelImportMeta
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
@@ -31,7 +32,9 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
@@ -259,16 +262,26 @@ class ModelManagerImpl @Inject constructor(
                 return@launch
             }
             if (!liveWork || repository.getById(model.id) == null) {
-                try {
-                    repository.upsert(model)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // Контрольное ревью, п.3: воркер уже в очереди — статус
-                    // НЕ меняем (READY→ERROR при живой загрузке потерял бы
-                    // установленные файлы на finalize-гейте). Строка
-                    // останется в прежнем статусе, докачка перезапустится.
-                    Timber.e(e, "Не удалось обновить запись модели ${card.id} после schedule")
+                // Ревью: готовую (READY) запись не перетираем DOWNLOADING без
+                // живой работы — upsert обнулил бы прогресс/статус установленной
+                // модели до пересоздания воркера (переход READY→DOWNLOADING
+                // лишает finalize-гейт ориентира, а UI показывает «скачивание»).
+                if (repository.getById(model.id)?.status == ModelStatus.READY) {
+                    Timber.d(
+                        "Модель ${model.id} уже установлена (READY) — статус скачивания не перезаписывается"
+                    )
+                } else {
+                    try {
+                        repository.upsert(model)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Контрольное ревью, п.3: воркер уже в очереди — статус
+                        // НЕ меняем (READY→ERROR при живой загрузке потерял бы
+                        // установленные файлы на finalize-гейте). Строка
+                        // останется в прежнем статусе, докачка перезапустится.
+                        Timber.e(e, "Не удалось обновить запись модели ${card.id} после schedule")
+                    }
                 }
             }
         }
@@ -312,14 +325,26 @@ class ModelManagerImpl @Inject constructor(
         ModelDownloadWorker.cancel(context, modelId)
         scope.launch {
             try {
-                val model = repository.getById(modelId) ?: return@launch
-                if (model.status != ModelStatus.READY) {
-                    // Незавершённую запись удаляем, чтобы UI снова показал «Скачать».
-                    // При явной отмене пользователем удаляем и осиротевшие
-                    // .part-файлы: частичная загрузка этой модели не нужна,
-                    // при повторном скачивании начнётся заново.
-                    deleteOrphanParts(model)
-                    repository.deleteById(modelId)
+                // Ревью: тело отмены под importMutex (тот же лок, что у delete
+                // и импортов) — иначе cancelDownload гоняет deleteById и файловую
+                // очистку с параллельным импортом/удалением той же id.
+                importMutex.withLock {
+                    val model = repository.getById(modelId) ?: return@launch
+                    if (model.status != ModelStatus.READY) {
+                        // Незавершённую запись удаляем, чтобы UI снова показал «Скачать».
+                        // При явной отмене пользователем удаляем и осиротевшие
+                        // .part-файлы: частичная загрузка этой модели не нужна,
+                        // при повторном скачивании начнётся заново.
+                        deleteOrphanParts(model)
+                        repository.deleteById(modelId)
+                        // Ревью: по образцу delete() — если удалённая запись была
+                        // активной для категории (осколок настройки), переключаемся
+                        // на первую доступную, иначе активный id повиснет на неё.
+                        if (preferences.getActiveModelId(model.category) == modelId) {
+                            val fallback = repository.getFirstReady(model.category)
+                            preferences.setActiveModelId(model.category, fallback?.id)
+                        }
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -453,7 +478,15 @@ class ModelManagerImpl @Inject constructor(
 
                     val modelId = sanitizeModelIdFromName(
                         fileName.removeSuffix(".gguf").removeSuffix(".onnx")
-                    )
+                    ).takeIf { it.isNotBlank() }
+                    // Ревью: как в ZIP-ветке — пустое имя (только расширения/
+                    // спецсимволы) даёт пустой id; отказ с логом, а не запись
+                    // с пустым id, по которой нельзя ни удалить, ни назначить.
+                    if (modelId == null) {
+                        Timber.w("Имя файла $fileName не даёт корректного id модели — импорт отклонён")
+                        targetFile.delete()
+                        return@withContext null
+                    }
                     // Старая запись под этим id (до upsert) — нужна для удаления
                     // осиротевшего файла предыдущего импорта (issue #40).
                     val previousRecord = repository.getById(modelId)
@@ -486,6 +519,10 @@ class ModelManagerImpl @Inject constructor(
                     Timber.d("Импортирована модель $modelId из $uri")
                     modelId
                 }
+            } catch (e: CancellationException) {
+                // Ревью: штатная отмена корутины (scope) не «ошибка импорта» —
+                // не глотаем, иначе importFromUri вернёт null вместо стека отмены.
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка импорта модели из $uri")
                 null
@@ -528,6 +565,8 @@ class ModelManagerImpl @Inject constructor(
                 }
                 Timber.d("Модель $modelId экспортирована")
                 true
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка экспорта модели $modelId")
                 false
@@ -560,9 +599,21 @@ class ModelManagerImpl @Inject constructor(
                     // потом диск.
                     runtimeRouter.releaseModel(model)
                     repository.deleteById(modelId)
+                    // Ревью: назначения «язык → модель» (STT/TTS) с удалённым id
+                    // снимаются — иначе настройка ссылается на несуществующую
+                    // модель до первого переназначения.
+                    if (model.category == ModelCategory.STT || model.category == ModelCategory.TTS) {
+                        preferences.removeModelFromLanguageAssignments(modelId)
+                    }
                     if (!path.isNullOrBlank()) {
                         val file = File(path)
-                        if (file.isDirectory) file.deleteRecursively() else file.delete()
+                        // Ревью: отказ удаления файлов логируется (по образцу
+                        // остальных мест) — иначе осиротевшие байты тихие.
+                        val removed =
+                            if (file.isDirectory) file.deleteRecursively() else file.delete()
+                        if (!removed && file.exists()) {
+                            Timber.w("Не удалось удалить файлы модели $modelId: ${file.path}")
+                        }
                     } else {
                         // У записи нет пути при прерванной установке — чистим
                         // известные места раскладки DownloadLayout (issue #40:
@@ -775,6 +826,9 @@ class ModelManagerImpl @Inject constructor(
                 model.filePath?.let { deleteSupersededImportFiles(previousRecord, File(it)) }
                 Timber.d("Импортирована модель ${model.id} (ZIP $sourceName)")
                 return model.id
+            } catch (e: CancellationException) {
+                // Ревью: штатная отмена корутины импорта не «ошибка импорта».
+                throw e
             } catch (e: ImportRejectedException) {
                 Timber.w("Импорт ZIP $sourceName отклонён: ${e.message}")
                 return null
@@ -860,16 +914,47 @@ class ModelManagerImpl @Inject constructor(
     }
 
     /**
-     * Seam (issue #74): чистое копирование extracted → staging вынесено в
-     * internal-метод, чтобы unit-тест мог инъектировать отказ copyRecursively
-     * (нехватку места на FS смоделировать сложно) и проверить сохранность
-     * прежнего пучка при провале промоции. suspend (issue #76): тестовый
-     * seam может вызвать delay — настоящее переключение корутин для проверки
-     * сериализации импортов под importMutex (Thread.sleep блокирует поток
-     * и не даёт детеминированной interleaving-картины).
+     * Seam (issue #74): перенос extracted → staging вынесён в internal-метод,
+     * чтобы unit-тест мог инъектировать отказ копирования (нехватку места на FS
+     * смоделировать сложно) и проверить сохранность прежнего пучка при провале
+     * промоции. suspend (issue #76): тестовый seam может вызвать delay —
+     * настоящее переключение корутин для проверки сериализации импортов под
+     * importMutex (Thread.sleep блокирует поток и не даёт детеминированной
+     * interleaving-картины).
+     *
+     * Ревью (п.6): пик места при ZIP-импорте — cacheDir(извлечённое) + staging +
+     * оригинал (2–3x). Первый шанс — renameTo: при одном томе это перемещение
+     * записи ФС без выделения второго экземпляра (плюс извлечённые байты уже на
+     * этом томе). Не вышло (cross-volume / недоступен перенос) — рекурсивное
+     * копирование, НО с предварительной оценкой StatFs свободных байт по
+     * суммарному размеру распакованного: не хватит — явный отказ импорта
+     * ([ImportRejectedException]), а не частичная запись в staging.
      */
-    internal suspend fun copyExtractedToStaging(extracted: File, stagingDir: File): Boolean =
-        extracted.copyRecursively(stagingDir, overwrite = true)
+    internal suspend fun copyExtractedToStaging(extracted: File, stagingDir: File): Boolean {
+        if (extracted.renameTo(stagingDir)) return true
+        val incomingBytes = extracted.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        if (!hasEnoughFreeSpace(stagingDir.parentFile ?: modelsDir, incomingBytes)) {
+            throw ImportRejectedException(
+                "недостаточно свободного места для копирования импорта " +
+                    "(требуется ~$incomingBytes байт)"
+            )
+        }
+        return extracted.copyRecursively(stagingDir, overwrite = true)
+    }
+
+    /**
+     * Достаточно ли свободного места на томе [volume] под [incomingBytes].
+     * Неготовность оценки (StatFs исключение — в т.ч. unit-test JVM без
+     * android.os) не блокирует импорт (возвращает true): на реальном
+     * устройстве StatFs работает и отказ наступает по фактической нехватке.
+     */
+    private fun hasEnoughFreeSpace(volume: File, incomingBytes: Long): Boolean = try {
+        val stat = StatFs(volume.absolutePath)
+        stat.availableBlocksLong * stat.blockSizeLong >= incomingBytes
+    } catch (e: Exception) {
+        Timber.w(e, "Не удалось оценить свободное место перед копированием импорта")
+        true
+    }
 
     /**
      * Прочитать запись ZIP с лимитом размера; превышение — явный отказ импорта
@@ -912,7 +997,7 @@ class ModelManagerImpl @Inject constructor(
      * отсутствующий файл — [ImportRejectedException] до промоута: прежний
      * пучок нетронут, temp чистится в finally [importZip].
      */
-    private fun verifyImportChecksums(
+    private suspend fun verifyImportChecksums(
         modelId: String,
         urls: List<String>,
         expected: List<String?>,
@@ -920,6 +1005,9 @@ class ModelManagerImpl @Inject constructor(
     ) {
         if (urls.isEmpty() || expected.none { !it.isNullOrBlank() }) return
         urls.forEachIndexed { index, url ->
+            // Ревью: sha256 больших файлов считается долго — корутина импорта
+            // должна отменяться между файлами, а не только на границах копирования.
+            currentCoroutineContext().ensureActive()
             val sha = expected.getOrNull(index)?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
             val fileName = DownloadLayout.sanitizedBasename(url, index)
             if (DownloadLayout.isArchive(fileName)) return@forEachIndexed
@@ -974,8 +1062,14 @@ class ModelManagerImpl @Inject constructor(
         // (импорт даёт id из каталога — карточка обязана соответствовать файлам).
         val importUrls = if (meta.urls.isNotEmpty()) meta.urls
         else listOfNotNull(meta.url.takeIf { it.isNotBlank() })
+        // Ревью: одиночный sha256 из метаданных подставляется в общую сверку,
+        // когда hashes-списка нет (round-trip собственного экспорта одиночного
+        // файла восстанавливает контрольную сумму, а не пропускает сверку).
+        val expectedSingleSha =
+            if (importUrls.size == 1) meta.sha256?.takeIf { it.isNotBlank() } else null
         val expectedSha256s =
             meta.sha256s.takeIf { list -> list.any { !it.isNullOrBlank() } }
+                ?: expectedSingleSha?.let { listOf(it) }
                 ?: repository.getById(meta.id)?.sha256s
                 ?: emptyList()
         verifyImportChecksums(meta.id, importUrls, expectedSha256s, extracted)
@@ -992,10 +1086,12 @@ class ModelManagerImpl @Inject constructor(
             languages = meta.languages,
             quality = meta.quality,
             speed = meta.speed,
-            url = meta.url,
-            urls = meta.urls,
-            sha256 = null,
-            sha256s = meta.sha256s,
+        url = meta.url,
+        urls = meta.urls,
+        // Ревью: round-trip — восстанавливаем одиночный sha256 из метаданных
+        // (старые meta.json без поля дают null — прежняя семантика).
+        sha256 = meta.sha256,
+        sha256s = meta.sha256s,
             license = meta.license,
             minAndroidSdk = meta.minAndroidSdk,
             recommendedRamMb = meta.recommendedRamMb,
@@ -1032,13 +1128,14 @@ class ModelManagerImpl @Inject constructor(
         sizeBytes = size,
         ramRequiredMb = 0,
         languages = emptyList(),
-        quality = 3,
-        speed = 3,
+        // Общие дефолты импортов (ревью) — единый источник с ModelImportMeta.
+        quality = ImportedModelDefaults.QUALITY,
+        speed = ImportedModelDefaults.SPEED,
         url = "",
         urls = emptyList(),
         sha256 = null,
-        license = "Неизвестна",
-        minAndroidSdk = 26,
+        license = ImportedModelDefaults.LICENSE,
+        minAndroidSdk = ImportedModelDefaults.MIN_ANDROID_SDK,
         recommendedRamMb = 0,
         status = ModelStatus.READY,
         progress = 100,
@@ -1096,6 +1193,9 @@ class ModelManagerImpl @Inject constructor(
         speed = model.speed,
         url = model.url,
         urls = model.urls,
+        // Ревью: сохраняем одиночный sha256 — round-trip собственного экспорта
+        // терял контрольную сумму, и повторный импорт пропускал сверку.
+        sha256 = model.sha256,
         sha256s = model.sha256s,
         license = model.license,
         minAndroidSdk = model.minAndroidSdk,

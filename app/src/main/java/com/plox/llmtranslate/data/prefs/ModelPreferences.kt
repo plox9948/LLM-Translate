@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -172,6 +173,36 @@ class ModelPreferences @Inject constructor(
         }
     }
 
+    /**
+     * Снять все назначения «язык → модель» с languages-картами, ссылающиеся
+     * на удалённую модель [modelId] (ревью: delete() не должен оставлять в
+     * настройках висячие id). Ключ удаляется при опустевшей карте.
+     */
+    suspend fun removeModelFromLanguageAssignments(modelId: String) {
+        context.dataStore.edit { prefs ->
+            stripModelFromMap(prefs, STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME, modelId)
+            stripModelFromMap(prefs, TTS_BY_LANGUAGE_KEY, TTS_BY_LANGUAGE_NAME, modelId)
+        }
+    }
+
+    /** Убрать из языковой карты pref-значения, равные [modelId] (без записи, если изменений нет). */
+    private fun stripModelFromMap(
+        prefs: MutablePreferences,
+        key: Preferences.Key<String>,
+        keyName: String,
+        modelId: String
+    ) {
+        val map = decodeLanguageMap(prefs[key], key, keyName).toMutableMap()
+        val removedLanguages = map.filterValues { it == modelId }.keys
+        if (removedLanguages.isEmpty()) return
+        removedLanguages.forEach { map.remove(it) }
+        if (map.isEmpty()) {
+            prefs.remove(key)
+        } else {
+            prefs[key] = json.encodeToString(LANGUAGE_MAP_SERIALIZER, map)
+        }
+    }
+
     // --- Последнее направление перевода (issue #33) ---
 
     /**
@@ -219,7 +250,7 @@ class ModelPreferences @Inject constructor(
     }
 
     val uiLanguage: Flow<String> =
-        context.dataStore.data.map { it[UI_LANGUAGE_KEY] ?: "system" }
+        context.dataStore.data.map { it[UI_LANGUAGE_KEY] ?: DEFAULT_UI_LANGUAGE }
 
     /**
      * Кэш uiLanguage в памяти процесса: прогревается [prefetchUiLanguage]
@@ -257,7 +288,7 @@ class ModelPreferences @Inject constructor(
     }
 
     val theme: Flow<String> =
-        context.dataStore.data.map { it[THEME_KEY] ?: "system" }
+        context.dataStore.data.map { it[THEME_KEY] ?: DEFAULT_THEME }
 
     suspend fun setTheme(theme: String) {
         context.dataStore.edit { it[THEME_KEY] = theme }
@@ -303,6 +334,24 @@ class ModelPreferences @Inject constructor(
     companion object {
         /** Тайм-аут выгрузки рантаймов по умолчанию, минуты. */
         const val DEFAULT_UNLOAD_TIMEOUT_MINUTES = 5
+
+        /**
+         * Язык интерфейса по умолчанию («по системе») — единственная точка
+         * значения фолбэка для потока [uiLanguage] и для таймаутного фолбэка
+         * MainActivity (ревью: не дублировать литерал).
+         */
+        const val DEFAULT_UI_LANGUAGE = "system"
+
+        /**
+         * Значения настройки темы интерфейса (ревью #20): общие константы
+         * вместо литералов в UI и навигации.
+         */
+        const val THEME_SYSTEM = "system"
+        const val THEME_LIGHT = "light"
+        const val THEME_DARK = "dark"
+
+        /** Значение темы по умолчанию («по системе»). */
+        const val DEFAULT_THEME = THEME_SYSTEM
 
         /** Значение настройки «не выгружать модели при смене направления» (issue #36). */
         const val RETENTION_KEEP = "keep"

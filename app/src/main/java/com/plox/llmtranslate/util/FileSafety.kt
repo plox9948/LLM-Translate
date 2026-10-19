@@ -14,7 +14,8 @@ internal fun sha256Hex(file: File): String {
         val buffer = ByteArray(8192)
         while (true) {
             val read = input.read(buffer)
-            if (read <= 0) break
+            // EOF — строго < 0; 0 для ненулевого буфера не возвращается (ревью, п.8).
+            if (read < 0) break
             digest.update(buffer, 0, read)
         }
     }

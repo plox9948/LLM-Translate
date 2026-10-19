@@ -177,17 +177,23 @@ class TtsRuntime @Inject constructor(
      *   возврата ошибки, ревью раунд 2).
      * @return null при успехе или [RuntimeError].
      */
-    suspend fun speak(text: String, lang: String, onDone: (() -> Unit)? = null): RuntimeError? {
+    suspend fun speak(text: String, lang: String, onDone: (() -> Unit)? = null): RuntimeError? =
+        initMutex.withLock {
+        // Фаза инициации озвучки сериализована с [init] (единственный путь,
+        // где release() меняет движок): параллельная смена движка не может
+        // вызвать setLanguage/speak на уже shutdown-экземпляре и зарегистрировать
+        // utterance после drain в release (иначе залипший флаг «озвучиваем» —
+        // ревью). Чтение tts/ready — под мьютексом, движок в этот момент актуален.
         val engine = tts
-            ?: return RuntimeError.LoadFailed("tts", "TTS не инициализирован")
-        if (!ready) return RuntimeError.LoadFailed("tts", "TTS не готов")
+            ?: return@withLock RuntimeError.LoadFailed("tts", "TTS не инициализирован")
+        if (!ready) return@withLock RuntimeError.LoadFailed("tts", "TTS не готов")
 
         // Язык озвучиваемого текста должен быть установлен в движке.
         val langResult = engine.setLanguage(Locale(lang))
         if (langResult == TextToSpeech.LANG_MISSING_DATA ||
             langResult == TextToSpeech.LANG_NOT_SUPPORTED
         ) {
-            return RuntimeError.LanguageNotSupported("system", lang)
+            return@withLock RuntimeError.LanguageNotSupported("system", lang)
         }
 
         val utteranceId = UUID.randomUUID().toString()
@@ -220,7 +226,7 @@ class TtsRuntime @Inject constructor(
         })
 
         val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
-        return if (result == TextToSpeech.ERROR) {
+        return@withLock if (result == TextToSpeech.ERROR) {
             // Отказ старта озвучивания: слушатель onStart/onDone/onError для
             // этой utteranceId не сработает — изымаем её колбэк из реестра и
             // извещаем вызывающий экран по тому же паттерну, что onError

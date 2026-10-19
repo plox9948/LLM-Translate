@@ -151,4 +151,37 @@ class WavReaderTest {
         assertNull(WavReader.locateDataChunk(bytes))
         assertTrue(WavReader.readPcmAsFloat(write(bytes)).isEmpty())
     }
+
+    @Test
+    fun `huge chunk size terminates scan instead of overflowing position`() {
+        // Ревью: заявленный размер чанка, превышающий размер файла, без
+        // ограничения переполняет Int-позицию обхода (выход за массив/
+        // зацикливание) — должен быть явный отказ null.
+        val huge = id4("junk") + le32(Int.MAX_VALUE) + ByteArray(24)
+        val fmt = chunkFourcc("fmt ", ByteArray(16))
+        val body = id4("WAVE") + huge + fmt + chunkFourcc("data", pcm)
+        val bytes = id4("RIFF") + le32(body.size) + body
+        assertNull(WavReader.locateDataChunk(bytes))
+        assertTrue(WavReader.readPcmAsFloat(write(bytes)).isEmpty())
+    }
+
+    @Test
+    fun `mismatched fmt is tolerated but data still located`() {
+        // Формат вне ожидаемого (16-bit mono 16 кГц) — только предупреждение
+        // в лог, данные читаются как раньше (совместимость с чужими WAV).
+        val fmtBody = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
+            .putShort(3) // format=IEEE float
+            .putShort(2) // channels=2
+            .putInt(44100)
+            .putInt(352800)
+            .putShort(8)
+            .putShort(16)
+        val fmt = id4("fmt ") + le32(fmtBody.array().size) + fmtBody.array()
+        val data = id4("data") + le32(pcm.size) + pcm
+        val body = id4("WAVE") + fmt + data
+        val bytes = id4("RIFF") + le32(body.size) + body
+        val loc = requireNotNull(WavReader.locateDataChunk(bytes))
+        assertEquals(pcm.size, loc.second)
+        assertEquals(body.size + 8 - pcm.size, loc.first)
+    }
 }

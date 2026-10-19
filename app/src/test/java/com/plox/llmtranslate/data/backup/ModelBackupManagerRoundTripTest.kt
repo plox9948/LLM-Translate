@@ -51,6 +51,7 @@ class ModelBackupManagerRoundTripTest {
     val tempFolder = TemporaryFolder()
 
     private lateinit var modelsRoot: File
+    private lateinit var cacheDir: File
     private lateinit var zipFile: File
 
     private val context = mockk<Context>(relaxed = true)
@@ -63,7 +64,7 @@ class ModelBackupManagerRoundTripTest {
     @Before
     fun setUp() {
         modelsRoot = tempFolder.newFolder("external", "models")
-        val cacheDir = tempFolder.newFolder("cache")
+        cacheDir = tempFolder.newFolder("cache")
         zipFile = File(tempFolder.root, "backup.zip")
 
         every { context.cacheDir } returns cacheDir
@@ -248,7 +249,9 @@ class ModelBackupManagerRoundTripTest {
         sha256: String? = null,
         isBuiltin: Boolean = false,
         sizeBytes: Int = 5,
-        ramRequiredMb: Int = 100
+        ramRequiredMb: Int = 100,
+        urls: List<String> = emptyList(),
+        sha256s: List<String?> = emptyList()
     ) = BackupModelEntry(
         id = id,
         category = category.name,
@@ -261,8 +264,9 @@ class ModelBackupManagerRoundTripTest {
         quality = 1,
         speed = 1,
         url = "",
-        urls = emptyList(),
+        urls = urls,
         sha256 = sha256,
+        sha256s = sha256s,
         license = "MIT",
         minAndroidSdk = 26,
         recommendedRamMb = 0,
@@ -391,8 +395,195 @@ class ModelBackupManagerRoundTripTest {
         assertTrue(!backupShaOk(entry, bad))
         // Без хэша (импортированная модель) — сверки нет, ok.
         assertTrue(backupShaOk(entry.copy(sha256 = null), bad))
-        // Каталог: хэш манифеста относится к архиву, не к содержимому — сверка пропускается.
+        // Каталог без urls/sha256s: сверять нечем — ok (пучки с sha256s
+        // сверяются пофайлово, см. тесты bundleShaOk ниже).
         assertTrue(backupShaOk(entry, checkNotNull(good.parentFile)))
+    }
+
+    // ---------------------------------------------------------------------
+    // Ревью #1: единая точка корня моделей (ModelStorage) — фолбэк filesDir.
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `export and import use filesDir fallback when external storage unavailable`() {
+        val filesRoot = tempFolder.newFolder("files")
+        every { context.getExternalFilesDir("models") } returns null
+        every { context.filesDir } returns filesRoot
+        val single = File(filesRoot, "marian-ru-en.gguf").apply { writeText("single-bytes") }
+        coEvery { repository.observeAll() } returns flowOf(
+            listOf(readyModel("t1", ModelCategory.TRANSLATION, RuntimeType.MARIAN_ONNX, single.absolutePath))
+        )
+        val upserted = mutableListOf<InstalledModel>()
+        coEvery { repository.upsert(capture(upserted)) } returns Unit
+
+        runBlocking {
+            val manager = backupManager()
+            val uri = mockk<Uri>()
+            assertTrue("Экспорт должен завершиться успешно", manager.exportToUri(uri))
+            val result = manager.importFromUri(uri)
+            assertNull("Импорт не должен возвращать ошибку: ${result.error}", result.error)
+            assertEquals(1, result.importedCount)
+            assertEquals(0, result.skippedCount)
+            assertEquals("single-bytes", File(filesRoot, "marian-ru-en.gguf").readText())
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Ревью #2: коллизия одноимённых файлов вне корня моделей → уникальный
+    // путь с id модели в манифесте.
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `export dedupes identical filenames outside models root by model id`() {
+        val legacyA = tempFolder.newFolder("legacy", "A")
+        val legacyB = tempFolder.newFolder("legacy", "B")
+        val fileA = File(legacyA, "model.onnx").apply { writeText("bytes-a") }
+        val fileB = File(legacyB, "model.onnx").apply { writeText("bytes-b") }
+        coEvery { repository.observeAll() } returns flowOf(
+            listOf(
+                readyModel("m1", ModelCategory.TRANSLATION, RuntimeType.INDICTRANS_ONNX, fileA.absolutePath),
+                readyModel("m2", ModelCategory.TRANSLATION, RuntimeType.INDICTRANS_ONNX, fileB.absolutePath)
+            )
+        )
+        val upserted = mutableListOf<InstalledModel>()
+        coEvery { repository.upsert(capture(upserted)) } returns Unit
+
+        runBlocking {
+            val manager = backupManager()
+            val uri = mockk<Uri>()
+            assertTrue("Экспорт должен завершиться успешно", manager.exportToUri(uri))
+            val result = manager.importFromUri(uri)
+            assertNull("Импорт не должен возвращать ошибку: ${result.error}", result.error)
+            assertEquals(2, result.importedCount)
+            // Оба файла на местах: коллизант записан под путём с id модели.
+            assertEquals("bytes-a", File(modelsRoot, "model.onnx").readText())
+            assertEquals("bytes-b", File(modelsRoot, "m2/model.onnx").readText())
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Ревью #3: пофайловая сверка пучков по sha256s; skip — только архивы/gz.
+    // ---------------------------------------------------------------------
+
+    /** Запись манифеста каталога-пучка с urls и пофайловыми sha256s. */
+    private fun bundleEntry(dirName: String, urls: List<String>, sha256s: List<String?>) =
+        manifestEntry(
+            id = "bundle",
+            category = ModelCategory.TRANSLATION,
+            runtime = RuntimeType.INDICTRANS_ONNX,
+            relativePath = MODELS_PREFIX + dirName,
+            urls = urls,
+            sha256s = sha256s
+        )
+
+    /** ZIP с манифестом (одна entry-каталог) и набором файлов по путям в архиве. */
+    private fun writeZipWithFiles(entry: BackupModelEntry, files: Map<String, String>) {
+        ZipOutputStream(FileOutputStream(zipFile)).use { zip ->
+            zip.putNextEntry(ZipEntry(ModelBackupManager.MANIFEST_NAME))
+            zip.write(
+                json.encodeToString(
+                    BackupManifest.serializer(),
+                    BackupManifest(version = 1, exportedAt = 0L, models = listOf(entry))
+                ).toByteArray()
+            )
+            zip.closeEntry()
+            files.forEach { (path, bytes) ->
+                zip.putNextEntry(ZipEntry(path))
+                zip.write(bytes.toByteArray())
+                zip.closeEntry()
+            }
+        }
+    }
+
+    @Test
+    fun `import skips directory bundle whose per-file sha256 mismatch`() {
+        val encSha = sha256HexOf(tempFolder.newFile("enc.tmp").apply { writeText("enc-bytes") })
+        val entry = bundleEntry(
+            dirName = "bundle",
+            urls = listOf("http://host/enc.onnx", "http://host/dec.onnx"),
+            sha256s = listOf(encSha, "1".repeat(64))
+        )
+        writeZipWithFiles(
+            entry,
+            mapOf(
+                MODELS_PREFIX + "bundle/enc.onnx" to "enc-bytes",
+                MODELS_PREFIX + "bundle/dec.onnx" to "dec-bytes"
+            )
+        )
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNull(result.error)
+            assertEquals(0, result.importedCount)
+            assertEquals(1, result.skippedCount)
+            coVerify(exactly = 0) { repository.upsert(any()) }
+        }
+    }
+
+    @Test
+    fun `import accepts directory bundle with matching per-file sha256`() {
+        val encSha = sha256HexOf(tempFolder.newFile("enc2.tmp").apply { writeText("enc-bytes") })
+        val decSha = sha256HexOf(tempFolder.newFile("dec2.tmp").apply { writeText("dec-bytes") })
+        val entry = bundleEntry(
+            dirName = "bundle",
+            urls = listOf("http://host/enc.onnx", "http://host/dec.onnx"),
+            sha256s = listOf(encSha, decSha)
+        )
+        writeZipWithFiles(
+            entry,
+            mapOf(
+                MODELS_PREFIX + "bundle/enc.onnx" to "enc-bytes",
+                MODELS_PREFIX + "bundle/dec.onnx" to "dec-bytes"
+            )
+        )
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNull(result.error)
+            assertEquals(1, result.importedCount)
+            assertEquals(0, result.skippedCount)
+            assertEquals("enc-bytes", File(modelsRoot, "bundle/enc.onnx").readText())
+        }
+    }
+
+    @Test
+    fun `import skips sha check for gunzipped bundle artifacts`() {
+        // slimt-пучок: sha256s — хэши скачанных .gz-артефактов, на диске
+        // распакованные файлы без .gz — формальная сверка невозможна, импорт
+        // не должен отклоняться (контрольный аудит, п.1).
+        val entry = bundleEntry(
+            dirName = "slimt",
+            urls = listOf("http://host/model.bin.gz"),
+            sha256s = listOf("0".repeat(64))
+        )
+        writeZipWithFiles(entry, mapOf(MODELS_PREFIX + "slimt/model.bin" to "unpacked-bytes"))
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNull(result.error)
+            assertEquals(1, result.importedCount)
+            assertEquals(0, result.skippedCount)
+            assertEquals("unpacked-bytes", File(modelsRoot, "slimt/model.bin").readText())
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Ревью #4: экспорт сначала во временный файл cacheDir — неудача копирования
+    // не оставляет temp-архив.
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `export failure leaves no temporary archive in cache dir`() {
+        coEvery { repository.observeAll() } returns flowOf(prepareModels())
+        every { contentResolver.openOutputStream(any()) } throws java.io.IOException("no space")
+
+        runBlocking {
+            assertTrue(!backupManager().exportToUri(mockk<Uri>()))
+        }
+        assertTrue(
+            "Temp-архивы экспорта не должны оставаться в cacheDir",
+            cacheDir.listFiles()?.none { it.name.startsWith("backup_export") } ?: true
+        )
     }
 
     // Independent SHA-256 for the test is provided by

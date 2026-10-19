@@ -74,9 +74,15 @@ object TtsModelSelector {
      * карточка, назначенная языку в каталоге; константа
      * [DEFAULT_LANGUAGE_CARDS] — только резерв, когда в переданном
      * каталоге default для языка отсутствует (пустой каталог, удалённый
-     * каталог без поля — ревью).
+     * каталог без поля — ревью). Из поиска исключены скрытые карточки
+     * (hidden) и карточки не-piper рантаймов (ревью) — предложить нельзя
+     * то, что недоступно для скачивания.
      */
     fun defaultCardId(language: String, catalogCards: List<ModelCard> = emptyList()): String? =
-        catalogCards.firstOrNull { it.defaultForLanguage == language }?.id
+        catalogCards.firstOrNull {
+            it.defaultForLanguage == language &&
+                it.runtime == RuntimeType.PIPER_ONNX &&
+                !it.hidden
+        }?.id
             ?: DEFAULT_LANGUAGE_CARDS[language]
 }

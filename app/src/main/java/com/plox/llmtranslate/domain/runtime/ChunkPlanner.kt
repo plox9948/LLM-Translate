@@ -50,6 +50,11 @@ private const val JOIN_MARGIN = 4
  * частей (погрешность склейки ограничена стыками и покрывается
  * [JOIN_MARGIN]); точный [tokenCount] склейки считается только когда оценка
  * близко к бюджету.
+ *
+ * TODO(ревью): оценка склейки аддитивна ([JOIN_MARGIN] покрывает только
+ * стыки) — полная переработка точной оценки накопленного чанка (пересчёт
+ * целиком на каждом шаге) затратна и отложена; при смене токенизатора с
+ * крупной субсловной склейкой проверить margin.
  */
 internal fun planChunks(text: String, tokenCount: (String) -> Int, budget: Int): ChunkPlan {
     val (segments, segSeps) = SentenceSplitter.splitWithSeparators(text)
