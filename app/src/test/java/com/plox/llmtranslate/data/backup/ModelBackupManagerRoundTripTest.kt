@@ -9,6 +9,7 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -328,6 +329,68 @@ class ModelBackupManagerRoundTripTest {
             assertEquals(1, result.importedCount)
             assertEquals(0, result.skippedCount)
             assertEquals("legacy-bytes", File(modelsRoot, "good-model.onnx").readText())
+        }
+    }
+
+    @Test
+    fun `import applies settings model ids only for restored models`() {
+        // Настройки ссылаются на id из архива (s1 — восстанавливается) и на
+        // отсутствующий ghost — висячие id не должны попадать в настройки;
+        // сентинель системного TTS назначается без модели.
+        val entry = BackupModelEntry(
+            id = "s1",
+            category = ModelCategory.STT.name,
+            displayName = "S1",
+            description = "d",
+            runtime = RuntimeType.SHERPA.name,
+            sizeBytes = 4,
+            ramRequiredMb = 10,
+            languages = listOf("ru"),
+            quality = 1,
+            speed = 1,
+            url = "",
+            urls = emptyList(),
+            sha256 = null,
+            license = "MIT",
+            minAndroidSdk = 26,
+            recommendedRamMb = 0,
+            relativePath = MODELS_PREFIX + "stt1.onnx",
+            isBuiltin = true
+        )
+        val settings = BackupSettings(
+            activeStt = "s1",
+            activeTranslation = "ghost",
+            sttByLanguage = mapOf("ru" to "s1", "ne" to "ghost"),
+            ttsByLanguage = mapOf("ru" to TtsModelSelector.SYSTEM_SENTINEL)
+        )
+        ZipOutputStream(FileOutputStream(zipFile)).use { zip ->
+            zip.putNextEntry(ZipEntry(ModelBackupManager.MANIFEST_NAME))
+            zip.write(
+                json.encodeToString(
+                    BackupManifest.serializer(),
+                    BackupManifest(version = 1, exportedAt = 0L, models = listOf(entry))
+                ).toByteArray()
+            )
+            zip.closeEntry()
+            zip.putNextEntry(ZipEntry(ModelBackupManager.SETTINGS_NAME))
+            zip.write(json.encodeToString(BackupSettings.serializer(), settings).toByteArray())
+            zip.closeEntry()
+            zip.putNextEntry(ZipEntry(MODELS_PREFIX + "stt1.onnx"))
+            zip.write("stt-bytes".toByteArray())
+            zip.closeEntry()
+        }
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNull(result.error)
+            assertEquals(1, result.importedCount)
+            assertTrue(result.settingsRestored)
+
+            coVerify { preferences.setActiveModelId(ModelCategory.STT, "s1") }
+            coVerify(exactly = 0) { preferences.setActiveModelId(ModelCategory.TRANSLATION, any()) }
+            coVerify { preferences.setSttForLanguage("ru", "s1") }
+            coVerify(exactly = 0) { preferences.setSttForLanguage("ne", "ghost") }
+            coVerify { preferences.setTtsForLanguage("ru", TtsModelSelector.SYSTEM_SENTINEL) }
         }
     }
 

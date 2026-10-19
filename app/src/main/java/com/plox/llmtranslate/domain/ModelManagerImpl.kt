@@ -3,6 +3,7 @@ package com.plox.llmtranslate.domain
 import android.content.Context
 import android.net.Uri
 import android.os.StatFs
+import android.provider.OpenableColumns
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
@@ -69,6 +70,9 @@ class ModelManagerImpl @Inject constructor(
 
         /** Префикс файлов одиночного импорта в корне каталога моделей. */
         const val IMPORT_FILE_PREFIX = "imported_"
+
+        /** Лимит размера записи model_meta.json в импортируемом ZIP. */
+        const val META_MAX_BYTES = 1 shl 20
     }
 
     /** Единый корень моделей ([ModelStorage]) — без дублирующего разрешения. */
@@ -309,6 +313,28 @@ class ModelManagerImpl @Inject constructor(
         )
     }
 
+    /**
+     * Отменить живую скачивающую загрузку модели перед импортом под тем же id:
+     * живой WorkManager-воркер после upsert продолжил бы дописывать `.part` и
+     * переименовывать целевые файлы раскладки этой id поверх импортированной
+     * модели (гейт `finalizeDownload` по status='DOWNLOADING' защищает только
+     * запись БД, не файлы). Файловая очистка — только частей докачки
+     * [.part/.part.meta]: целевые файлы и каталог модели не трогаем, при
+     * ZIP-импорте в них уже лежит промоутенный пучок. Логика раскладки общая
+     * с очисткой отменённой загрузки воркера ([DownloadLayout]).
+     */
+    private suspend fun cancelSupersededDownload(modelId: String, previous: InstalledModel?) {
+        if (!hasLiveDownloadWork(modelId)) return
+        ModelDownloadWorker.cancel(context, modelId)
+        val superseded = previous?.takeIf { it.status != ModelStatus.READY } ?: return
+        DownloadLayout.deletePendingParts(
+            runtimeDir = File(modelsDir, superseded.runtime.name),
+            runtime = superseded.runtime,
+            modelId = modelId,
+            urls = superseded.downloadUrls()
+        )
+    }
+
     override suspend fun importFromUri(uri: Uri): String? =
         withContext(Dispatchers.IO) {
             try {
@@ -334,10 +360,17 @@ class ModelManagerImpl @Inject constructor(
                         return@withContext null
                     }
 
-                    val modelId = fileName.removeSuffix(".gguf").removeSuffix(".onnx")
+                    val modelId = sanitizeModelIdFromName(
+                        fileName.removeSuffix(".gguf").removeSuffix(".onnx")
+                    )
                     // Старая запись под этим id (до upsert) — нужна для удаления
                     // осиротевшего файла предыдущего импорта (issue #40).
                     val previousRecord = repository.getById(modelId)
+                    // Импорт по id живой загрузки: воркер отменяем ДО upsert,
+                    // иначе его финализация/переименования накладываются на
+                    // импортированные файлы (гейт finalizeDownload по
+                    // status='DOWNLOADING' защищает только запись БД).
+                    cancelSupersededDownload(modelId, previousRecord)
                     val model = guessedImportedModel(
                         modelId = modelId,
                         sourceName = fileName,
@@ -587,7 +620,10 @@ class ModelManagerImpl @Inject constructor(
                                 continue
                             }
                             if (name == META_ENTRY_NAME) {
-                                val content = String(zip.readBytes(), Charsets.UTF_8)
+                                // Ограничение размера метаданных: ZIP с патологически
+                                // большой model_meta.json не должен выедать память
+                                // readBytes() — читаем с лимитом и отклоняем импорт.
+                                val content = readEntryBounded(zip, META_MAX_BYTES, sourceName)
                                 meta = try {
                                     json.decodeFromString(ModelImportMeta.serializer(), content)
                                 } catch (e: Exception) {
@@ -631,10 +667,17 @@ class ModelManagerImpl @Inject constructor(
                 // oldPath == newPath внутри deleteSupersededImportFiles не даст
                 // удалить только что промоутенный целевой каталог.
                 val previousRecord = repository.getById(model.id)
+                // Живая загрузка той же id отменяется до upsert (см. одиночный
+                // импорт): иначе воркер дописывает файлы раскладки поверх
+                // промоутенного пучка.
+                cancelSupersededDownload(model.id, previousRecord)
                 repository.upsert(model)
                 model.filePath?.let { deleteSupersededImportFiles(previousRecord, File(it)) }
                 Timber.d("Импортирована модель ${model.id} (ZIP $sourceName)")
                 return model.id
+            } catch (e: ImportRejectedException) {
+                Timber.w("Импорт ZIP $sourceName отклонён: ${e.message}")
+                return null
             } catch (e: Exception) {
                 Timber.e(e, "Ошибка импорта ZIP-модели из $uri")
                 return null
@@ -729,7 +772,79 @@ class ModelManagerImpl @Inject constructor(
         extracted.copyRecursively(stagingDir, overwrite = true)
 
     /**
+     * Прочитать запись ZIP с лимитом размера; превышение — явный отказ импорта
+     * ([ImportRejectedException]) вместо неограниченного readBytes().
+     */
+    private fun readEntryBounded(zip: ZipInputStream, limitBytes: Int, sourceName: String): String {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var total = 0
+        while (total <= limitBytes) {
+            val n = zip.read(buffer, 0, minOf(buffer.size, limitBytes + 1 - total))
+            if (n <= 0) break
+            out.write(buffer, 0, n)
+            total += n
+        }
+        if (total > limitBytes) {
+            throw ImportRejectedException(
+                "метаданные слишком большие (> $limitBytes байт в ZIP $sourceName)"
+            )
+        }
+        return String(out.toByteArray(), Charsets.UTF_8)
+    }
+
+    /** Id модели из имени файла: всё вне [A-Za-z0-9_.-] → '_' (как в [DownloadLayout]). */
+    private fun sanitizeModelIdFromName(raw: String): String =
+        raw.map { if (it.isLetterOrDigit() || it in "._-") it else '_' }.joinToString("")
+
+    /**
+     * Сверить фактические SHA-256 распакованных файлов импорта с ожидаемыми
+     * хэшами (из model_meta.json, иначе — из существующей каталожной записи
+     * той же id, см. вызов в [modelFromMeta]). Ожидаемые хэши привязаны к
+     * URL каталога: file[i] — [DownloadLayout.sanitizedBasename] от urls[i];
+     * архивные URL пропускаются (их хэш относится к архиву, а не к
+     * распакованному содержимому). Несовпадение или отсутствующий файл —
+     * [ImportRejectedException] до промоута: прежний пучок нетронут, temp
+     * чистится в finally [importZip].
+     */
+    private fun verifyImportChecksums(
+        modelId: String,
+        urls: List<String>,
+        expected: List<String?>,
+        extracted: File
+    ) {
+        if (urls.isEmpty() || expected.none { !it.isNullOrBlank() }) return
+        urls.forEachIndexed { index, url ->
+            val sha = expected.getOrNull(index)?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
+            val fileName = DownloadLayout.sanitizedBasename(url, index)
+            if (DownloadLayout.isArchive(fileName)) return@forEachIndexed
+            val file = File(extracted, fileName)
+            val actual = if (file.isFile) sha256Hex(file) else null
+            if (actual == null || !actual.equals(sha, ignoreCase = true)) {
+                throw ImportRejectedException(
+                    "SHA-256 файла $fileName модели $modelId не совпал с ожидаемым"
+                )
+            }
+        }
+    }
+
+    /** SHA-256 файла в hex (нижний регистр). */
+    private fun sha256Hex(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
      * Распакованный ZIP → модель из вложенных метаданных (id из каталога).
+     * @throws ImportRejectedException — контрольные суммы импорта не сошлись.
      * @return null, если category/runtime из метаданных не распознаются.
      */
     private suspend fun modelFromMeta(meta: ModelImportMeta, extracted: File): InstalledModel? {
@@ -745,6 +860,17 @@ class ModelManagerImpl @Inject constructor(
             Timber.w("Неизвестная категория в метаданных ZIP: ${meta.category}")
             return null
         }
+        // Сверка хэшей — ДО промоута: при несовпадении импорт отклоняется,
+        // прежний пучок и staging остаются нетронутыми. Ожидаемые хэши —
+        // из метаданных, иначе из существующей каталожной записи той же id
+        // (импорт даёт id из каталога — карточка обязана соответствовать файлам).
+        val importUrls = if (meta.urls.isNotEmpty()) meta.urls
+        else listOfNotNull(meta.url.takeIf { it.isNotBlank() })
+        val expectedSha256s =
+            meta.sha256s.takeIf { list -> list.any { !it.isNullOrBlank() } }
+                ?: repository.getById(meta.id)?.sha256s
+                ?: emptyList()
+        verifyImportChecksums(meta.id, importUrls, expectedSha256s, extracted)
         val (targetDir, size) = promoteExtractedDir(extracted, runtime, meta.id)
             ?: return null
         return InstalledModel(
@@ -769,7 +895,11 @@ class ModelManagerImpl @Inject constructor(
             progress = 100,
             filePath = targetDir.absolutePath,
             bytesDone = size,
-            isBuiltin = meta.isBuiltin
+            // Метаданные ZIP не могут объявлять встроенность модели: импорт —
+            // всегда пользовательская запись (isBuiltin=false), иначе
+            // cleanRemovedCatalogModels удалит импортированную модель при
+            // исчезновении её id из каталога.
+            isBuiltin = false
         )
     }
 
@@ -814,10 +944,12 @@ class ModelManagerImpl @Inject constructor(
      * угаданными по имени файла.
      */
     private suspend fun modelFromZipName(sourceName: String, extracted: File): InstalledModel? {
-        val modelId = sourceName
-            .removeSuffix(".zip")
-            .removeSuffix(".gguf")
-            .removeSuffix(".onnx")
+        val modelId = sanitizeModelIdFromName(
+            sourceName
+                .removeSuffix(".zip")
+                .removeSuffix(".gguf")
+                .removeSuffix(".onnx")
+        )
         if (modelId.isBlank()) return null
         val runtime = guessRuntime(sourceName)
             ?: run {
@@ -856,11 +988,31 @@ class ModelManagerImpl @Inject constructor(
         isBuiltin = model.isBuiltin
     )
 
+    /**
+     * Имя импортируемого документа. Для SAF-документов авторитетное имя —
+     * OpenableColumns.DISPLAY_NAME из ContentResolver; кастомные провайдеры
+     * без DISPLAY_NAME — fallback на query-параметр name и последний сегмент URI.
+     */
     private fun queryFileName(uri: Uri): String? {
+        displayNameFromResolver(uri)?.let { return it }
         uri.getQueryParameter("name")?.let { return it }
         val last = uri.lastPathSegment
         if (!last.isNullOrBlank()) return Uri.decode(last)
         return null
+    }
+
+    /** OpenableColumns.DISPLAY_NAME документа; null — недоступен/пусто/ошибка. */
+    private fun displayNameFromResolver(uri: Uri): String? = try {
+        context.contentResolver.query(
+            uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index < 0) null else cursor.getString(index)?.takeIf { it.isNotBlank() }
+        }
+    } catch (e: Exception) {
+        Timber.w(e, "Не удалось прочитать DISPLAY_NAME для $uri")
+        null
     }
 
     private fun guessCategory(fileName: String): ModelCategory {
@@ -885,6 +1037,13 @@ class ModelManagerImpl @Inject constructor(
 
     override suspend fun deviceInfo(): DeviceInfo = deviceInfoProvider.get()
 }
+
+/**
+ * Явный отказ импорта по содержимому архива (метаданные слишком большие,
+ * несовпадение SHA-256): отличается от технических сбоев (IO/SAF) тем, что
+ * повтор с тем же файлом бессилен — причину логирует [ModelManagerImpl.importZip].
+ */
+internal class ImportRejectedException(message: String) : Exception(message)
 
 /**
  * Провайдер информации об устройстве (ОЗУ, диск, SDK).

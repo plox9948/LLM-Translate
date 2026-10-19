@@ -3,6 +3,7 @@ package com.plox.llmtranslate.domain
 import android.content.Context
 import android.net.Uri
 import androidx.work.OneTimeWorkRequest
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.plox.llmtranslate.data.catalog.ModelCatalogProvider
 import com.plox.llmtranslate.data.model.ModelRepository
@@ -21,6 +22,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.spyk
+import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -641,6 +643,193 @@ class ModelManagerTest {
         assertTrue(bundleDir.exists())
         assertTrue(bundled.exists())
         assertArrayEquals(newContent, bundled.readBytes())
+        modelsDir.deleteRecursively()
+    }
+
+    // --- ZIP-импорт из метаданных model_meta.json (issue #80, пачка 3) ---
+
+    /** Метаданные ZIP-экспорта: id каталога "zip-model", файл model.bin по URL. */
+    private fun metaJson(
+        sha256s: List<String?>? = null,
+        isBuiltin: Boolean = true
+    ): String {
+        val shaField = sha256s?.joinToString(",") { s -> s?.let { "\"$it\"" } ?: "null" }
+            ?.let { ",\"sha256s\":[$it]" }
+            .orEmpty()
+        return """{"id":"zip-model","category":"STT","runtime":"SHERPA",""" +
+            """"displayName":"Zip model","urls":["http://host/model.bin"]""" +
+            """$shaField,"isBuiltin":$isBuiltin}"""
+    }
+
+    private fun sha256HexOf(bytes: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+
+    @Test
+    fun `zip import with meta registers model as not builtin`() = runTest {
+        // Метаданные не могут объявлять встроенность: импортированная под
+        // каталожным id модель всегда isBuiltin=false — иначе
+        // cleanRemovedCatalogModels удалит её при исчезновении id из каталога.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        coEvery { repository.getById("zip-model") } returns null
+        val newContent = byteArrayOf(9, 9)
+        val zip = zipOf(
+            linkedMapOf(
+                "model_meta.json" to metaJson(
+                    sha256s = listOf(sha256HexOf(newContent)), isBuiltin = true
+                ).toByteArray(),
+                "model.bin" to newContent
+            )
+        )
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(zip),
+            ByteArrayInputStream(zip)
+        )
+        val imported = mutableListOf<InstalledModel>()
+        coEvery { repository.upsert(capture(imported)) } returns Unit
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "exported.zip"
+
+        assertEquals("zip-model", manager.importFromUri(uri))
+
+        assertEquals(1, imported.size)
+        assertFalse("импорт обязан force isBuiltin=false", imported.first().isBuiltin)
+        assertEquals(ModelStatus.READY, imported.first().status)
+        assertArrayEquals(
+            newContent,
+            File(File(File(modelsDir, "SHERPA"), "zip-model"), "model.bin").readBytes()
+        )
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `zip import with meta rejects sha256 mismatch before promotion`() = runTest {
+        // Импортируемая модель получает каталожный id — фактические хеши
+        // файлов сверяются с ожидаемыми из метаданных; несовпадение — отказ
+        // импорта ДО промоута (прежний пучок и staging нетронуты, upsert нет).
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        coEvery { repository.getById("zip-model") } returns null
+        val zip = zipOf(
+            linkedMapOf(
+                "model_meta.json" to metaJson(sha256s = listOf("0".repeat(64))).toByteArray(),
+                "model.bin" to byteArrayOf(9, 9)
+            )
+        )
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(zip),
+            ByteArrayInputStream(zip)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "exported.zip"
+
+        assertNull(manager.importFromUri(uri))
+
+        coVerify(exactly = 0) { repository.upsert(any()) }
+        assertFalse(File(File(modelsDir, "SHERPA"), "zip-model").exists())
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `zip import with meta verifies sha256 from existing catalog record`() = runTest {
+        // В метаданных хэшей нет — ожидаемые берутся из каталожной записи;
+        // несовпадение — отказ, прежний пучок цел.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        val bundleDir = File(File(modelsDir, "SHERPA"), "zip-model").apply { mkdirs() }
+        File(bundleDir, "old.bin").writeBytes(byteArrayOf(1))
+        val previous = readyModel("zip-model", ModelCategory.STT).copy(
+            runtime = RuntimeType.SHERPA,
+            filePath = bundleDir.absolutePath,
+            sha256s = listOf("f".repeat(64))
+        )
+        coEvery { repository.getById("zip-model") } returns previous
+        val zip = zipOf(
+            linkedMapOf(
+                "model_meta.json" to metaJson(sha256s = null).toByteArray(),
+                "model.bin" to byteArrayOf(9, 9)
+            )
+        )
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(zip),
+            ByteArrayInputStream(zip)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "exported.zip"
+
+        assertNull(manager.importFromUri(uri))
+
+        coVerify(exactly = 0) { repository.upsert(any()) }
+        assertArrayEquals(byteArrayOf(1), File(bundleDir, "old.bin").readBytes())
+        assertFalse(File(bundleDir, "model.bin").exists())
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `zip import rejects oversized meta entry`() = runTest {
+        // model_meta.json больше лимита 1 МиБ — явная ошибка импорта,
+        // а не бесконечное readBytes() в память.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        every { context.cacheDir } returns tempModelsDir()
+        val zip = zipOf(
+            linkedMapOf(
+                "model_meta.json" to ByteArray((1 shl 20) + 16) { ' '.code.toByte() },
+                "model.bin" to byteArrayOf(5)
+            )
+        )
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(zip),
+            ByteArrayInputStream(zip)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "exported.zip"
+
+        assertNull(manager.importFromUri(uri))
+
+        coVerify(exactly = 0) { repository.upsert(any()) }
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `import cancels live download of same id and removes pending parts`() = runTest {
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        val runtimeDir = File(modelsDir, "MARIAN_ONNX").apply { mkdirs() }
+        File(runtimeDir, "live1__opus.onnx.part").writeText("p")
+        File(runtimeDir, "live1__opus.onnx.part.meta").writeText("m")
+        File(runtimeDir, "opus.onnx.part").writeText("legacy-part")
+        File(runtimeDir, "other_model__x.onnx.part").writeText("untouched")
+        val previous = partialModel("live1", listOf("http://host/opus.onnx"))
+        coEvery { repository.getById("live1") } returns previous
+        // Живая unique-загрузка live1 в WorkManager (ENQUEUED).
+        val liveInfo = mockk<WorkInfo>()
+        every { liveInfo.state } returns WorkInfo.State.ENQUEUED
+        val future = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
+        every { future.get(any(), any()) } returns listOf(liveInfo)
+        every {
+            workManager.getWorkInfosForUniqueWork("download_model_live1")
+        } returns future
+        val newContent = byteArrayOf(4)
+        every { context.contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(newContent),
+            ByteArrayInputStream(newContent)
+        )
+        val uri = mockk<Uri>()
+        every { uri.getQueryParameter("name") } returns "live1.onnx"
+
+        assertEquals("live1", manager.importFromUri(uri))
+
+        verify { workManager.cancelUniqueWork("download_model_live1") }
+        // Части докачки live1 (обе схемы имён) удалены, чужие — целы.
+        assertFalse(File(runtimeDir, "live1__opus.onnx.part").exists())
+        assertFalse(File(runtimeDir, "live1__opus.onnx.part.meta").exists())
+        assertFalse(File(runtimeDir, "opus.onnx.part").exists())
+        assertTrue(File(runtimeDir, "other_model__x.onnx.part").exists())
         modelsDir.deleteRecursively()
     }
 

@@ -9,6 +9,7 @@ import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +18,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import timber.log.Timber
 import java.io.File
+import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -157,6 +159,9 @@ class ModelBackupManager @Inject constructor(
         var imported = 0
         var skipped = 0
         var settingsRestored = false
+        // Уникальный суффикс temp-каталога: два параллельных импорта бэкапа
+        // не должны делить один каталог (каждый чистит в finally свой).
+        val tempDir = File(context.cacheDir, "backup_import_${UUID.randomUUID()}")
 
         try {
             val input = context.contentResolver.openInputStream(sourceUri)
@@ -164,7 +169,7 @@ class ModelBackupManager @Inject constructor(
 
             var manifest: BackupManifest? = null
             var settings: BackupSettings? = null
-            val tempDir = File(context.cacheDir, "backup_import").apply { mkdirs() }
+            tempDir.mkdirs()
 
             input.use { ins ->
                 ZipInputStream(ins.buffered()).use { zip ->
@@ -213,6 +218,7 @@ class ModelBackupManager @Inject constructor(
                 ?: return@withContext ImportResult(0, 0, false, "Нет манифеста в архиве")
 
             // Создаём записи моделей.
+            val restoredIds = mutableSetOf<String>()
             manifestData.models.forEach { entry ->
                 // Путь из манифеста может выйти за пределы каталога моделей.
                 val targetPath = resolveTargetPath(entry)
@@ -289,6 +295,7 @@ class ModelBackupManager @Inject constructor(
                 // Переименовываем временный файл в целевой.
                 if (moveToTarget(tempFile, targetPath)) {
                     repository.upsert(model)
+                    restoredIds += entry.id
                     imported++
                 } else {
                     skipped++
@@ -298,7 +305,7 @@ class ModelBackupManager @Inject constructor(
             // Восстанавливаем настройки.
             val settingsData = settings
             if (settingsData != null) {
-                restoreSettings(settingsData)
+                restoreSettings(settingsData, restoredIds)
                 settingsRestored = true
             }
 
@@ -308,7 +315,7 @@ class ModelBackupManager @Inject constructor(
             ImportResult(imported, skipped, settingsRestored, e.message ?: "Ошибка импорта")
         } finally {
             // Временный каталог удаляется в любом случае.
-            File(context.cacheDir, "backup_import").deleteRecursively()
+            tempDir.deleteRecursively()
         }
     }
 
@@ -371,30 +378,41 @@ class ModelBackupManager @Inject constructor(
      * Восстановить настройки. Presence-семантика (ревью #53): ключ в JSON =
      * установить (пустая карта = снять все назначения), отсутствие ключа
      * (null из старого архива) = не трогать.
+     * Модельные id (активные модели и поязыковые назначения) применяются
+     * только для моделей, реально восстановленных в этом импорте
+     * ([restoredIds]): иначе настройка осталась бы висячей на отсутствующую
+     * модель (кроме сентинеля системного TTS — он не требует модели).
      */
-    private suspend fun restoreSettings(settings: BackupSettings) {
-        settings.activeTranslation?.let {
-            preferences.setActiveModelId(ModelCategory.TRANSLATION, it)
-        }
-        settings.activeStt?.let {
-            preferences.setActiveModelId(ModelCategory.STT, it)
-        }
-        settings.activeTts?.let {
-            preferences.setActiveModelId(ModelCategory.TTS, it)
-        }
+    private suspend fun restoreSettings(settings: BackupSettings, restoredIds: Set<String>) {
+        restoreActiveIfRestored(ModelCategory.TRANSLATION, settings.activeTranslation, restoredIds)
+        restoreActiveIfRestored(ModelCategory.STT, settings.activeStt, restoredIds)
+        restoreActiveIfRestored(ModelCategory.TTS, settings.activeTts, restoredIds)
         preferences.setTtsEngine(settings.ttsEngine)
         preferences.setUiLanguage(settings.uiLanguage)
         preferences.setTheme(settings.theme)
         // Поязыковые назначения: поверх union(текущие, сохранённые) языков —
         // сохранённое значение либо null (снять); так пустая сохранённая карта
-        // снимает все текущие назначения.
+        // снимает все текущие назначения. Id не восстановленных в этом импорте
+        // моделей пропускаем (сентинель «system» назначается всегда).
         settings.sttByLanguage?.let { saved ->
             assignmentOps(preferences.sttByLanguage.first(), saved).forEach { (lang, id) ->
+                if (!isRestoredOrSentinel(id, restoredIds, null)) {
+                    Timber.w(
+                        "Назначение STT $id языку $lang пропущено: модель не восстановлена в этом импорте"
+                    )
+                    return@forEach
+                }
                 preferences.setSttForLanguage(lang, id)
             }
         }
         settings.ttsByLanguage?.let { saved ->
             assignmentOps(preferences.ttsByLanguage.first(), saved).forEach { (lang, id) ->
+                if (!isRestoredOrSentinel(id, restoredIds, TtsModelSelector.SYSTEM_SENTINEL)) {
+                    Timber.w(
+                        "Назначение TTS $id языку $lang пропущено: модель не восстановлена в этом импорте"
+                    )
+                    return@forEach
+                }
                 preferences.setTtsForLanguage(lang, id)
             }
         }
@@ -406,6 +424,26 @@ class ModelBackupManager @Inject constructor(
             preferences.setLastDirection(lastSource, lastTarget)
         }
     }
+
+    /** Применить активный id категории только если модель восстановлена в этом импорте. */
+    private suspend fun restoreActiveIfRestored(
+        category: ModelCategory,
+        modelId: String?,
+        restoredIds: Set<String>
+    ) {
+        modelId ?: return
+        if (modelId !in restoredIds) {
+            Timber.w(
+                "Активная модель $category $modelId пропущена: не восстановлена в этом импорте"
+            )
+            return
+        }
+        preferences.setActiveModelId(category, modelId)
+    }
+
+    /** null-операция (снять) / sentinel, не требующий модели / восстановленная модель. */
+    private fun isRestoredOrSentinel(id: String?, restoredIds: Set<String>, sentinel: String?): Boolean =
+        id == null || id == sentinel || id in restoredIds
 
     /**
      * Найти распакованную запись модели во временном каталоге: сначала по

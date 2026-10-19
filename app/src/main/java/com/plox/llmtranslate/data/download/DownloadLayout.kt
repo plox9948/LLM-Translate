@@ -99,6 +99,35 @@ object DownloadLayout {
     }
 
     /**
+     * Удалить только части докачки `.part` и метаданные `.part.meta` по
+     * раскладке [fileDir] (обе схемы имён корневого каталога) — целые целевые
+     * файлы и каталог модели не трогаются: вызывается при импорте той же id,
+     * когда в каталоге модели уже лежит промоутенный пучок импорта.
+     */
+    fun deletePendingParts(
+        runtimeDir: File,
+        runtime: RuntimeType,
+        modelId: String,
+        urls: List<String>
+    ) {
+        if (urls.isEmpty()) return
+        val modelDir = modelDir(runtimeDir, modelId)
+        urls.forEachIndexed { index, url ->
+            val fileName = sanitizedBasename(url, index)
+            val dir = fileDir(runtimeDir, runtime, modelId, urls, fileName)
+            val names = if (dir == modelDir) listOf(fileName)
+            else rootNameCandidates(modelId, url, index)
+            for (name in names) {
+                listOf(File(dir, "$name.part"), File(dir, "$name.part.meta")).forEach { part ->
+                    if (part.isFile && !part.delete()) {
+                        Timber.w("Не удалось удалить часть докачки ${part.name}")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Удалить остатки незавершённой установки модели по раскладке этого же
      * [fileDir] (общая логика для ModelManagerImpl.deleteOrphanParts и очистки
      * отменённой загрузки в ModelDownloadWorker): части докачки `.part` и

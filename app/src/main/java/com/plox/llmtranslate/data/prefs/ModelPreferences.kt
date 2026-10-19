@@ -2,12 +2,14 @@ package com.plox.llmtranslate.data.prefs
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.TtsEngines
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -20,11 +22,31 @@ import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import timber.log.Timber
+import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "model_prefs")
+/** Имя preference-файла DataStore. */
+private const val DATASTORE_NAME = "model_prefs"
+
+/**
+ * Общий на процесс инстанс DataStore (делегат preferencesDataStore не даёт
+ * передать corruptionHandler). Повреждённый .preferences_pb файл при чтении
+ * бросает IOException/CorruptionException и вешает ВСЕ Flow-читатели настроек;
+ * [ReplaceFileCorruptionHandler] при сбое чтения удаляет файл и продолжает с
+ * пустыми preferences (значения по умолчанию).
+ */
+private val dataStoreLock = Any()
+private var dataStoreInstance: DataStore<Preferences>? = null
+
+private val Context.dataStore: DataStore<Preferences>
+    get() = dataStoreInstance ?: synchronized(dataStoreLock) {
+        dataStoreInstance ?: PreferenceDataStoreFactory.create(
+            corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+            produceFile = { File(filesDir, "$DATASTORE_NAME.preferences_pb") }
+        ).also { dataStoreInstance = it }
+    }
 
 /**
  * Настройки выбора моделей и приложения (DataStore).
