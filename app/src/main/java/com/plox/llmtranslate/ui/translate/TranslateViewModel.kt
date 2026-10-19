@@ -339,7 +339,9 @@ class TranslateViewModel @Inject constructor(
         viewModelScope.launch {
             // Сохранённое направление перевода (issue #33):ru→en и т.п.;
             // невалидные значения и AUTO-источник игнорируются — остаются
-            // значения по умолчанию.
+            // значения по умолчанию. Потоки настроек защищены recover-обёрткой
+            // flowWithRecovery в ModelPreferences — сбой DataStore не роняет
+            // коллектор (ревью контрольного раунда 4).
             combine(
                 preferences.lastSourceLang,
                 preferences.lastTargetLang

@@ -169,6 +169,10 @@ class MainActivity : ComponentActivity() {
         // Смена языка вне композиции: пересоздаём активность, чтобы все
         // ресурсы перечитались. Сравнение с appliedUiLanguage защищает от
         // цикла recreate (после пересоздания значение уже применено).
+        // Поток защищён по построению recover-обёрткой flowWithRecovery в
+        // ModelPreferences: сбой чтения DataStore не бросает исключение в
+        // коллектор, а эмитит последнее значение/дефолт и переподписывается
+        // (ревью контрольного раунда 4).
         lifecycleScope.launch {
             preferences.uiLanguage
                 .distinctUntilChanged()

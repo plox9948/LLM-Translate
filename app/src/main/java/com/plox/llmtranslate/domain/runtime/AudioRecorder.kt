@@ -21,6 +21,7 @@ import timber.log.Timber
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -482,8 +483,22 @@ class AudioRecorder @Inject constructor(
                 while (currentGeneration.get()) {
                     val read = record.read(readBuffer, 0, readBuffer.size)
                     if (read > 0) {
-                        synchronized(sink) {
-                            sink.write(readBuffer, 0, read)
+                        try {
+                            synchronized(sink) {
+                                sink.write(readBuffer, 0, read)
+                            }
+                        } catch (e: IOException) {
+                            // Сбой записи WAV (заполненный диск/сбой файловой
+                            // системы): необработанный IOException ронял readJob
+                            // при живых generation/_recordingFlow — индикатор
+                            // залипал, а микрофон оставался занят до потолка
+                            // 3 мин. Та же аварийная сцена, что и для read()<0
+                            // (ревью контрольного раунда 4).
+                            Timber.e(e, "Ошибка записи WAV — запись аварийно останавливается")
+                            if (currentGeneration.get()) {
+                                finishAfterReadFailure(currentGeneration)
+                            }
+                            break
                         }
                         writtenBytes += read
                         // Потолок длительности (issue #68): защита и диска, и
@@ -593,7 +608,8 @@ class AudioRecorder @Inject constructor(
 
     /**
      * Аварийная остановка из самого цикла чтения при ошибке read()<0
-     * (ревью повт. аудита): индикатор не должен залипаться, а микрофон —
+     * или сбое записи WAV (ревью повт. аудита, ревью контрольного раунда 4):
+     * индикатор не должен залипаться, а микрофон —
      * оставаться занятым. Вызывается ИЗ корутины цикла чтения, поэтому
      * [detachStoppedScene].join собственного джоба исключён (самодjoin
      * deadlock'нулся бы): read() уже вернулся — рекордер не занят, его

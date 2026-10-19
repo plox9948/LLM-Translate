@@ -14,9 +14,12 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.TtsEngines
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.MapSerializer
@@ -49,6 +52,56 @@ private val Context.dataStore: DataStore<Preferences>
         ).also { dataStoreInstance = it }
     }
 
+/** Пауза перед переподпиской потока настройки после сбоя чтения DataStore, мс. */
+private const val PREFERENCE_RETRY_DELAY_MS = 2_000L
+
+/**
+ * Каркас отказоустойчивых потоков настроек (ревью контрольного раунда 4):
+ * исключение источника DataStore в `launch/collect` без обработчика роняло
+ * процесс (тот же сценарий битого journal, что и для Room-потоков). ВСЕ
+ * публичные потоки [ModelPreferences] построены через этот хелпер, поэтому
+ * любая подписка на `preferences.*` (MainActivity, TranslateViewModel,
+ * SettingsViewModel, ModelsViewModel, TtsRuntime.trackEnginePreference)
+ * безопасна по построению — сбой источника не доходит до коллектора.
+ *
+ * При сбое чтения эмитится последнее полученное значение (или [fallback],
+ * если значение ещё не приходило), затем пауза и переподписка на [source]
+ * (shared DataStore flow: после само-восстановления corruptionHandler'а
+ * подписка получает актуальные данные). Штатное завершение источника — выход
+ * без переподписки; [CancellationException] пробрасывается коллектору.
+ *
+ * `observeResilient` в ViewModel остаётся второй линией защиты (Room-потоки).
+ * Исключения без обёртки — только потоки, читаемые ОДНИМ `first()` с
+ * консервативной обработкой сбоя у самого вызывающего (провайдер удержания
+ * DomainModule: при ошибке — unload, а не дефолт keep; версия каталога для
+ * очистки устаревших моделей; сырое чтение `uiLanguage` для prefetch/await,
+ * где фолбэк нельзя прогревать в кэш как настоящее значение). Их подписок
+ * в UI нет либо подписки идут через `observeResilient` (SettingsScreen).
+ */
+internal fun <T> flowWithRecovery(
+    name: String,
+    fallback: T,
+    retryDelayMs: Long = PREFERENCE_RETRY_DELAY_MS,
+    source: () -> Flow<T>
+): Flow<T> = flow {
+    var last: T? = null
+    while (true) {
+        try {
+            source().collect { value ->
+                last = value
+                emit(value)
+            }
+            break
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "Сбой чтения настройки $name — фолбэк и переподписка")
+            emit(last ?: fallback)
+            delay(retryDelayMs)
+        }
+    }
+}
+
 /**
  * Настройки выбора моделей и приложения (DataStore).
  */
@@ -70,7 +123,9 @@ class ModelPreferences @Inject constructor(
 
     val activeModelId: (ModelCategory) -> Flow<String?> = { category ->
         val key = activeModelKeys[category]!!
-        context.dataStore.data.map { prefs -> prefs[key] }
+        flowWithRecovery("active_model_${category.name}", null) {
+            context.dataStore.data.map { prefs -> prefs[key] }
+        }
     }
 
     suspend fun setActiveModelId(category: ModelCategory, modelId: String?) {
@@ -90,8 +145,10 @@ class ModelPreferences @Inject constructor(
      * Сериализация значения — JSON-строка в preference `stt_by_language`.
      */
     val sttByLanguage: Flow<Map<String, String>> =
-        context.dataStore.data.map { prefs ->
-            decodeLanguageMap(prefs[STT_BY_LANGUAGE_KEY], STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME)
+        flowWithRecovery(STT_BY_LANGUAGE_NAME, emptyMap()) {
+            context.dataStore.data.map { prefs ->
+                decodeLanguageMap(prefs[STT_BY_LANGUAGE_KEY], STT_BY_LANGUAGE_KEY, STT_BY_LANGUAGE_NAME)
+            }
         }
 
     /**
@@ -109,7 +166,9 @@ class ModelPreferences @Inject constructor(
      * Сериализация значения — JSON-строка в preference `tts_by_language`.
      */
     val ttsByLanguage: Flow<Map<String, String>> =
-        context.dataStore.data.map { prefs -> decodeTtsByLanguage(prefs[TTS_BY_LANGUAGE_KEY]) }
+        flowWithRecovery(TTS_BY_LANGUAGE_NAME, emptyMap()) {
+            context.dataStore.data.map { prefs -> decodeTtsByLanguage(prefs[TTS_BY_LANGUAGE_KEY]) }
+        }
 
     /**
      * Назначить языку Piper TTS-модель по id или Системный Android TTS
@@ -210,10 +269,14 @@ class ModelPreferences @Inject constructor(
      * null — направление ещё не выбиралось (AUTO не сохраняется).
      */
     val lastSourceLang: Flow<String?> =
-        context.dataStore.data.map { it[LAST_SOURCE_LANG_KEY] }
+        flowWithRecovery("last_source_lang", null) {
+            context.dataStore.data.map { it[LAST_SOURCE_LANG_KEY] }
+        }
 
     val lastTargetLang: Flow<String?> =
-        context.dataStore.data.map { it[LAST_TARGET_LANG_KEY] }
+        flowWithRecovery("last_target_lang", null) {
+            context.dataStore.data.map { it[LAST_TARGET_LANG_KEY] }
+        }
 
     /**
      * Сохранить последнее выбранное направление перевода.
@@ -231,7 +294,9 @@ class ModelPreferences @Inject constructor(
      * Завершен ли онбординг первого запуска; false до первого выбора/пропуска.
      */
     val onboardingDone: Flow<Boolean> =
-        context.dataStore.data.map { it[ONBOARDING_DONE_KEY] ?: false }
+        flowWithRecovery("onboarding_done", false) {
+            context.dataStore.data.map { it[ONBOARDING_DONE_KEY] ?: false }
+        }
 
     /**
      * Отметить онбординг пройденным (больше не показывать).
@@ -243,14 +308,25 @@ class ModelPreferences @Inject constructor(
     // --- Настройки приложения ---
 
     val ttsEngine: Flow<String> =
-        context.dataStore.data.map { it[TTS_ENGINE_KEY] ?: TtsEngines.SYSTEM }
+        flowWithRecovery("tts_engine", TtsEngines.SYSTEM) {
+            context.dataStore.data.map { it[TTS_ENGINE_KEY] ?: TtsEngines.SYSTEM }
+        }
 
     suspend fun setTtsEngine(engine: String) {
         context.dataStore.edit { it[TTS_ENGINE_KEY] = engine }
     }
 
-    val uiLanguage: Flow<String> =
+    /**
+     * Сырое (без recover-обёртки) чтение uiLanguage — только для prefetch и
+     * [awaitUiLanguageCache]: фолбэк по умолчанию нельзя прогревать в кэш как
+     * настоящее значение, иначе он залипает при последующих recreate() и
+     * коллектор бесконечно чинит расхождение языка пересозданием активности.
+     */
+    private val rawUiLanguage: Flow<String> =
         context.dataStore.data.map { it[UI_LANGUAGE_KEY] ?: DEFAULT_UI_LANGUAGE }
+
+    val uiLanguage: Flow<String> =
+        flowWithRecovery("ui_language", DEFAULT_UI_LANGUAGE) { rawUiLanguage }
 
     /**
      * Кэш uiLanguage в памяти процесса: прогревается [prefetchUiLanguage]
@@ -267,7 +343,7 @@ class ModelPreferences @Inject constructor(
         if (uiLanguageCacheRef.get() != null) return
         scope.launch {
             try {
-                val value = uiLanguage.first()
+                val value = rawUiLanguage.first()
                 // CAS: не перетирать кэш, обновлённый setUiLanguage() во время чтения DataStore.
                 uiLanguageCacheRef.compareAndSet(null, value)
             } catch (e: Exception) {
@@ -280,7 +356,8 @@ class ModelPreferences @Inject constructor(
      * Значение uiLanguage из памяти: прогретый кэш или первое чтение DataStore
      * (оно единственный раз может занять время IO).
      */
-    suspend fun awaitUiLanguageCache(): String = uiLanguageCacheRef.get() ?: uiLanguage.first()
+    suspend fun awaitUiLanguageCache(): String =
+        uiLanguageCacheRef.get() ?: rawUiLanguage.first()
 
     suspend fun setUiLanguage(lang: String) {
         uiLanguageCacheRef.set(lang)
@@ -288,7 +365,9 @@ class ModelPreferences @Inject constructor(
     }
 
     val theme: Flow<String> =
-        context.dataStore.data.map { it[THEME_KEY] ?: DEFAULT_THEME }
+        flowWithRecovery("theme", DEFAULT_THEME) {
+            context.dataStore.data.map { it[THEME_KEY] ?: DEFAULT_THEME }
+        }
 
     suspend fun setTheme(theme: String) {
         context.dataStore.edit { it[THEME_KEY] = theme }
@@ -299,8 +378,10 @@ class ModelPreferences @Inject constructor(
      * 0 — выгружать сразу, -1 — не выгружать. По умолчанию 5.
      */
     val unloadTimeoutMinutes: Flow<Int> =
-        context.dataStore.data.map {
-            it[UNLOAD_TIMEOUT_MINUTES_KEY] ?: DEFAULT_UNLOAD_TIMEOUT_MINUTES
+        flowWithRecovery("unload_timeout_minutes", DEFAULT_UNLOAD_TIMEOUT_MINUTES) {
+            context.dataStore.data.map {
+                it[UNLOAD_TIMEOUT_MINUTES_KEY] ?: DEFAULT_UNLOAD_TIMEOUT_MINUTES
+            }
         }
 
     suspend fun setUnloadTimeoutMinutes(minutes: Int) {
@@ -311,6 +392,11 @@ class ModelPreferences @Inject constructor(
      * Поведение движков при смене направления перевода (issue #36):
      * [RETENTION_KEEP] — не выгружать модели другого направления по умолчанию,
      * [RETENTION_UNLOAD] — выгружать перед загрузкой новой модели.
+     *
+     * Без recover-обёртки ([flowWithRecovery]): единственный подписчик —
+     * `watch` в SettingsScreen поверх `observeResilient`, а одноразовое
+     * `first()` в провайдере DomainModule на сбой чтения обязано отвечать
+     * conservative unload, а не дефолтом keep (ревью).
      */
     val modelDirectionRetention: Flow<String> =
         context.dataStore.data.map {
