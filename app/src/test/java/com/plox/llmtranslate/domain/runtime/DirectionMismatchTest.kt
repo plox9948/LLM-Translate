@@ -1,7 +1,6 @@
 package com.plox.llmtranslate.domain.runtime
 
 import com.plox.llmtranslate.domain.model.ModelCategory
-import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.userMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
