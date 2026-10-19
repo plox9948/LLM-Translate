@@ -52,7 +52,9 @@ Model cards are grouped into sections: "Translation (LLM)", "Speech recognition
 offline.
 
 - "Download" — fetch a model from the catalog; while downloading, a "Cancel"
-  button is available.
+  button is available. After canceling, you can press "Download" again right
+  away — the download restarts, the card never gets stuck in a downloading
+  state.
 - If a download fails, the card gets a "Download error" label and the
   "Download" button turns into "Retry": it re-downloads the model without
   deleting it first; while the model is in error it cannot translate.
@@ -116,8 +118,10 @@ models) together with an estimated memory consumption.
   system killing its process: reopening "Translate" restores both fields
   (up to 10,000 characters each, longer texts are trimmed). The result comes
   back bound to the direction it was translated in: its card title and
-  labels match that snapshot. If the restored direction differs from the
-  currently selected one, the result is hidden by the same direction-binding
+  labels match that snapshot. If you translated with "Авто", the actually
+  detected source language is stored in the snapshot — such a result is
+  shown again after reopening as well. If the restored direction differs
+  from the currently selected one, the result is hidden by the same direction-binding
   rule — no mismatched pair appears under the new labels (your input is
   kept; you can bring the needed translation back from history or translate
   again).
@@ -152,7 +156,8 @@ models) together with an estimated memory consumption.
 ## "History" and "Favorites"
 
 - "History" — your latest translations. Tapping a card loads its text and
-  direction back onto the "Translate" screen without re-downloading models.
+  direction back onto the "Translate" screen without re-downloading models;
+  the applied direction is never rolled back to the previously saved one.
   The star on a card adds the translation to favorites, the cross removes the
   entry from history, and "Clear" erases the whole history — after asking for
   confirmation ("Clear history?" with "Clear" and "Cancel" buttons), so one
@@ -237,10 +242,19 @@ keep translating the old way: the app reloads it from the new files right away,
 without a restart, and the files of the previous version are no longer left
 behind on the phone as junk.
 
+The archive itself is created safely too: it is first built completely in a
+temporary file and only then saved to the location you picked; if there is not
+enough free space, the app refuses before writing starts, and an interrupted
+partial file is deleted — a broken archive never gets saved. When installing
+from the archive, the app also checks free space up front (unpacking included)
+and verifies model bundles file by file against their checksums.
+
 The settings backup includes: interface language and theme, per-language
 speech recognition and read-aloud assignments, the model unloading timeout,
 the policy on translation direction change, and the last translation
-direction.
+direction. Only the languages actually present in the archive get their
+assignments restored: a partial backup leaves the assignments of the other
+languages untouched.
 
 > 💡 It is easier to download the models once on one device and move them via
 > the archive than to download everything again.
@@ -303,9 +317,11 @@ space and tap "Retry" — the download resumes from where it stopped.
 **The app showed a "Failed to…" message — what should I do?** Error messages are
 uniform and appear in the interface language (Russian, English, Nepali) and say
 exactly what failed: translation, recognition, microphone recording, a
-history/favorites operation, or backup. Usually repeating the action is enough:
-if the failure concerned the History or Favorites list, that list reloads on its
-own and the app keeps working.
+history/favorites operation, backup, or loading settings on a screen. Usually
+repeating the action is enough: if the failure concerned the History/Favorites
+lists or the settings, they reload and resubscribe automatically, and the app
+keeps working — a temporary database or settings-storage failure never closes
+it.
 
 **Is there a limit on microphone recording length?** Yes: recording stops
 automatically after 3 minutes so that you cannot forget to turn it off. The
