@@ -38,6 +38,7 @@
     <string name="translate_tts_download_failed">Не удалось скачать модель озвучки. Проверьте интернет и скачайте её на экране «Модели»</string>
     <string name="translate_speak_cd">Озвучить</string>
     <string name="translate_copy_cd">Скопировать перевод</string>
+    <string name="translate_copy_input_cd">Скопировать исходный текст</string>
     <string name="translate_recording_hint">● Идёт запись… Нажмите на микрофон, чтобы остановить</string>
     <string name="translate_mic_permission_denied">Нет разрешения на запись с микрофона. Разрешите доступ к микрофону в настройках приложения</string>
     <string name="translate_mic_missing_stt_model">Для распознавания речи скачайте модель распознавания на экране «Модели»</string>

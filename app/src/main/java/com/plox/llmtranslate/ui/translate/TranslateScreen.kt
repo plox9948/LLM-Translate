@@ -140,6 +140,18 @@ fun TranslateScreen(
                         color = MaterialTheme.colorScheme.primary
                     )
                     Spacer(modifier = Modifier.weight(1f))
+                    // Копирование исходного текста в буфер обмена.
+                    IconButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(state.inputText))
+                        },
+                        enabled = state.inputText.isNotEmpty() && !state.isTranslating
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.ContentCopy,
+                            contentDescription = stringResource(R.string.translate_copy_input_cd)
+                        )
+                    }
                     // Кнопка записи аудио (STT).
                     IconButton(
                         onClick = { onMicClick() },
