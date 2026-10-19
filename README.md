@@ -136,7 +136,7 @@ app/src/main/java/com/plox/llmtranslate/
 │   │                        # выбор STT-модели по языкам (SttModelSelector)
 │   ├── runtime/             # SlimtRuntime, IndicTransOnnxRuntime, MarianOnnxRuntime (fallback),
 │   │                        # EngineCacheScaffold (общий каркас LRU-кэша/мьютекса/eviction/
-│   │                        # retention для всех движков перевода),
+│   │                        # retention для движков перевода и SherpaSttEngine),
 │   │                        # OrtSessionSupport (создание/закрытие ONNX-сессий, guard
 │   │                        # энкодер-тензоров),
 │   │                        # GreedyDecoder, DecodeGuards (детектор вырождения, no_repeat_ngram),
@@ -318,8 +318,8 @@ Piper TTS-сессии лениво загружаются в процесс п�
   Механизм кэша — мьютекс сериализации с ожиданием окончания активного инференса,
   LRU-кэш с вытеснением сверх ёмкости, активный id, публикация списка загруженных
   моделей и применение keep/unload-политики на каждую загрузку — общий для slimt,
-  IndicTrans и Marian ONNX: он вынесен в каркас `EngineCacheScaffold`, публичные
-  методы движков только делегируют ему (поведение не меняется).
+  IndicTrans, Marian ONNX и Sherpa STT: он вынесен в каркас `EngineCacheScaffold`,
+  публичные методы движков только делегируют ему (поведение не меняется).
 
 При **удалении модели** её нативный handle немедленно изымается из кэша движков
 (`releaseModel`): без этого повторная загрузка того же id взяла бы из кэша handle
