@@ -185,10 +185,10 @@ class IndicTransOnnxRuntime @Inject constructor(
                     // оценкой веса графов той же estimateGraphBytes, что
                     // попадёт в weightBytes, — иначе пик ОЗУ = прежние
                     // пучки + новый набор сессий одновременно.
-                    engineCache.reserveByteBudgetUnlocked(
-                        modelInfo.id,
-                        estimateGraphBytes(listOf(encoderFile, decoderFile, decoderPastFile))
+                    val graphBytes = estimateGraphBytes(
+                        listOf(encoderFile, decoderFile, decoderPastFile)
                     )
+                    engineCache.reserveByteBudgetUnlocked(modelInfo.id, graphBytes)
 
                     val sessions = createEncoderDecoderSessions(
                         "IndicTrans", ortEnv, encoderFile, decoderFile, decoderPastFile
@@ -239,9 +239,7 @@ class IndicTransOnnxRuntime @Inject constructor(
                             tgtDictSize = dict.tgtDictSize,
                             unkId = dict.unkId,
                             info = translationLoadedInfo(modelInfo),
-                            weightBytes = estimateGraphBytes(
-                                listOf(encoderFile, decoderFile, decoderPastFile)
-                            )
+                            weightBytes = graphBytes
                         )
                     )
                     engineCache.publishActiveUnlocked(modelInfo.id)
@@ -468,7 +466,7 @@ class IndicTransOnnxRuntime @Inject constructor(
         // sourceText — текст чанка: повторяющийся паттерн ВЫХОДА, присутствующий
         // и во входе («no no no…»), не считается вырождением (ревью).
         val firstDegenerate = isDegenerateOutput(
-            firstText, firstOutcome.eosReached, firstOutcome.hitMaxLength, sourceText = text
+            firstText, firstOutcome.hitMaxLength, sourceText = text
         )
         Timber.d(
             "IndicTrans: проход 1 вырожден=$firstDegenerate " +
@@ -486,8 +484,7 @@ class IndicTransOnnxRuntime @Inject constructor(
                 noRepeatNgramSize = NO_REPEAT_NGRAM_SIZE
             )
             val retryDegenerate = isDegenerateOutput(
-                retryText, retryOutcome.eosReached, retryOutcome.hitMaxLength,
-                sourceText = text
+                retryText, retryOutcome.hitMaxLength, sourceText = text
             )
             Timber.d(
                 "IndicTrans: ретрай (ngram=$NO_REPEAT_NGRAM_SIZE) " +
@@ -532,13 +529,7 @@ class IndicTransOnnxRuntime @Inject constructor(
      * Marian.inputLengthError). Внутренняя функция — покрыта unit-тестом.
      */
     internal fun inputLengthError(inputTokens: Int): RuntimeError? =
-        if (inputTokens > EMBED_POSITION_LIMIT) {
-            RuntimeError.InferenceFailed(
-                "indictrans",
-                "Фраза слишком длинная: $inputTokens токенов, " +
-                    "максимум $EMBED_POSITION_LIMIT"
-            )
-        } else null
+        encoderInputLengthError("indictrans", "Фраза слишком длинная", inputTokens, EMBED_POSITION_LIMIT)
 
     /**
      * Один проход генерации: encoder.run → greedyDecode → декодирование →

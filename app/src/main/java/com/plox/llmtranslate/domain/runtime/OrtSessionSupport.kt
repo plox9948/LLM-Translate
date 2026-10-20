@@ -113,9 +113,35 @@ internal fun closeBundleSessions(label: String, vararg sessions: AutoCloseable) 
 }
 
 /**
+ * ORT-тензор int64 формы `[1, values.size]` — общая форма входов энкодера
+ * (`input_ids`/`attention_mask`) и одношаговых входов декодера (`input_ids`).
+ */
+internal fun longTensor(ortEnv: OrtEnvironment, values: LongArray): OnnxTensor =
+    OnnxTensor.createTensor(
+        ortEnv, LongBuffer.wrap(values), longArrayOf(1L, values.size.toLong())
+    )
+
+/**
+ * Явная ошибка входа энкодера сверх лимита позиционных эмбеддингов
+ * (общая формулировка Marian и IndicTrans, ревью #79/#83): сверхлимитный
+ * вход иначе рушил ORT внутренним исключением внутри run вместо понятной
+ * пользователю ошибки. [subject] — начало русского сообщения
+ * («Предложение слишком длинное» / «Фраза слишком длинная»).
+ */
+internal fun encoderInputLengthError(
+    engineTag: String,
+    subject: String,
+    inputTokens: Int,
+    limit: Int
+): RuntimeError? =
+    if (inputTokens > limit) {
+        RuntimeError.InferenceFailed(engineTag, "$subject: $inputTokens токенов, максимум $limit")
+    } else null
+
+/**
  * Общий catch-каркас загрузки модели движка (Marian, IndicTrans — ONNX-сессии;
- * sherpa STT — распознаватель строится одним вызовом, частично созданных
- * ресурсов нет): отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
+ * sherpa STT и slimt — распознаватель/модель создаются одним вызовом,
+ * частично созданных ресурсов нет): отмена загрузки кнопкой «Отмена» — не ошибка: освобождаем
  * уже созданные ресурсы этого пучка ([closePartial]; пучки других направлений
  * остаются в кэше) и всплываем выше, не конвертируя отмену в LoadFailed;
  * прочие исключения и ошибки нативного слоя ([Error]: UnsatisfiedLinkError
@@ -165,14 +191,9 @@ internal fun runEncoder(
     inputIds: LongArray,
     attentionMask: LongArray,
 ): OrtSession.Result {
-    val encInputIds = OnnxTensor.createTensor(
-        ortEnv, LongBuffer.wrap(inputIds), longArrayOf(1L, inputIds.size.toLong())
-    )
+    val encInputIds = longTensor(ortEnv, inputIds)
     val encAttnMask = try {
-        OnnxTensor.createTensor(
-            ortEnv, LongBuffer.wrap(attentionMask),
-            longArrayOf(1L, attentionMask.size.toLong())
-        )
+        longTensor(ortEnv, attentionMask)
     } catch (e: Exception) {
         encInputIds.close()
         throw e

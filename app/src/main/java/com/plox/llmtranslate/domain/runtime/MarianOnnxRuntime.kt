@@ -85,13 +85,7 @@ class MarianOnnxRuntime @Inject constructor(
      * Внутренняя функция — покрыта unit-тестом.
      */
     internal fun inputLengthError(inputTokens: Int): RuntimeError? =
-        if (inputTokens > MAX_INPUT_TOKENS) {
-            RuntimeError.InferenceFailed(
-                "marian",
-                "Предложение слишком длинное: $inputTokens токенов, " +
-                    "максимум $MAX_INPUT_TOKENS"
-            )
-        } else null
+        encoderInputLengthError("marian", "Предложение слишком длинное", inputTokens, MAX_INPUT_TOKENS)
 
     /**
      * Пучок Marian-модели: сессии ORT, токенизатор и параметры генерации
@@ -193,10 +187,10 @@ class MarianOnnxRuntime @Inject constructor(
                     // оценкой веса графов той же estimateGraphBytes, что
                     // попадёт в weightBytes, — иначе пик ОЗУ = прежние
                     // пучки + новый набор сессий одновременно.
-                    engineCache.reserveByteBudgetUnlocked(
-                        modelInfo.id,
-                        estimateGraphBytes(listOf(encoderFile, decoderFile, decoderPastFile))
+                    val graphBytes = estimateGraphBytes(
+                        listOf(encoderFile, decoderFile, decoderPastFile)
                     )
+                    engineCache.reserveByteBudgetUnlocked(modelInfo.id, graphBytes)
 
                     val sessions = createEncoderDecoderSessions(
                         "Marian", ortEnv, encoderFile, decoderFile, decoderPastFile
@@ -238,9 +232,7 @@ class MarianOnnxRuntime @Inject constructor(
                             eosTokenId = gen.eosTokenId,
                             badTokenIds = gen.badTokenIds,
                             info = translationLoadedInfo(modelInfo),
-                            weightBytes = estimateGraphBytes(
-                                listOf(encoderFile, decoderFile, decoderPastFile)
-                            )
+                            weightBytes = graphBytes
                         )
                     )
                     engineCache.publishActiveUnlocked(modelInfo.id)

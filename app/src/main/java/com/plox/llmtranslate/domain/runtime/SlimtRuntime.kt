@@ -152,7 +152,15 @@ class SlimtRuntime @Inject constructor(
                     }
                 }
 
-                try {
+                // Общий catch-каркас загрузки (те же тексты логов и LoadFailed,
+                // что в прежнем try/catch движка; частично созданных ресурсов
+                // у nativeCreate нет — closePartial пуст).
+                guardModelLoad(
+                    label = "slimt",
+                    engineTag = "slimt",
+                    path = path,
+                    closePartial = {}
+                ) {
                     currentCoroutineContext().ensureActive()
                     val newHandle = SlimtNative.nativeCreate(
                         modelPath = files.model.absolutePath,
@@ -175,19 +183,6 @@ class SlimtRuntime @Inject constructor(
                     engineCache.publishActiveUnlocked(modelInfo.id)
                     Timber.d("slimt: модель ${modelInfo.id} загружена (mmap)")
                     null
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Timber.e(e, "Не удалось загрузить slimt-модель $path")
-                    RuntimeError.LoadFailed("slimt", e.message ?: "Неизвестная ошибка")
-                } catch (e: Throwable) {
-                    // UnsatisfiedLinkError / ExceptionInInitializerError:
-                    // System.loadLibrary в init SlimtNative бросает Error, а не
-                    // Exception — без этой ветки он ронял бы процесс вместо
-                    // явной LoadFailed (ревью #79). CancellationException
-                    // обработан выше и не глотается.
-                    Timber.e(e, "Критическая ошибка нативного слоя slimt при загрузке $path")
-                    RuntimeError.LoadFailed("slimt", e.message ?: "Ошибка нативной библиотеки")
                 }
             }
         }

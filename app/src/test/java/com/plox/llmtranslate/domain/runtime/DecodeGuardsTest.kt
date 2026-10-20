@@ -18,27 +18,27 @@ class DecodeGuardsTest {
     @Test
     fun `single word loop twelve times is degenerate`() {
         val text = "ताल ".repeat(12).trim()
-        assertTrue(isDegenerateOutput(text, eosReached = true, hitMaxLength = false))
+        assertTrue(isDegenerateOutput(text, hitMaxLength = false))
     }
 
     @Test
     fun `short correct output is not degenerate`() {
-        assertFalse(isDegenerateOutput("धेरै धेरै धन्यवाद", eosReached = false, hitMaxLength = false))
+        assertFalse(isDegenerateOutput("धेरै धेरै धन्यवाद", hitMaxLength = false))
     }
 
     @Test
     fun `two bigram cycles are not degenerate`() {
-        assertFalse(isDegenerateOutput("hello world hello world hello", eosReached = true, hitMaxLength = false))
+        assertFalse(isDegenerateOutput("hello world hello world hello", hitMaxLength = false))
     }
 
     @Test
     fun `unique short text is not degenerate`() {
-        assertFalse(isDegenerateOutput("Привет мир как дела", eosReached = true, hitMaxLength = false))
+        assertFalse(isDegenerateOutput("Привет мир как дела", hitMaxLength = false))
     }
 
     @Test
     fun `hit max length is always degenerate`() {
-        assertTrue(isDegenerateOutput("любые нормальные уникальные слова", eosReached = false, hitMaxLength = true))
+        assertTrue(isDegenerateOutput("любые нормальные уникальные слова", hitMaxLength = true))
     }
 
     @Test
@@ -46,26 +46,26 @@ class DecodeGuardsTest {
         // 10 слов, 2 уникальных (доля 0.2 < 0.3); хвостовой цикл отсутствует,
         // признак — именно бедность словаря.
         val text = "a b a a b a a b a a"
-        assertTrue(isDegenerateOutput(text, eosReached = true, hitMaxLength = false))
+        assertTrue(isDegenerateOutput(text, hitMaxLength = false))
     }
 
     @Test
     fun `missing eos alone is not degenerate`() {
         val text = "один два три четыре пять шесть семь восемь девять десять"
-        assertFalse(isDegenerateOutput(text, eosReached = false, hitMaxLength = false))
+        assertFalse(isDegenerateOutput(text, hitMaxLength = false))
     }
 
     @Test
     fun `tail cycle with period two is degenerate`() {
         // Период из 2 слов повторён 4 раза подряд в хвосте.
         val text = "start words here ta da ta da ta da ta da"
-        assertTrue(isDegenerateOutput(text, eosReached = true, hitMaxLength = false))
+        assertTrue(isDegenerateOutput(text, hitMaxLength = false))
     }
 
     @Test
     fun `punctuation-only tokens are not counted as words`() {
         // Пунктуация не помогает и не мешает: слов <8, цикл по словам отсутствует.
-        assertFalse(isDegenerateOutput("спасибо . . । !", eosReached = false, hitMaxLength = false))
+        assertFalse(isDegenerateOutput("спасибо . . । !", hitMaxLength = false))
     }
 
     // === Ретрай против легитимных повторов ВХОДА (ревью) ===
@@ -75,16 +75,16 @@ class DecodeGuardsTest {
         val input = "no no no no no no"
         val output = "no ".repeat(12).trim()
         // Без знания о входе — вырождение (хвостовой цикл).
-        assertTrue(isDegenerateOutput(output, eosReached = true, hitMaxLength = false))
+        assertTrue(isDegenerateOutput(output, hitMaxLength = false))
         // Повтор пришёл из входа — не вырождение (в т.ч. при упоре в лимит).
-        assertFalse(isDegenerateOutput(output, eosReached = false, hitMaxLength = true, sourceText = input))
+        assertFalse(isDegenerateOutput(output, hitMaxLength = true, sourceText = input))
     }
 
     @Test
     fun `loop not present in input stays degenerate`() {
         val input = "переведи эту фразу полностью корректно"
         val output = "слово ".repeat(12).trim()
-        assertTrue(isDegenerateOutput(output, eosReached = true, hitMaxLength = false, sourceText = input))
+        assertTrue(isDegenerateOutput(output, hitMaxLength = false, sourceText = input))
     }
 
     @Test

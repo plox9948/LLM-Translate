@@ -51,17 +51,8 @@ class RuntimeRouter @Inject constructor(
      * [RuntimeError.UnsupportedRuntime]: молчаливый fallback на Marian прятал
      * ошибочный тип модели за переводом чужим движком (ревью #79).
      */
-    fun translationEngine(runtime: RuntimeType): TranslationEngine = when (runtime) {
-        RuntimeType.MARIAN_ONNX -> marianOnnxRuntime
-        RuntimeType.INDICTRANS_ONNX -> indicTransOnnxRuntime
-        RuntimeType.MARIAN_SLIMT -> slimtRuntime
-        RuntimeType.SHERPA,
-        RuntimeType.SYSTEM_TTS,
-        RuntimeType.RHVOICE,
-        RuntimeType.ESPEAK,
-        RuntimeType.PIPER_ONNX ->
-            throw RuntimeError.UnsupportedRuntime(runtime.name)
-    }
+    fun translationEngine(runtime: RuntimeType): TranslationEngine =
+        translationEngineOrNull(runtime) ?: throw RuntimeError.UnsupportedRuntime(runtime.name)
 
     /**
      * Движок распознавания речи: sherpa-onnx — единственный STT-рантайм.

@@ -5,7 +5,6 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import java.nio.LongBuffer
 import java.util.Optional
 
 /**
@@ -80,15 +79,9 @@ internal suspend fun greedyDecode(
     newStepInputs = { feedToken ->
         // Первый тензор закрываем, если создание второго упадёт:
         // иначе его нативная память утечёт (ядроPair ещё не получило).
-        val inputIds = OnnxTensor.createTensor(
-            ortEnv, LongBuffer.wrap(longArrayOf(feedToken.toLong())), longArrayOf(1L, 1L)
-        )
+        val inputIds = longTensor(ortEnv, longArrayOf(feedToken.toLong()))
         try {
-            val encoderAttentionMask = OnnxTensor.createTensor(
-                ortEnv, LongBuffer.wrap(attentionMask),
-                longArrayOf(1L, attentionMask.size.toLong())
-            )
-            Pair(inputIds, encoderAttentionMask)
+            Pair(inputIds, longTensor(ortEnv, attentionMask))
         } catch (e: Exception) {
             inputIds.close()
             throw e
