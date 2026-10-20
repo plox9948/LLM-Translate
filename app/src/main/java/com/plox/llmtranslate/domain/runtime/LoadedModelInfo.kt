@@ -72,3 +72,19 @@ internal fun translationLoadedInfo(model: InstalledModel): LoadedModelInfo = Loa
     ramRequiredMb = model.ramRequiredMb,
     languages = model.languages
 )
+
+/**
+ * Метаданные пучка TTS-модели для публикации в `loadedModels` (Piper) —
+ * одинаковые при первой загрузке и при обновлении метаданных повторной.
+ * Без записи каталога ([model] = null, импорт вручную) — id и имя берутся
+ * из [fallbackName] (имя каталога), оценка ОЗУ — 0, языки пусты
+ * (гейт [directionMismatch] для таких пучков пропускается, ревью #83).
+ */
+internal fun ttsLoadedInfo(model: InstalledModel?, fallbackName: String): LoadedModelInfo =
+    LoadedModelInfo(
+        modelId = model?.id ?: fallbackName,
+        displayName = model?.displayName ?: fallbackName,
+        category = ModelCategory.TTS,
+        ramRequiredMb = model?.ramRequiredMb ?: 0,
+        languages = model?.languages ?: emptyList()
+    )

@@ -347,13 +347,10 @@ internal class TtsUtteranceRegistry {
      * (разгрузка движка: слушатель после shutdown их не вызовет —
      * вызывающий код обязан известить экраны о завершении).
      */
-    fun drain(): List<() -> Unit> {
-        val taken = mutableListOf<() -> Unit>()
-        for (id in callbacks.keys().toList()) {
-            callbacks.remove(id)?.let { taken.add(it) }
-        }
-        return taken
-    }
+    fun drain(): List<() -> Unit> =
+        // ConcurrentHashMap допускает remove() во время итерации по keys() —
+        // каждый колбэк изымается атомарно ровно одним вызовом drain/finish.
+        callbacks.keys().toList().mapNotNull { id -> callbacks.remove(id) }
 }
 
 /**

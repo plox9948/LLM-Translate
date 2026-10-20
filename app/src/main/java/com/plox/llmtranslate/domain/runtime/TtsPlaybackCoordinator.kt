@@ -327,9 +327,7 @@ class TtsPlaybackCoordinator @Inject constructor(
                 // только piper-озвучку, системный TTS останавливаем явно
                 // (pending-колбэки изымаются stop()-ом, флаг новой фразы
                 // не трогает — фильтр по токену).
-                ttsRuntime.stop()
-                val error = speakWithPiper(choice.id, text, token)
-                if (error != null) finishWithError(error, token)
+                runPiperSpeak(choice.id, text, token)
             }
 
             TtsModelSelector.TtsChoice.SystemEngine -> {
@@ -360,6 +358,17 @@ class TtsPlaybackCoordinator @Inject constructor(
         val loadError = piperRuntime.load(File(path), model)
         if (loadError != null) return loadError
         return piperRuntime.speak(text, onDone = { onSpeakDone(token) })
+    }
+
+    /**
+     * Общий путь Piper-озвучки: явная остановка системного TTS (прежняя
+     * системная фраза не должна накладываться на piper-синтез, ревью раунд 2),
+     * синтез [text] моделью [modelId] и финализация ошибки в статус.
+     */
+    private suspend fun runPiperSpeak(modelId: String, text: String, token: Long) {
+        ttsRuntime.stop()
+        val error = speakWithPiper(modelId, text, token)
+        if (error != null) finishWithError(error, token)
     }
 
     /**
@@ -429,11 +438,7 @@ class TtsPlaybackCoordinator @Inject constructor(
                 // Снимаем только что выставленную СВОЮ сцену (поколение ещё
                 // наше, чужие watch не трогались под замком): статус не
                 // показывали, download не ставили.
-                if (watchGeneration.get() == gen) {
-                    if (pendingRetry === retry) pendingRetry = null
-                    if (watchedDownloadId == cardId) watchedDownloadId = null
-                    watchGeneration.incrementAndGet()
-                }
+                releaseOwnWatchScene(gen, retry, cardId)
                 Timber.d("Фолбэк Piper пропущен: фраза устарела под watchLock")
                 return
             }
@@ -473,10 +478,7 @@ class TtsPlaybackCoordinator @Inject constructor(
                 // бы её watch/статус, а инкремент поколения погасил бы её
                 // grace-таймер. Снимаем только пока наша сцена остаётся
                 // активной watch; весь контроль и инкремент — под watchLock.
-                if (watchGeneration.get() == watchGen) {
-                    if (pendingRetry === retry) pendingRetry = null
-                    if (watchedDownloadId == cardId) watchedDownloadId = null
-                    watchGeneration.incrementAndGet()
+                if (releaseOwnWatchScene(watchGen, retry, cardId)) {
                     _status.update {
                         if (it.downloadModelId == cardId) {
                             it.copy(
@@ -494,6 +496,20 @@ class TtsPlaybackCoordinator @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Снять СВОЮ watch-сцену фолбэка (внутри [watchLock]): только пока
+     * активное watch-поколение — наше ([gen], регрессия #83, замечание 3);
+     * чужая новая сцена (pendingRetry/observation другой фразы) не трогается.
+     * @return true — сцена снята (поколение было нашим).
+     */
+    private fun releaseOwnWatchScene(gen: Long, retry: PendingRetry, cardId: String): Boolean {
+        if (watchGeneration.get() != gen) return false
+        if (pendingRetry === retry) pendingRetry = null
+        if (watchedDownloadId == cardId) watchedDownloadId = null
+        watchGeneration.incrementAndGet()
+        return true
     }
 
     /**
@@ -518,6 +534,23 @@ class TtsPlaybackCoordinator @Inject constructor(
                 downloadStatus = status,
                 downloadProgress = progress,
                 downloadErrorId = errorId ?: it.downloadErrorId
+            )
+        }
+    }
+
+    /** Снять наблюдение за автоскачиванием и pending-ретрай (внутри [watchLock]). */
+    private fun endWatching() {
+        watchedDownloadId = null
+        pendingRetry = null
+    }
+
+    /** Снять watch-статус автоскачивания (карточка убрана без стадии ошибки). */
+    private fun clearWatchDownloadStatus() {
+        _status.update {
+            it.copy(
+                downloadModelId = null,
+                downloadStatus = TtsDownloadStatus.NONE,
+                downloadProgress = 0
             )
         }
     }
@@ -554,9 +587,7 @@ class TtsPlaybackCoordinator @Inject constructor(
                 // Авто-ретрай Piper (путь READY) — незавершённая системная фраза
                 // не должна накладываться на piper-синтез: системный TTS
                 // останавливаем явно, как в piper-ветке runSpeak (ревью раунд 2).
-                ttsRuntime.stop()
-                val error = speakWithPiper(cardId, text, token)
-                if (error != null) finishWithError(error, token)
+                runPiperSpeak(cardId, text, token)
             } catch (e: CancellationException) {
                 Timber.d("Piper-озвучивание отменено")
             }
@@ -590,15 +621,8 @@ class TtsPlaybackCoordinator @Inject constructor(
                 )
                 return
             }
-            watchedDownloadId = null
-            pendingRetry = null
-            _status.update {
-                it.copy(
-                    downloadModelId = null,
-                    downloadStatus = TtsDownloadStatus.NONE,
-                    downloadProgress = 0
-                )
-            }
+            endWatching()
+            clearWatchDownloadStatus()
             Timber.w("Автоскачивание Piper-модели $cardId прервано: запись удалена")
             return
         }
@@ -607,8 +631,7 @@ class TtsPlaybackCoordinator @Inject constructor(
                 _status.update { it.copy(downloadProgress = model.progress) }
 
             ModelStatus.ERROR -> {
-                watchedDownloadId = null
-                pendingRetry = null
+                endWatching()
                 val errorId = downloadErrorSeq.incrementAndGet()
                 _status.update {
                     it.copy(
@@ -620,16 +643,9 @@ class TtsPlaybackCoordinator @Inject constructor(
             }
 
             ModelStatus.READY -> {
-                watchedDownloadId = null
                 val retry = pendingRetry
-                pendingRetry = null
-                _status.update {
-                    it.copy(
-                        downloadModelId = null,
-                        downloadStatus = TtsDownloadStatus.NONE,
-                        downloadProgress = 0
-                    )
-                }
+                endWatching()
+                clearWatchDownloadStatus()
                 if (retry != null && model.isReady) {
                     autoAssignAndSpeakPiper(
                         cardId,

@@ -9,7 +9,6 @@ import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
 import com.plox.llmtranslate.domain.model.InstalledModel
-import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.RuntimeError
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -160,16 +159,7 @@ class PiperTtsRuntime @Inject constructor(
                         loaded = LoadedPiper(
                             tts = current.tts,
                             dirPath = path,
-                            info = LoadedModelInfo(
-                                modelId = model.id,
-                                displayName = model.displayName,
-                                category = ModelCategory.TTS,
-                                ramRequiredMb = model.ramRequiredMb,
-                                // Языки пучка в карточке «Загружено в память»
-                                // (ревью #83, тот же класс, что починен у
-                                // SherpaSttEngine).
-                                languages = model.languages
-                            )
+                            info = ttsLoadedInfo(model, path)
                         )
                         publishLoadedUnlocked()
                     }
@@ -198,16 +188,7 @@ class PiperTtsRuntime @Inject constructor(
                     loaded = LoadedPiper(
                         tts = tts,
                         dirPath = path,
-                        info = LoadedModelInfo(
-                            modelId = model?.id ?: modelDir.name,
-                            displayName = model?.displayName ?: modelDir.name,
-                            category = ModelCategory.TTS,
-                            ramRequiredMb = model?.ramRequiredMb ?: 0,
-                            // Языки пучка (ревью #83): у импортированных без
-                            // объявленных языков — пусто (гейт directionMismatch
-                            // для них пропускается).
-                            languages = model?.languages ?: emptyList()
-                        )
+                        info = ttsLoadedInfo(model, modelDir.name)
                     )
                     publishLoadedUnlocked()
                     Timber.d("Piper TTS загружена: $path")

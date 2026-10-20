@@ -513,15 +513,11 @@ class AudioRecorder @Inject constructor(
                         record.read(readBuffer, 0, readBuffer.size)
                     } catch (e: IllegalStateException) {
                         Timber.e(e, "AudioRecord.read() бросил исключение — запись аварийно останавливается")
-                        if (currentGeneration.get()) {
-                            finishAfterReadFailure(currentGeneration)
-                        }
+                        abortCurrentGeneration(currentGeneration)
                         -1
                     } catch (e: IllegalArgumentException) {
                         Timber.e(e, "AudioRecord.read() с некорректными аргументами — запись аварийно останавливается")
-                        if (currentGeneration.get()) {
-                            finishAfterReadFailure(currentGeneration)
-                        }
+                        abortCurrentGeneration(currentGeneration)
                         -1
                     }
                     if (read > 0) {
@@ -537,9 +533,7 @@ class AudioRecorder @Inject constructor(
                             // 3 мин. Та же аварийная сцена, что и для read()<0
                             // (ревью контрольного раунда 4).
                             Timber.e(e, "Ошибка записи WAV — запись аварийно останавливается")
-                            if (currentGeneration.get()) {
-                                finishAfterReadFailure(currentGeneration)
-                            }
+                            abortCurrentGeneration(currentGeneration)
                             break
                         }
                         writtenBytes += read
@@ -578,9 +572,7 @@ class AudioRecorder @Inject constructor(
                         // stopRecording()/cancel(), он и освобождает; если в
                         // этом окне стартовала новая запись, наша обработка её
                         // убивать не должна (ревью раунда 3).
-                        if (currentGeneration.get()) {
-                            finishAfterReadFailure(currentGeneration)
-                        }
+                        abortCurrentGeneration(currentGeneration)
                         break
                     } else {
                         // read == 0: данных в буфере нет, чтение вернулось бы
@@ -645,10 +637,40 @@ class AudioRecorder @Inject constructor(
      */
     private suspend fun detachStoppedScene(scene: StoppedScene) {
         scene.job?.join()
+        detachStoppedRecord(scene.record)
+    }
+
+    /**
+     * Отсоединять захваченный сценами рекордер от поля — только пока в нём
+     * всё ещё он же (вызывается под [sceneLock]).
+     */
+    private fun detachStoppedRecord(record: AudioRecord?) {
         synchronized(sceneLock) {
-            if (audioRecord === scene.record) {
+            if (audioRecord === record) {
                 audioRecord = null
             }
+        }
+    }
+
+    /**
+     * Освободить AudioRecord снятой сцены (stop + release) и обнулить таймер
+     * длительности; stop() уже остановленного/освобождённого системой
+     * рекордера — штатная ситуация, только в лог-комментарий (ревью повт. аудита).
+     */
+    private fun stopAndReleaseRecord(record: AudioRecord?) {
+        try {
+            record?.stop()
+        } catch (e: IllegalStateException) {
+            // Рекордер мог быть уже освобождён системой, буфер — пуст: не критично.
+        }
+        record?.release()
+        _recordingElapsedMs.value = 0L
+    }
+
+    /** Прервать сцену нашей записи из цикла чтения (ошибки read/записи WAV). */
+    private suspend fun abortCurrentGeneration(currentGeneration: AtomicBoolean) {
+        if (currentGeneration.get()) {
+            finishAfterReadFailure(currentGeneration)
         }
     }
 
@@ -671,20 +693,10 @@ class AudioRecorder @Inject constructor(
     private suspend fun finishAfterReadFailure(currentGeneration: AtomicBoolean) {
         val scene = captureStopScene(expectedGeneration = currentGeneration) ?: return
         withContext(NonCancellable + Dispatchers.IO) {
-            // joinscene.job пропускаем: это текущая корутина.
-            synchronized(sceneLock) {
-                if (audioRecord === scene.record) {
-                    audioRecord = null
-                }
-            }
-            try {
-                scene.record?.stop()
-            } catch (e: IllegalStateException) {
-                // Рекордер мог быть уже освобождён системой — не критично.
-            }
-            scene.record?.release()
+            // join scene.job пропускаем: это текущая корутина.
+            detachStoppedRecord(scene.record)
+            stopAndReleaseRecord(scene.record)
             scene.sink?.discard()
-            _recordingElapsedMs.value = 0L
             Timber.w("Запись аварийно остановлена: AudioRecord освобождён, WAV отброшен")
         }
     }
@@ -703,18 +715,9 @@ class AudioRecorder @Inject constructor(
     private suspend fun finishAtRecordingLimit(currentGeneration: AtomicBoolean) {
         val scene = captureStopScene(expectedGeneration = currentGeneration) ?: return
         withContext(NonCancellable + Dispatchers.IO) {
-            synchronized(sceneLock) {
-                if (audioRecord === scene.record) {
-                    audioRecord = null
-                }
-            }
-            try {
-                scene.record?.stop()
-            } catch (e: IllegalStateException) {
-                // Рекордер мог быть уже освобождён системой — не критично.
-            }
-            scene.record?.release()
-            _recordingElapsedMs.value = 0L
+            // join scene.job пропускаем: это текущая корутина.
+            detachStoppedRecord(scene.record)
+            stopAndReleaseRecord(scene.record)
             val sink = scene.sink
             if (sink != null && sink.pcmSize > 0L && sink.closeAndPatch()) {
                 // Ревью #83 (итерация 3, п.5): getAndSet вместо set — прежний
@@ -764,14 +767,8 @@ class AudioRecorder @Inject constructor(
                 }
                 if (scene == null) return@withContext
                 detachStoppedScene(scene)
-                try {
-                    scene.record?.stop()
-                } catch (e: IllegalStateException) {
-                    // Буфер мог быть пуст — не критично.
-                }
-                scene.record?.release()
+                stopAndReleaseRecord(scene.record)
                 scene.sink?.discard()
-                _recordingElapsedMs.value = 0L
                 Timber.d("Запись с микрофона снята при выгрузке рантаймов")
             }
         }
@@ -802,14 +799,7 @@ class AudioRecorder @Inject constructor(
         // join(), этим вызовом не освобождается и не сохраняется.
         return withContext(NonCancellable + Dispatchers.IO) {
             detachStoppedScene(scene)
-
-            try {
-                scene.record?.stop()
-            } catch (e: IllegalStateException) {
-                // Буфер мог быть пуст — не критично.
-            }
-            scene.record?.release()
-            _recordingElapsedMs.value = 0L
+            stopAndReleaseRecord(scene.record)
 
             val sink = scene.sink
             if (sink == null || sink.pcmSize == 0L) {
