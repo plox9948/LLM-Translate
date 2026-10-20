@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">LLM Translate</string>
 
@@ -48,7 +48,6 @@
     <string name="translate_recording_hint">● Recording… %1$s — tap the microphone to stop</string>
     <string name="translate_mic_permission_denied">Microphone recording permission is not granted. Allow microphone access in the app settings</string>
     <string name="translate_mic_missing_stt_model">To recognize speech, download a speech recognition model on the \"Models\" screen</string>
-    <string name="translate_select_language">Select language</string>
     <string name="translate_history_delete_cd">Delete from history</string>
     <string name="translate_detect_language_failed">Could not detect the language. Select it manually.</string>
     <string name="translate_same_languages">Choose different languages</string>

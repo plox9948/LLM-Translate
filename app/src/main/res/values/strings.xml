@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">LLM Translate</string>
 
@@ -48,7 +48,6 @@
     <string name="translate_recording_hint">● Идёт запись… %1$s — нажмите на микрофон, чтобы остановить</string>
     <string name="translate_mic_permission_denied">Нет разрешения на запись с микрофона. Разрешите доступ к микрофону в настройках приложения</string>
     <string name="translate_mic_missing_stt_model">Для распознавания речи скачайте модель распознавания на экране «Модели»</string>
-    <string name="translate_select_language">Выберите язык</string>
     <string name="translate_history_delete_cd">Удалить из истории</string>
     <string name="translate_detect_language_failed">Не удалось определить язык. Выберите его вручную.</string>
     <string name="translate_same_languages">Выберите разные языки</string>
