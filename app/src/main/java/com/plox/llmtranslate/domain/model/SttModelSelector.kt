@@ -21,10 +21,10 @@ object SttModelSelector {
     const val INDIC_DEFAULT_LANGUAGE = "ne"
 
     /**
-     * Маркеры id IndicConformer-моделей (sherpa-onnx). Подстрока «indic»
+     * Маркер id IndicConformer-моделей (sherpa-onnx). Подстрока «indic»
      * поглощает и «indicconformer» — отдельный маркер избыточен (ревью #83).
      */
-    private val INDIC_ID_MARKERS = listOf("indic")
+    private const val INDIC_ID_MARKER = "indic"
 
     /** Маркер id мультаязычных Whisper-моделей — приоритет для AUTO. */
     private const val WHISPER_ID_MARKER = "whisper"
@@ -121,8 +121,7 @@ object SttModelSelector {
      * и установленной модели).
      */
     private fun indicMatches(runtime: RuntimeType, id: String): Boolean =
-        runtime == RuntimeType.SHERPA &&
-            INDIC_ID_MARKERS.any { id.lowercase().contains(it) }
+        runtime == RuntimeType.SHERPA && id.lowercase().contains(INDIC_ID_MARKER)
 
     /**
      * true, если id модели содержит маркер Whisper — приоритет выбора для AUTO.

@@ -128,8 +128,8 @@ data class ModelCard(
     val requiresLicenseConfirmation: Boolean
         get() {
             val upper = license.uppercase()
-            val tokens = LICENSE_TOKEN_DELIMITERS.split(upper).filter { it.isNotEmpty() }
-            return tokens.any { it == "NC" } || NON_COMMERCIAL_PHRASE.containsMatchIn(upper)
+            return "NC" in LICENSE_TOKEN_DELIMITERS.split(upper) ||
+                NON_COMMERCIAL_PHRASE.containsMatchIn(upper)
         }
 
     /** Все URL для скачивания: urls (мультифайл) или url (один файл). */

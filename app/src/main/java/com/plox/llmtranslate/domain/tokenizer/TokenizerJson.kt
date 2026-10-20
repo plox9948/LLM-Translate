@@ -184,38 +184,33 @@ class TokenizerJson {
     }
 
     private fun parseNormalizer(root: JsonObject) {
-        val normEl = root["normalizer"] ?: run { normalizer = null; return }
-        if (normEl !is JsonObject) {
-            normalizer = null
-            return
-        }
-        when ((normEl["type"] as? JsonPrimitive)?.contentOrNull) {
-            "NFC" -> normalizer = TextNormalizer { Normalizer.normalize(it, Normalizer.Form.NFC) }
-            "NFD" -> normalizer = TextNormalizer { Normalizer.normalize(it, Normalizer.Form.NFD) }
-            "Sequence" -> {
-                val parts = mutableListOf<TextNormalizer>()
-                normEl["normalizers"]?.jsonArray?.forEach { el ->
-                    val obj = el.jsonObject
-                    when ((obj["type"] as? JsonPrimitive)?.contentOrNull) {
-                        "NFC" -> parts.add(TextNormalizer { Normalizer.normalize(it, Normalizer.Form.NFC) })
-                        "NFD" -> parts.add(TextNormalizer { Normalizer.normalize(it, Normalizer.Form.NFD) })
-                        "Precompiled" -> {
-                            val cn = parseCharsmap((obj["precompiled_charsmap"] as? JsonPrimitive)?.contentOrNull)
-                            if (cn != null) parts.add(TextNormalizer { cn.normalize(it) })
-                        }
-                    }
-                }
-                normalizer = if (parts.isEmpty()) null else TextNormalizer { text ->
-                    parts.fold(text) { acc, n -> n.normalize(acc) }
-                }
+        val normEl = root["normalizer"] as? JsonObject ?: run { normalizer = null; return }
+        if ((normEl["type"] as? JsonPrimitive)?.contentOrNull == "Sequence") {
+            val parts = mutableListOf<TextNormalizer>()
+            normEl["normalizers"]?.jsonArray?.forEach { el ->
+                normalizerFor(el.jsonObject)?.let(parts::add)
             }
-            "Precompiled" -> {
-                normalizer = parseCharsmap((normEl["precompiled_charsmap"] as? JsonPrimitive)?.contentOrNull)
-                    ?.let { cn -> TextNormalizer { cn.normalize(it) } }
+            normalizer = if (parts.isEmpty()) null else TextNormalizer { text ->
+                parts.fold(text) { acc, n -> n.normalize(acc) }
             }
-            else -> normalizer = null
+        } else {
+            normalizer = normalizerFor(normEl)
         }
     }
+
+    /**
+     * Один нормализатор по JSON-объекту описания (NFC/NFD/Precompiled);
+     * null — тип не распознан или charsmap не разобран. Общая точка для
+     * верхнего уровня и элементов Sequence (разбор не дублируется).
+     */
+    private fun normalizerFor(obj: JsonObject): TextNormalizer? =
+        when ((obj["type"] as? JsonPrimitive)?.contentOrNull) {
+            "NFC" -> TextNormalizer { Normalizer.normalize(it, Normalizer.Form.NFC) }
+            "NFD" -> TextNormalizer { Normalizer.normalize(it, Normalizer.Form.NFD) }
+            "Precompiled" -> parseCharsmap((obj["precompiled_charsmap"] as? JsonPrimitive)?.contentOrNull)
+                ?.let { cn -> TextNormalizer { cn.normalize(it) } }
+            else -> null
+        }
 
     private fun parseCharsmap(b64: String?): CharsmapNormalizer? {
         if (b64.isNullOrBlank()) return null
