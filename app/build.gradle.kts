@@ -226,6 +226,7 @@ dependencies {
     testImplementation(libs.mockk)
 
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

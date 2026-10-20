@@ -160,7 +160,11 @@ class RoomMigrationChain1To5Test {
             "translation_history не создана миграцией 2→3",
             columnNames(db, "translation_history").isNotEmpty()
         )
-        db.query(
+        // DML — через execSQL: query() возвращает ленивый курсор, который не
+        // исполняет запрос до первого чтения (moveToFirst); без чтения INSERT
+        // не выполняется и счётчик ниже видит пустую таблицу. В соседних
+        // RoomMigration3To4Test/4To5Test вставки уже идут через execSQL.
+        db.execSQL(
             "INSERT INTO translation_history (source_lang, target_lang, input_text, result_text, created_at) " +
                 "VALUES ('ru', 'en', 'привет', 'hello', 1700000000)"
         )

@@ -197,11 +197,15 @@ class OnnxInstallerTest {
         }
         assertTrue("Ожидался Success, получено: $ok", ok is InstallResult.Success)
         // Одиночный файл скачивается в корень каталога с префиксом id
-        // (единая схема DownloadLayout.targetFileName, ревью п.15).
-        assertArrayEqualsSafe(
-            encoderBytes,
-            File(targetDir, "single-model__model.onnx").readBytes()
+        // (единая схема DownloadLayout.targetFileName, ревью п.15). Имя строится
+        // тем же DownloadLayout, а не литералом: с issue #83 разделитель склейки
+        // «__» заменён на «~» (п.7 — защита от коллизий имён), и хардкод
+        // legacy-имя «id__basename» ломает тест при любой эволюции схемы.
+        val installed = File(
+            targetDir,
+            DownloadLayout.targetFileName("single-model", urls[0], 0, inModelDir = false)
         )
+        assertArrayEqualsSafe(encoderBytes, installed.readBytes())
 
         val bad = runBlocking {
             OnnxInstaller().install(urls, null, listOf("00".repeat(32)), targetDir, "single-model") {}

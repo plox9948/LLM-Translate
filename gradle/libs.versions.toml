@@ -21,6 +21,7 @@ commonsCompress = "1.26.2"
 xz = "1.9"
 junit = "4.13.2"
 junitExt = "1.2.1"
+testRunner = "1.6.2"
 coroutinesTest = "1.9.0"
 turbine = "1.1.0"
 mockk = "1.13.12"
@@ -59,6 +60,7 @@ xz = { group = "org.tukaani", name = "xz", version.ref = "xz" }
 
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitExt" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "testRunner" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }

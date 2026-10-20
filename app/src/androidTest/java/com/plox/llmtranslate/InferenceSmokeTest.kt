@@ -15,9 +15,12 @@ import com.plox.llmtranslate.domain.runtime.RepetitionTrimmer
 import com.plox.llmtranslate.domain.runtime.SherpaSttEngine
 import com.plox.llmtranslate.domain.runtime.SlimtRuntime
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -29,6 +32,9 @@ import kotlin.math.sin
  *
  * Ожидает, что модели уже загружены в каталог getExternalFilesDir("models")/<RUNTIME>/<id>/
  * (через adb push из models/). Тест НЕ скачивает модели — только проверяет инференс.
+ * Если пучка модели нет на устройстве, тест пропускается (JUnit assume), а не
+ * падает: наличие гигабайтных пучков — внешнее предусловие прогона, а не артефакт
+ * тестового APK (CI без моделей прогон остаётся зелёным).
  */
 @RunWith(AndroidJUnit4::class)
 class InferenceSmokeTest {
@@ -43,6 +49,26 @@ class InferenceSmokeTest {
 
     private fun modelDir(runtime: String, modelId: String): File =
         File(context.getExternalFilesDir("models"), "$runtime/$modelId")
+
+    /** Пропустить тест, если пучка модели не установлена на устройстве. */
+    private fun requireModelDir(dir: File) {
+        assumeTrue("Модель не установлена на устройстве: $dir", dir.exists())
+    }
+
+    /** Герметичный рабочий каталог класса: очищается до и после каждого теста. */
+    private lateinit var workDir: File
+
+    @Before
+    fun setUp() {
+        workDir = File(context.cacheDir, "inference_smoke_test")
+        workDir.deleteRecursively()
+        workDir.mkdirs()
+    }
+
+    @After
+    fun tearDown() {
+        workDir.deleteRecursively()
+    }
 
     private fun readyModel(
         id: String,
@@ -76,7 +102,7 @@ class InferenceSmokeTest {
     @Test
     fun slimtRuEnTranslation() {
         val dir = modelDir("MARIAN_SLIMT", "firefox-bergamot-ru-en")
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        requireModelDir(dir)
         val model = readyModel(
             "firefox-bergamot-ru-en", ModelCategory.TRANSLATION,
             RuntimeType.MARIAN_SLIMT, dir.absolutePath
@@ -96,7 +122,7 @@ class InferenceSmokeTest {
     @Test
     fun slimtEnRuTranslation() {
         val dir = modelDir("MARIAN_SLIMT", "firefox-bergamot-en-ru")
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        requireModelDir(dir)
         val model = readyModel(
             "firefox-bergamot-en-ru", ModelCategory.TRANSLATION,
             RuntimeType.MARIAN_SLIMT, dir.absolutePath
@@ -116,7 +142,7 @@ class InferenceSmokeTest {
     @Test
     fun indicTransNeEnTranslation() {
         val dir = modelDir("INDICTRANS_ONNX", "indictrans2-indic-en-int8")
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        requireModelDir(dir)
         val model = readyModel(
             "indictrans2-indic-en-int8", ModelCategory.TRANSLATION,
             RuntimeType.INDICTRANS_ONNX, dir.absolutePath
@@ -151,7 +177,7 @@ class InferenceSmokeTest {
     @Test
     fun indicTransEnNeWelcomeTranslation() {
         val dir = modelDir("INDICTRANS_ONNX", "indictrans2-en-indic-int8")
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        requireModelDir(dir)
         val model = readyModel(
             "indictrans2-en-indic-int8", ModelCategory.TRANSLATION,
             RuntimeType.INDICTRANS_ONNX, dir.absolutePath
@@ -185,7 +211,7 @@ class InferenceSmokeTest {
     @Test
     fun indicTransIndicEnDuplication() {
         val dir = modelDir("INDICTRANS_ONNX", "indictrans2-indic-en-int8")
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        requireModelDir(dir)
         val model = readyModel(
             "indictrans2-indic-en-int8", ModelCategory.TRANSLATION,
             RuntimeType.INDICTRANS_ONNX, dir.absolutePath
@@ -206,7 +232,7 @@ class InferenceSmokeTest {
     @Test
     fun sherpaParakeetSttLoadsAndRuns() {
         val dir = modelDir("SHERPA", "stt-en-parakeet-110m")
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        requireModelDir(dir)
         val model = readyModel(
             "stt-en-parakeet-110m", ModelCategory.STT,
             RuntimeType.SHERPA, dir.absolutePath
@@ -242,7 +268,7 @@ class InferenceSmokeTest {
     @Test
     fun sherpaGigaAmV3SttLoads() {
         val dir = modelDir("SHERPA", "stt-ru-gigaam-v3-e2e-ctc")
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        requireModelDir(dir)
         val model = readyModel(
             "stt-ru-gigaam-v3-e2e-ctc", ModelCategory.STT,
             RuntimeType.SHERPA, dir.absolutePath
@@ -257,8 +283,9 @@ class InferenceSmokeTest {
      * Записать тестовый WAV (синусоида 440 Гц, 16 kHz, mono, 16-bit).
      */
     private fun writeTestWav(): File {
-        val audioDir = context.getExternalFilesDir("audio") ?: context.filesDir
-        val file = File(audioDir, "test_tone.wav")
+        // Тестовый WAV — в герметичный каталог класса (удаляется в tearDown),
+        // а не в общий externalFilesDir("audio") без уборки.
+        val file = File(workDir, "test_tone.wav")
         val sampleRate = 16000
         val duration = 1.0
         val numSamples = (sampleRate * duration).toInt()

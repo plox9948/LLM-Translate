@@ -34,6 +34,8 @@ import java.io.File
  *
  * Модели НЕ скачиваются — ожидается, что они уже лежат в
  * getExternalFilesDir("models")/<RUNTIME>/<id>/ (adb push из models/).
+ * Если пучка модели нет на устройстве, тест пропускается (JUnit assume),
+ * а не падает: прогон без моделей остаётся зелёным.
  */
 @RunWith(AndroidJUnit4::class)
 class GoldenCorpusNeTest {
@@ -57,6 +59,11 @@ class GoldenCorpusNeTest {
 
     private fun modelDir(runtime: String, modelId: String): File =
         File(context.getExternalFilesDir("models"), "$runtime/$modelId")
+
+    /** Пропустить тест, если пучка модели не установлена на устройстве. */
+    private fun requireModelDir(dir: File) {
+        assumeTrue("Модель не установлена на устройстве: $dir", dir.exists())
+    }
 
     private fun readyModel(
         id: String,
@@ -170,7 +177,7 @@ class GoldenCorpusNeTest {
         )
 
         val dir = modelDir("INDICTRANS_ONNX", "indictrans2-en-indic-int8")
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        requireModelDir(dir)
         val model = readyModel(
             "indictrans2-en-indic-int8", ModelCategory.TRANSLATION,
             RuntimeType.INDICTRANS_ONNX, dir.absolutePath,
@@ -213,7 +220,7 @@ class GoldenCorpusNeTest {
     @Test
     fun goldenCorpusNe2En() {
         val dir = modelDir("INDICTRANS_ONNX", "indictrans2-indic-en-int8")
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        requireModelDir(dir)
         val model = readyModel(
             "indictrans2-indic-en-int8", ModelCategory.TRANSLATION,
             RuntimeType.INDICTRANS_ONNX, dir.absolutePath,
@@ -259,7 +266,7 @@ class GoldenCorpusNeTest {
     @Test
     fun longNepaliParagraphChunking() {
         val dir = modelDir("INDICTRANS_ONNX", "indictrans2-indic-en-int8")
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        requireModelDir(dir)
         val model = readyModel(
             "indictrans2-indic-en-int8", ModelCategory.TRANSLATION,
             RuntimeType.INDICTRANS_ONNX, dir.absolutePath,
@@ -297,7 +304,7 @@ class GoldenCorpusNeTest {
         assumeTrue("Нет slimt-модели $slimtDir — цепочечный тест пропущен", slimtDir.exists())
 
         val indicDir = modelDir("INDICTRANS_ONNX", "indictrans2-en-indic-int8")
-        assertTrue("Каталог модели не найден: $indicDir", indicDir.exists())
+        requireModelDir(indicDir)
 
         val lakeTokens = listOf("ताल", "हिमताल", "जिल")
 

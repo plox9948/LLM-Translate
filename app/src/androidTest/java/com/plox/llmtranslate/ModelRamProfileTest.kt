@@ -20,6 +20,7 @@ import com.plox.llmtranslate.domain.runtime.SttEngine
 import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -138,7 +139,9 @@ class ModelRamProfileTest {
         assertTrue("Неизвестная модель: $id", target != null)
         val t = target!!
         val dir = modelDir(t.runtimeDir, t.id)
-        assertTrue("Каталог модели не найден: $dir", dir.exists())
+        // Диагностический тест требует заранее установленного пучка модели;
+        // без него на устройстве — пропуск (assume), а не падение прогона.
+        assumeTrue("Модель не установлена на устройстве: $dir", dir.exists())
         File(profDir(), "hold.marker").delete()
         File(profDir(), "rel.marker").delete()
         val model = readyModel(t, dir.absolutePath)
