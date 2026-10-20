@@ -63,13 +63,17 @@ offline.
   for a long time, the next app launch repairs that state: the card no longer
   sticks, and the model can be fetched again with "Retry". Legit downloads
   that are still resuming are not affected.
-- "Export" / "Delete" — on the card of an installed model.
+- "Export" / "Delete" — on the card of an installed model. Before deleting, the
+  app asks for confirmation in a dialog ("Delete model?" with "Delete" and
+  "Cancel" buttons): one accidental tap no longer loses the model.
 - "Import" — on the card of a not-yet-downloaded model: unpack a model from a
   ZIP file received from another phone, without downloading. A ZIP export made
   by this same app keeps the model whole: its type and languages are restored
   automatically on import. A broken or tampered archive is rejected on import
   (its contents are checked against the model's checksums) — and an already
-  installed model is left untouched.
+  installed model is left untouched. Manually imported Marian ONNX models must
+  ship a valid generation_config.json: if it is missing or damaged, the app
+  reports an explicit model-load error instead of producing an empty translation.
 - "Select" — only on TTS engine cards; the translation model is picked
   automatically by direction, and a recognition model is assigned with the
   "Speech recognition language:" chips on the STT model cards.
@@ -264,6 +268,16 @@ enough free space, the app refuses before writing starts, and an interrupted
 partial file is deleted — a broken archive never gets saved. When installing
 from the archive, the app also checks free space up front (unpacking included)
 and verifies model bundles file by file against their checksums.
+
+Canceling backup operations never damages your existing models: a canceled
+restore leaves no half-replaced bundles — models stay exactly as they were.
+A damaged or tampered archive — with duplicate models or abnormally large
+entries — is rejected with a clear "the archive is damaged" error before any
+changes begin. If a restore interrupted a model download that was already
+running, the app tells you so ("Active downloads were interrupted by the
+import and not replaced — retry downloading later") and you can simply retry
+the download. While a restore or archive import is in progress, the "Backup"
+button will temporarily refuse — retry the export later.
 
 The settings backup includes: interface language and theme, per-language
 speech recognition and read-aloud assignments, the model unloading timeout,
