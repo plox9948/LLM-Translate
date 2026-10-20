@@ -97,18 +97,14 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                 // каталога рантайма — без удаления он остался бы
                 // сиротой навсегда; освобождаем место сразу
                 // (deleteOrphanParts — страховка для старых установок).
-                if (!archiveFile.delete()) {
-                    Timber.w("Не удалось удалить архив после отмены: ${archiveFile.name}")
-                }
+                discardArchive(archiveFile, "отмены")
                 throw e
             } catch (e: SecurityException) {
                 // zip-slip: содержимое архива того же источника не
                 // изменится — повтор бессмысленен, permanent=true
                 // (маппинг toInstallFailure этот случай не покрывает).
                 Timber.e(e, "Небезопасный путь в архиве: $fileName")
-                if (!archiveFile.delete()) {
-                    Timber.w("Не удалось удалить архив после zip-slip: ${archiveFile.name}")
-                }
+                discardArchive(archiveFile, "zip-slip")
                 return@run InstallResult.Failure(
                     "Небезопасный путь в архиве: $fileName",
                     permanent = true
@@ -120,9 +116,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                     // (контрольный аудит, п.5: без 5 перекачек),
                     // осколки распаковки extract* уже убраны.
                     Timber.e(e, "Место на диске закончилось при распаковке: $fileName")
-                    if (!archiveFile.delete()) {
-                        Timber.w("Не удалось удалить архив после ENOSPC: ${archiveFile.name}")
-                    }
+                    discardArchive(archiveFile, "ENOSPC")
                     return@run InstallResult.Failure(
                         "Недостаточно места на диске при распаковке: $fileName",
                         permanent = true
@@ -150,9 +144,7 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         }
         is DownloadOutcome.NetworkError ->
             InstallResult.Failure("Не удалось скачать архив: $fileName")
-        is DownloadOutcome.Mismatch -> outcome.toInstallFailure()
-        is DownloadOutcome.InsufficientStorage -> outcome.toInstallFailure()
-        is DownloadOutcome.FileError -> outcome.toInstallFailure()
+        else -> outcome.installFailureOrNull()
     }
 
     /**
@@ -171,9 +163,17 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         is DownloadOutcome.Success -> null
         is DownloadOutcome.NetworkError ->
             InstallResult.Failure("Не удалось скачать: $fileName")
-        is DownloadOutcome.Mismatch -> outcome.toInstallFailure()
-        is DownloadOutcome.InsufficientStorage -> outcome.toInstallFailure()
-        is DownloadOutcome.FileError -> outcome.toInstallFailure()
+        else -> outcome.installFailureOrNull()
+    }
+
+    /**
+     * Удалить скачанный архив после отмены/сбоя распаковки с логом при
+     * отказе ([reason] — для различения случаев в логи).
+     */
+    private fun discardArchive(archiveFile: File, reason: String) {
+        if (!archiveFile.delete()) {
+            Timber.w("Не удалось удалить архив после $reason: ${archiveFile.name}")
+        }
     }
 
     private suspend fun extractArchive(archiveFile: File, destDir: File, fileName: String): Boolean {
@@ -221,20 +221,15 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
         return try {
             walk(createdFiles)
             true
-        } catch (e: CancellationException) {
-            // Отмена воркера: убираем полу-распакованные файлы и всплываем выше.
-            discardPartial(createdFiles)
-            throw e
-        } catch (e: SecurityException) {
-            // zip-slip тоже чистит осколки и всплывает — install() переведёт
-            // его в permanent-отказ.
-            discardPartial(createdFiles)
-            throw e
         } catch (e: Exception) {
+            // Отмена воркера и zip-slip (SecurityException) — единое поведение:
+            // убираем полу-распакованные файлы и всплываем выше, install()
+            // переведёт zip-slip в permanent-отказ.
+            discardPartial(createdFiles)
+            if (e is CancellationException || e is SecurityException) throw e
             Timber.e(e, "Ошибка распаковки $label: ${archiveFile.name}")
             // Обычный сбой распаковки без очистки оставил бы полу-распакованные
             // файлы, которые смешиваются со следующим распакованным деревом.
-            discardPartial(createdFiles)
             // ENOSPC — различимый фатальный сбой: всплываем выше, install()
             // переведёт в permanent-отказ (контрольный аудит, п.5).
             if (isOutOfSpaceError(e)) throw e

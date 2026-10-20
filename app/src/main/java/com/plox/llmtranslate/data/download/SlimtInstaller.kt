@@ -53,20 +53,9 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
                 expectedSha256 = hashes[index],
                 onProgress = { p -> onProgress(scaleFileProgress(index, urls.size, p)) }
             )
-            when (outcome) {
-                is DownloadOutcome.Success -> Unit
-                is DownloadOutcome.NetworkError ->
-                    return InstallResult.Failure(outcome.message)
-
-                is DownloadOutcome.Mismatch ->
-                    return outcome.toInstallFailure()
-
-                is DownloadOutcome.InsufficientStorage ->
-                    return outcome.toInstallFailure()
-
-                is DownloadOutcome.FileError ->
-                    return outcome.toInstallFailure()
-            }
+            // Любой исход кроме Success — терминальная ошибка установки
+            // (общий маппинг installFailureOrNull).
+            outcome.installFailureOrNull()?.let { return it }
             val downloaded = File(modelDir, archiveName)
             // Суффикс — без учёта регистра (классификация ArchiveFormats.
             // isCompressedArtifact тоже регистронезависима, ревью, п.3);

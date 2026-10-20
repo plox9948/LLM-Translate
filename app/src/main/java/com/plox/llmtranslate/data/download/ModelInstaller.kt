@@ -78,3 +78,18 @@ internal fun DownloadOutcome.InsufficientStorage.toInstallFailure(): InstallResu
  */
 internal fun DownloadOutcome.FileError.toInstallFailure(): InstallResult.Failure =
     InstallResult.Failure(message, permanent = true)
+
+/**
+ * Общий перевод результата скачивания в терминальную ошибку установки:
+ * [DownloadOutcome.Success] — null (ошибки нет); сетевая ошибка — её
+ * сообщение с обычным повтором; mismatch/ENOSPC/rename — маппинги выше
+ * ([toInstallFailure]). Инсталляторы с собственным текстом сетевой ошибки
+ * различают её ветку до вызова.
+ */
+internal fun DownloadOutcome.installFailureOrNull(): InstallResult.Failure? = when (this) {
+    is DownloadOutcome.Success -> null
+    is DownloadOutcome.NetworkError -> InstallResult.Failure(message)
+    is DownloadOutcome.Mismatch -> toInstallFailure()
+    is DownloadOutcome.InsufficientStorage -> toInstallFailure()
+    is DownloadOutcome.FileError -> toInstallFailure()
+}

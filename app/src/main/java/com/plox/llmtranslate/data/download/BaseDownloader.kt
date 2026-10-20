@@ -458,13 +458,9 @@ abstract class BaseDownloader {
                 // Прогресс по всем файлам: вес каждого файла одинаков.
                 onProgress(scaleFileProgress(index, urls.size, fileProgress))
             }
-            when (fileOutcome) {
-                is DownloadOutcome.Success -> Unit
-                is DownloadOutcome.NetworkError -> return fileOutcome
-                is DownloadOutcome.Mismatch -> return fileOutcome
-                is DownloadOutcome.InsufficientStorage -> return fileOutcome
-                is DownloadOutcome.FileError -> return fileOutcome
-            }
+            // Любой исход кроме Success терминален для пачки —
+            // возвращается вызывающему без дальнейших файлов.
+            if (fileOutcome !is DownloadOutcome.Success) return fileOutcome
         }
         onProgress(100)
         return DownloadOutcome.Success(modelDir)

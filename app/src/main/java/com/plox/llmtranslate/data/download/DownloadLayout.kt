@@ -19,10 +19,6 @@ object DownloadLayout {
     /** Файл-архив (.tar.bz2/.tar.gz/.zip) — единственный, который распаковывает ArchiveInstaller. */
     fun isArchive(fileName: String): Boolean = ArchiveFormats.isArchive(fileName)
 
-    /** Сжатый gzip-артефакт (.gz — slimt-пачки с CDN), gunzip-ится при установке. */
-    fun isCompressedArtifact(fileName: String): Boolean =
-        ArchiveFormats.isCompressedArtifact(fileName)
-
     /**
      * Санитизированное имя целевого файла по URL (ревью, п.15): basename без
      * query/fragment; пустое, «.», «..» или имя после очистки — детерминированное
@@ -170,6 +166,19 @@ object DownloadLayout {
     }
 
     /**
+     * Удалить в каталоге [dir] часть докачки `<name>.part` и её метаданные
+     * `<name>.part.meta` (целые целевые файлы не касаются). Общий для очисток
+     * [deletePendingParts] и [deleteOrphanedFiles].
+     */
+    private fun deletePartVariants(dir: File, name: String) {
+        listOf(File(dir, "$name.part"), File(dir, "$name.part.meta")).forEach { part ->
+            if (part.isFile && !part.delete()) {
+                Timber.w("Не удалось удалить часть докачки ${part.name}")
+            }
+        }
+    }
+
+    /**
      * Удалить только части докачки `.part` и метаданные `.part.meta` по
      * раскладке [fileDir] (обе схемы имён корневого каталога) — целые целевые
      * файлы и каталог модели не трогаются: вызывается при импорте той же id,
@@ -189,11 +198,7 @@ object DownloadLayout {
             val names = if (dir == modelDir) listOf(fileName)
             else rootNameCandidates(modelId, url, index)
             for (name in names) {
-                listOf(File(dir, "$name.part"), File(dir, "$name.part.meta")).forEach { part ->
-                    if (part.isFile && !part.delete()) {
-                        Timber.w("Не удалось удалить часть докачки ${part.name}")
-                    }
-                }
+                deletePartVariants(dir, name)
             }
         }
     }
@@ -236,11 +241,7 @@ object DownloadLayout {
             // осиротевший целый целевой файл — одиночный ONNX или архив до
             // распаковки (для не READY-модели это остаток её же загрузки).
             for (name in rootNameCandidates(modelId, url, index)) {
-                listOf(File(dir, "$name.part"), File(dir, "$name.part.meta")).forEach { part ->
-                    if (part.isFile && !part.delete()) {
-                        Timber.w("Не удалось удалить осиротевший ${part.name}")
-                    }
-                }
+                deletePartVariants(dir, name)
                 val doneFile = File(dir, name)
                 if (doneFile.isFile && !doneFile.delete()) {
                     Timber.w("Не удалось удалить осиротевший ${doneFile.name}")

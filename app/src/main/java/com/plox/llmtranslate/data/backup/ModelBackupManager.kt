@@ -593,27 +593,20 @@ class ModelBackupManager @Inject constructor(
             // models/ не касаемся (issue #83, п.5). ---
             var manifest: BackupManifest? = null
             var settings: BackupSettings? = null
-            val metaInput = context.contentResolver.openInputStream(sourceUri)
-                ?: return ImportResult(0, 0, false, "Не удалось открыть архив")
-            metaInput.use { ins ->
-                ZipInputStream(ins.buffered()).use { zip ->
-                    var entry = zip.nextEntry
-                    while (entry != null) {
-                        when {
-                            entry.isDirectory -> Unit
-                            entry.name == MANIFEST_NAME ->
-                                manifest = json.decodeFromString(
-                                    BackupManifest.serializer(), readEntry(zip)
-                                )
-                            entry.name == SETTINGS_NAME ->
-                                settings = json.decodeFromString(
-                                    BackupSettings.serializer(), readEntry(zip)
-                                )
-                        }
-                        zip.closeEntry()
-                        entry = zip.nextEntry
+            if (!forEachZipEntry(sourceUri) { zip, entry ->
+                    when {
+                        entry.isDirectory -> Unit
+                        entry.name == MANIFEST_NAME ->
+                            manifest = json.decodeFromString(
+                                BackupManifest.serializer(), readEntry(zip)
+                            )
+                        entry.name == SETTINGS_NAME ->
+                            settings = json.decodeFromString(
+                                BackupSettings.serializer(), readEntry(zip)
+                            )
                     }
-                }
+                }) {
+                return ImportResult(0, 0, false, "Не удалось открыть архив")
             }
 
             val manifestData = manifest
@@ -660,30 +653,24 @@ class ModelBackupManager @Inject constructor(
                 )
             }
 
-            // --- Проход 2: только файлы моделей. ---
-            val filesInput = context.contentResolver.openInputStream(sourceUri)
-                ?: return ImportResult(0, 0, false, "Не удалось повторно открыть архив для файлов моделей")
-            filesInput.use { ins ->
-                ZipInputStream(ins.buffered()).use { zip ->
-                    var entry = zip.nextEntry
-                    while (entry != null) {
-                        val name = entry.name
-                        if (!entry.isDirectory && name.startsWith(MODELS_PREFIX)) {
-                            // Сохраняем файл во временный каталог.
-                            val outFile = File(tempDir, name)
-                            // Защита от zip-slip: файл не должен выходить
-                            // за пределы временного каталога.
-                            if (!isFileInsideDir(tempDir, outFile)) {
-                                Timber.w("ZIP-запись вне каталога, пропущена: $name")
-                            } else {
-                                outFile.parentFile?.mkdirs()
-                                outFile.outputStream().use { zip.copyTo(it) }
-                            }
+            // --- Проход 2: только файлы моделей (повторное открытие Uri —
+            // SAF это разрешает). ---
+            if (!forEachZipEntry(sourceUri) { zip, entry ->
+                    val name = entry.name
+                    if (!entry.isDirectory && name.startsWith(MODELS_PREFIX)) {
+                        // Сохраняем файл во временный каталог.
+                        val outFile = File(tempDir, name)
+                        // Защита от zip-slip: файл не должен выходить
+                        // за пределы временного каталога.
+                        if (!isFileInsideDir(tempDir, outFile)) {
+                            Timber.w("ZIP-запись вне каталога, пропущена: $name")
+                        } else {
+                            outFile.parentFile?.mkdirs()
+                            outFile.outputStream().use { zip.copyTo(it) }
                         }
-                        zip.closeEntry()
-                        entry = zip.nextEntry
                     }
-                }
+                }) {
+                return ImportResult(0, 0, false, "Не удалось повторно открыть архив для файлов моделей")
             }
 
             // Создаём записи моделей.
@@ -1172,6 +1159,31 @@ class ModelBackupManager @Inject constructor(
             val relative = file.relativeTo(dir).path
             writeFileToZip(zip, file, "$prefix/$relative")
         }
+    }
+
+    /**
+     * Открыть архив по [sourceUri] и обойти все его записи: поток и ZIP-читатель
+     * закрываются здесь, каждая запись — [onEntry] — после обработки закрыть
+     * через closeEntry. Используется всеми проходами двухпроходного импорта
+     * (Uri открывается заново на каждый проход).
+     * @return false, если потоковый вход архива не открылся.
+     */
+    private fun forEachZipEntry(
+        sourceUri: Uri,
+        onEntry: (zip: ZipInputStream, entry: ZipEntry) -> Unit
+    ): Boolean {
+        val input = context.contentResolver.openInputStream(sourceUri) ?: return false
+        input.use { ins ->
+            ZipInputStream(ins.buffered()).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    onEntry(zip, entry)
+                    zip.closeEntry()
+                    entry = zip.nextEntry
+                }
+            }
+        }
+        return true
     }
 
     /**
