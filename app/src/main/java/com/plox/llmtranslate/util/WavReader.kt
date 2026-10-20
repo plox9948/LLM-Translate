@@ -113,13 +113,7 @@ object WavReader {
                 bytes[pos + 3].toInt() == 'a'.code
             ) {
                 if (fmtSeen) {
-                    if (!fmtMatches) {
-                        Timber.w(
-                            "WAV: fmt-чанк не соответствует ожидаемому формату " +
-                                "(16-bit mono %d Гц PCM). Фактически: ${fmtHint(bytes, fmtBodyPos)}",
-                            EXPECTED_SAMPLE_RATE
-                        )
-                    }
+                    if (!fmtMatches) warnFmtMismatch(bytes, fmtBodyPos)
                     return (pos + 8) to readIntLE(bytes, pos + 4)
                 }
                 if (pendingData == null) {
@@ -136,13 +130,7 @@ object WavReader {
                 fmtMatches = fmtMatchesExpected(bytes, fmtBodyPos)
                 // fmt после data — предупреждение по факту сверки, ответ по data.
                 pendingData?.let { (start, size) ->
-                    if (!fmtMatches) {
-                        Timber.w(
-                            "WAV: fmt-чанк не соответствует ожидаемому формату " +
-                                "(16-bit mono %d Гц PCM). Фактически: ${fmtHint(bytes, fmtBodyPos)}",
-                            EXPECTED_SAMPLE_RATE
-                        )
-                    }
+                    if (!fmtMatches) warnFmtMismatch(bytes, fmtBodyPos)
                     return start to size
                 }
             }
@@ -184,13 +172,21 @@ object WavReader {
         if (!fmtSeen) {
             Timber.w("WAV: fmt-чанк отсутствует (ожидаем 16-bit mono %d Гц)", EXPECTED_SAMPLE_RATE)
         } else if (!fmtMatches) {
-            Timber.w(
-                "WAV: fmt-чанк не соответствует ожидаемому формату " +
-                    "(16-bit mono %d Гц PCM). Фактически: ${fmtHint(bytes, fmtBodyPos)}",
-                EXPECTED_SAMPLE_RATE
-            )
+            warnFmtMismatch(bytes, fmtBodyPos)
         }
         return pendingData
+    }
+
+    /**
+     * Предупреждение о несоответствии fmt-чанка ожидаемому формату — общий
+     * текст для всех точек обхода (data до fmt, fmt после data, полный обход).
+     */
+    private fun warnFmtMismatch(bytes: ByteArray, fmtBodyPos: Int) {
+        Timber.w(
+            "WAV: fmt-чанк не соответствует ожидаемому формату " +
+                "(16-bit mono %d Гц PCM). Фактически: ${fmtHint(bytes, fmtBodyPos)}",
+            EXPECTED_SAMPLE_RATE
+        )
     }
 
     /**
