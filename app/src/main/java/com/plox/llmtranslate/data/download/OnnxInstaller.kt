@@ -42,12 +42,13 @@ class OnnxInstaller : ModelInstaller, BaseDownloader() {
         )
     }
 
-    /** Общий перевод результата скачивания в результат установки. */
-    private fun toInstallResult(outcome: DownloadOutcome): InstallResult = when (outcome) {
-        is DownloadOutcome.Success -> InstallResult.Success(outcome.file.absolutePath)
-        is DownloadOutcome.NetworkError -> InstallResult.Failure(outcome.message)
-        is DownloadOutcome.Mismatch -> outcome.toInstallFailure()
-        is DownloadOutcome.InsufficientStorage -> outcome.toInstallFailure()
-        is DownloadOutcome.FileError -> outcome.toInstallFailure()
-    }
+    /**
+     * Общий перевод результата скачивания в результат установки: ошибка —
+     * единый маппинг [installFailureOrNull] (тот же, что у остальных
+     * инсталляторов), успех — путь файла/каталога из [DownloadOutcome.Success]
+     * (null маппинг возвращает только для Success, каст безопасен).
+     */
+    private fun toInstallResult(outcome: DownloadOutcome): InstallResult =
+        outcome.installFailureOrNull()
+            ?: InstallResult.Success((outcome as DownloadOutcome.Success).file.absolutePath)
 }

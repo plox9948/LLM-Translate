@@ -250,4 +250,40 @@ class EngineModelCacheTest {
         )
         assertEquals(6, cache.currentBytes)
     }
+
+    @Test
+    fun `negative limit evicts all unprotected but admits protected`() {
+        // Ревью аудита (итерация 2): reserveBytes больше всего бюджета —
+        // лимит уходит в минус, вытесняются ВСЕ незащищённые пучки (логируется),
+        // семантика «всегда пустить хотя бы один пучок» сохраняется.
+        val cache = EngineModelCache<String>(
+            capacity = 5, byteBudget = 10, sizeOf = { it.length.toLong() }
+        )
+        cache.put("a", "AAAAAA")
+        cache.put("b", "BBBBBB")
+
+        val evicted = cache.evictOverByteBudget(
+            protect = setOf("incoming"), reserveBytes = 30L
+        )
+
+        assertEquals(listOf("a" to "AAAAAA", "b" to "BBBBBB"), evicted)
+        assertEquals(0, cache.currentBytes)
+        assertEquals(emptyList<String>(), cache.all().map { it.first })
+    }
+
+    @Test
+    fun `protected oversized bundle keeps cache over budget with negative limit`() {
+        // Единственный защищённый пучок больше бюджета с учётом резерва:
+        // выгружать нечего, кэш остаётся сверх бюджета навсегда (допустимо,
+        // превышение логируется) и продолжает работать.
+        val cache = EngineModelCache<String>(
+            capacity = 3, byteBudget = 10, sizeOf = { it.length.toLong() }
+        )
+        cache.put("big", "BBBBBBBBBBBB")
+
+        assertTrue(
+            cache.evictOverByteBudget(protect = setOf("big"), reserveBytes = 25L).isEmpty()
+        )
+        assertEquals(12, cache.currentBytes)
+    }
 }

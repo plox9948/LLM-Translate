@@ -53,5 +53,12 @@ data class ModelImportMeta(
     val license: String = ImportedModelDefaults.LICENSE,
     val minAndroidSdk: Int = ImportedModelDefaults.MIN_ANDROID_SDK,
     val recommendedRamMb: Int = 0,
+    /**
+     * Протокольное наследие (ревью): сериализуется в `model_meta.json`
+     * собственным экспортом, но при импорте ([modelFromMeta]) не читается —
+     * встроенность модели определяется каталогом, а не ZIP. Поле сохранено
+     * для совместимости формата ранних экспортов; новые потребители
+     * этому полю не требуются.
+     */
     val isBuiltin: Boolean = false
 )

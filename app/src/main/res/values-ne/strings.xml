@@ -58,6 +58,7 @@
     <string name="translate_stt_model_missing">उचित बोली पहिचान मोडेल छैन। «मोडेलहरू» स्क्रीनबाट डाउनलोड गर्नुहोस्।</string>
     <string name="translate_record_start_failed">माइक्रोफोनबाट रिकर्डिङ सुरु गर्न सकिएन</string>
     <string name="translate_record_empty">रिकर्डिङ खाली छ वा असफल भयो</string>
+    <string name="translate_download_start_failed">मोडेल डाउनलोड सुरु गर्न सकिएन</string>
 
     <!-- Онбординг первого запуска -->
     <string name="onboarding_title">के अनुवाद गर्ने?</string>
@@ -107,6 +108,8 @@
     <string name="models_required_for">%1$s का लागि आवश्यक</string>
     <string name="models_export">निर्यात</string>
     <string name="models_delete">मेटाउनुहोस्</string>
+    <string name="models_delete_confirm_title">मोडेल मेटाउने?</string>
+    <string name="models_delete_confirm_text">मोडेल «%1$s» र त्यसका फाइलहरू स्थायी रूपमा मेटिनेछन्।</string>
     <string name="models_category_translation">अनुवाद (LLM)</string>
     <string name="models_category_stt">वाणी पहिचान (STT)</string>
     <string name="models_category_tts">वाणी संश्लेषण (TTS)</string>
@@ -119,8 +122,10 @@
     <string name="models_backup_export_failed">ब्याकअप निर्यात असफल भयो</string>
     <string name="models_backup_import_in_progress">आयात हुँदैछ…</string>
     <string name="models_backup_import_error">त्रुटि: %1$s</string>
+    <string name="models_backup_import_failed">ब्याकअप पुनर्स्थापना असफल भयो</string>
     <string name="models_backup_import_done">आयात: %1$d, छोडिएको: %2$d</string>
     <string name="models_backup_import_done_settings">आयात: %1$d, छोडिएको: %2$d, सेटिङहरू पुनर्स्थापित</string>
+    <string name="models_backup_import_download_interrupted">सक्रिय डाउनलोडहरू आयातद्वारा रोकिए र प्रतिस्थापन भएनन् — पछि डाउनलोड पुनःप्रयास गर्नुहोस्</string>
     <string name="models_status_error">डाउनलोड त्रुटि</string>
     <string name="models_status_busy">…</string>
     <string name="models_retry_download">पुनःप्रयास गर्नुहोस्</string>

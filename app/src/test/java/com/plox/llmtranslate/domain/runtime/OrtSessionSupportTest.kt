@@ -12,8 +12,9 @@ import org.junit.Test
 /**
  * Юнит-тесты общего ORT-каркаса загрузки/разгрузки (issue #83) без
  * нативного ONNX: поштучное закрытие сессий фейковыми [AutoCloseable],
- * перехват ошибок нативного слоя ([Error]) в [guardModelLoad] и fail-fast
- * отсутствующих past-входов в [collectPastInputs].
+ * перехват ошибок нативного слоя ([Error]) в [guardModelLoad], fail-fast
+ * отсутствующих past-входов в [collectPastInputs] и верхняя оценка резерва
+ * байтового бюджета [reserveIncomingBytes] (ревью аудита, итерация 2).
  */
 class OrtSessionSupportTest {
 
@@ -130,5 +131,31 @@ class OrtSessionSupportTest {
                 e.message!!.contains("present.1.decoder.key")
             )
         }
+    }
+
+    // ---- п.4: верхняя оценка резерва байтового бюджета ----
+
+    @Test
+    fun `reserveIncomingBytes applies headroom when ram not declared`() {
+        // ramRequiredMb не задан (импортируемые пучки): запас 1.4x на
+        // arena/активации ORT вместо одних файлов графов.
+        assertEquals(350L, reserveIncomingBytes(graphBytes = 250L, ramRequiredMb = 0))
+        assertEquals(1400L, reserveIncomingBytes(graphBytes = 1000L, ramRequiredMb = 0))
+        // extraBytes (файлы tokenizer.json) добавляются поверх большей оценки:
+        // пик readText+DOM входит в резерв загрузки пучка.
+        assertEquals(400L, reserveIncomingBytes(250L, 0, extraBytes = 50L))
+    }
+
+    @Test
+    fun `reserveIncomingBytes prefers declared ramRequiredMb when larger`() {
+        val mb = 1024L * 1024L
+        // Заявленный каталогом профиль ОЗУ больше оценки файлов — берётся он.
+        assertEquals(300 * mb, reserveIncomingBytes(graphBytes = 100L, ramRequiredMb = 300))
+        // Заявленный меньше оценки с запасом — побеждает консервативная оценка.
+        assertEquals(2_800_000L, reserveIncomingBytes(graphBytes = 2_000_000L, ramRequiredMb = 1))
+        assertEquals(
+            300 * mb + 64L,
+            reserveIncomingBytes(graphBytes = 100L, ramRequiredMb = 300, extraBytes = 64L)
+        )
     }
 }

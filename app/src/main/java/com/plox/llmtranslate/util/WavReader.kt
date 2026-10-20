@@ -2,6 +2,7 @@ package com.plox.llmtranslate.util
 
 import timber.log.Timber
 import java.io.File
+import java.io.IOException
 
 /**
  * Чтение PCM из WAV-файла (16-bit, mono).
@@ -20,9 +21,11 @@ object WavReader {
     /**
      * Прочитать PCM из WAV-файла как FloatArray (16-bit → float /32768).
      * @return массив сэмплов в диапазоне [-1.0, 1.0] или пустой массив при
-     *         ошибке (битый WAV, файл больше [MAX_WAV_BYTES]); некорректный
-     *         размер data-чанка (0, отрицательный, за EOF) — salvage по
-     *         фактическому остатку файла (ревью #83).
+     *         ошибке (битый WAV, файл больше [MAX_WAV_BYTES], файл исчез/
+     *         недоступен — IOException подавляется с логом, контракт пустого
+     *         массива re-review); некорректный размер data-чанка (0,
+     *         отрицательный, за EOF) — salvage по фактическому остатку файла
+     *         (ревью #83).
      */
     fun readPcmAsFloat(file: File): FloatArray {
         val fileBytes = file.length()
@@ -30,7 +33,15 @@ object WavReader {
             Timber.e("WAV слишком большой: $fileBytes байт (макс. $MAX_WAV_BYTES): ${file.name}")
             return FloatArray(0)
         }
-        val bytes = file.readBytes()
+        // Контракт — пустой массив при ошибке: исчезнувший между проверкой и
+        // чтением файл (чистка кэша, параллельное удаление) иначе бросал
+        // IOException наружу (re-review).
+        val bytes = try {
+            file.readBytes()
+        } catch (e: IOException) {
+            Timber.e(e, "Не удалось прочитать WAV: ${file.name}")
+            return FloatArray(0)
+        }
         val (start, declaredSize) = locateDataChunk(bytes) ?: return FloatArray(0)
         if (start >= bytes.size) return FloatArray(0)
         var size = declaredSize

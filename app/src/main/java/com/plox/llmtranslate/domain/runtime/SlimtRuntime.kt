@@ -52,6 +52,14 @@ class SlimtRuntime @Inject constructor(
          */
         private const val CANCEL_DRAIN_TIMEOUT_MS = 10_000L
 
+        /**
+         * Потолок detached-очереди освобождений (замечание аудита): пучок
+         * slimt стоит сотни МБ, и при навсегда зависшем nativeDestroy очередь
+         * росла бы до OOM. Переполнение — явная потеря пучков с Timber.e
+         * вместо бесконечного роста.
+         */
+        private const val DETACHED_QUEUE_MAX = 3
+
         /** Имена файлов пачки с языковой меткой: model./lex.<nn>./vocab-. */
         private val MODEL_NAME_RE = Regex("^model\\.([a-z]{2,6})\\.")
         private val SHORTLIST_NAME_RE = Regex("^lex\\.(?:[0-9]+\\.)*([a-z]{2,6})\\.s2t\\.bin$")
@@ -63,9 +71,14 @@ class SlimtRuntime @Inject constructor(
      * Пучки движка хранятся в LRU-кэше [engineCache].
      * Языковая пара модели — в [LoadedModelInfo.languages]; используется
      * для проверки направления в [translate] (ревью #79).
+     * [handle] зануляется владельцем после успешного nativeDestroy
+     * (re-review аудита): нативная cookie-проверка в checked_session читает
+     * cookie из уже освобождённой памяти (read-after-free — лишь дешёвая
+     * эвристика), занулённый handle отбивается на нулевой ветке без
+     * разыменования.
      */
     private class ModelBundle(
-        val handle: Long,
+        var handle: Long,
         val info: LoadedModelInfo
     )
 
@@ -109,6 +122,13 @@ class SlimtRuntime @Inject constructor(
      * При настройке keep другие направления остаются в LRU-кэше движка,
      * при unload — движок держит ТОЛЬКО текущую модель: чужие пучки
      * выгружаются и перед загрузкой, и при попадании в кэш (прежнее поведение).
+     *
+     * Любой сбой загрузки ([SlimtNative.nativeCreate] и всё внутри
+     * [guardModelLoad]) мапится в [RuntimeError.LoadFailed]: каркас ловит и
+     * [Exception], и [Error] — включая ExceptionInInitializerError,
+     * NoClassDefFoundError и UnsatisfiedLinkError из init-загрузки
+     * System.loadLibrary в SlimtNative при битом ABI (ревью аудита), —
+     * процесс не роняется.
      */
     override suspend fun ensureLoaded(modelInfo: InstalledModel): RuntimeError? =
         withContext(Dispatchers.IO) {
@@ -255,55 +275,76 @@ class SlimtRuntime @Inject constructor(
                     outcome
                 } catch (e: CancellationException) {
                     withContext(NonCancellable) {
-                        SlimtNative.nativeCancel(handle)
-                        // С-drain до терминального статуса: воркер slimt
-                        // прерывает пакет по флагу отмены; иначе следующий
-                        // nativeStart упрётся в «already running». Ограничен
-                        // таймаутом: зависший нативный воркер не должен
-                        // удерживать мьютекс движка вечно (ревью #79).
-                        val deadline = System.currentTimeMillis() + CANCEL_DRAIN_TIMEOUT_MS
-                        var drainTimedOut = false
-                        while (SlimtNative.nativePoll(handle) == STATUS_PENDING) {
-                            if (System.currentTimeMillis() >= deadline) {
-                                drainTimedOut = true
-                                Timber.w(
-                                    "slimt: отмена не завершилась за ${CANCEL_DRAIN_TIMEOUT_MS} мс — " +
-                                        "дренаж прерван, следующий nativeStart может увидеть «already running»"
-                                )
-                                break
-                            }
-                            delay(POLL_INTERVAL_MS)
-                        }
-                        if (drainTimedOut) {
-                            // Прерванный дренаж оставляет пучок «stale-running»:
-                            // каждый последующий nativeStart давал бы ошибку, и
-                            // движок оставался бы сломанным до общей разгрузки
-                            // (ревью). Выгружаем пучки из кэша, НО nativeDestroy
-                            // джойнит зависший воркер — освобождение под
-                            // sessionMutex каскадно блокировало translate/mgr
-                            // (цепочка importMutex→runtimeMutex, ревью повт.
-                            // аудита). Поэтому под мьютексом пучки только
-                            // ИЗЫМАЮТСЯ (ensureLoaded их больше не переиспользует,
-                            // повторные release()/releaseModel — no-op), а сам
-                            // nativeDestroy уходит fire-and-forget в собственный
-                            // scope движка, где и дожидается зависший воркер.
-                            Timber.w(
-                                "slimt: пучок после прерванного дренажа изъят из кэша — " +
-                                    "освобождение вне мьютекса (fire-and-forget)"
-                            )
-                            scheduleDetachedRelease(engineCache.detachAllUnlocked())
-                        }
+                        // Отмена: nativeCancel + ограниченный дренаж до
+                        // терминального статуса (общий путь со сбоем JNI —
+                        // см. [drainNativeWorkerUnlocked]).
+                        drainNativeWorkerUnlocked(handle)
                     }
                     Timber.d("slimt: перевод отменён пользователем")
                     throw e
                 } catch (e: Exception) {
                     Timber.e(e, "slimt: ошибка запуска перевода")
+                    // Замечание аудита: JNI-сбой (nativeStart/nativePoll) после
+                    // успешного запуска оставляет нативный воркер running — без
+                    // того же ограниченного дренажа, что в CancellationException-
+                    // ветке, следующий nativeStart уперся бы в «already running»
+                    // и движок остался бы сломан до releaseModel. nativePoll
+                    // на незапущенной сессии возвращает STATUS_ERROR (не
+                    // PENDING, slimt_jni.cpp: !pending → 2), поэтому дренаж
+                    // несостоявшегося запуска завершается сразу. Сбой самого
+                    // дренажа только логируем: наружу — исходный сбой инференса.
+                    try {
+                        drainNativeWorkerUnlocked(handle)
+                    } catch (d: Exception) {
+                        Timber.e(d, "slimt: дренаж нативного воркера после сбоя не удался")
+                    }
                     Result.failure(
                         RuntimeError.InferenceFailed("slimt", e.message ?: "Ошибка инференса")
                     )
                 }
             }
         }
+
+    /**
+     * Отменить запущенный нативный воркер и дождаться терминального статуса
+     * после сбоя — отмены корутины (CancellationException) или исключения
+     * JNI-слоя (Exception): без дренажа воркер остаётся running, следующий
+     * nativeStart упрётся в «already running», движок сломан до releaseModel.
+     * nativeCancel поднимает флаг отмены — воркер slimt прерывает пакет на
+     * шагах декода; nativePoll на незапущенной сессии возвращает STATUS_ERROR
+     * (не PENDING), поэтому дренаж несостоявшегося запуска не ждёт вовсе.
+     *
+     * Дренаж ограничен [CANCEL_DRAIN_TIMEOUT_MS] (ревью #79): зависший
+     * нативный воркер не должен удерживать мьютекс движка вечно. При
+     * превышении лимита пучки под мьютексом только ИЗЫМАЮТСЯ из кэша
+     * ([EngineCacheScaffold.detachAllUnlocked] — ensureLoaded их не
+     * переиспользует, повторные release()/releaseModel — no-op), а
+     * nativeDestroy джойнит зависший воркер, поэтому уходит fire-and-forget
+     * в detached-очередь ([scheduleDetachedRelease]) вне мьютекса
+     * (цепочка importMutex→sessionMutex, ревью повт. аудита).
+     *
+     * Вызывать только под [engineCache].sessionMutex.
+     */
+    private suspend fun drainNativeWorkerUnlocked(handle: Long) {
+        SlimtNative.nativeCancel(handle)
+        val deadline = System.currentTimeMillis() + CANCEL_DRAIN_TIMEOUT_MS
+        while (SlimtNative.nativePoll(handle) == STATUS_PENDING) {
+            if (System.currentTimeMillis() >= deadline) {
+                Timber.w(
+                    "slimt: нативный воркер не достиг терминального статуса за " +
+                        "${CANCEL_DRAIN_TIMEOUT_MS} мс — дренаж прерван, следующий " +
+                        "nativeStart может увидеть «already running»"
+                )
+                Timber.w(
+                    "slimt: пучок после прерванного дренажа изъят из кэша — " +
+                        "освобождение вне мьютекса (fire-and-forget)"
+                )
+                scheduleDetachedRelease(engineCache.detachAllUnlocked())
+                break
+            }
+            delay(POLL_INTERVAL_MS)
+        }
+    }
 
     /**
      * Разгрузить ВСЕ удерживаемые движком модели. Деструктор slimt::Async
@@ -320,12 +361,24 @@ class SlimtRuntime @Inject constructor(
      * накапливало fire-and-forget корутины и потоки. теперь один воркер на
      * [detachedWorkerActive]; новые пучки до его завершения просто дожидаются
      * в очереди (память посчитать утечкой нельзя до конца процесса, но
-     * потоки не копятся).
+     * потоки не копятся). Потолок очереди — [DETACHED_QUEUE_MAX]: при
+     * зависшем nativeDestroy дренаж недостижим, сверх лимита пучки теряются
+     * с [Timber.e] (замечание аудита — рост очереди до OOM).
      */
     private val detachedQueue = ArrayDeque<ModelBundle>()
 
     /** Есть ли незавершённое отложенное освобождение (запуск воркера однократен). */
     private val detachedWorkerActive = AtomicBoolean(false)
+
+    /**
+     * Пометка недостижимого дренажа (переполнение [detachedQueue] при
+     * активном воркере): пока воркер не опустошит отложенные пучки
+     * (зависший nativeDestroy), новые пучки в очередь не накапливаются —
+     * освобождаются с явной ошибкой. Флаг снимается воркером в том же
+     * замке, где обнаруживается пустая очередь (нормальная постановка
+     * возобновляется).
+     */
+    private var detachedDrainStalled = false
 
     /**
      * Освободить пучки, изъятые из кэша вне общего мьютекса
@@ -337,13 +390,38 @@ class SlimtRuntime @Inject constructor(
      * withTimeoutOrNull. Повторный вызов, пока предыдущее освобождение
      * висит, новых потоков не поднимает: пучки кладутся в [detachedQueue]
      * и будут уничтожены тем же воркером по завершении текущего
-     * (ревью раунда 3). Уничтожение каждого handle ровно единожды: пучки
-     * изъяты из кэша, повторные release()/releaseModel на них не сработают
-     * (use-after-free исключён).
+     * (ревью раунда 3). Замечание аудита: очередь ограничена
+     * [DETACHED_QUEUE_MAX] — при переполнении (зависший nativeDestroy,
+     * дренаж недостижим) новые пучки не накапливаются до OOM, а теряются
+     * с [Timber.e] до опустошения отложенных тем же воркером
+     * ([detachedDrainStalled]). Уничтожение каждого handle ровно единожды:
+     * пучки изъяты из кэша, повторные release()/releaseModel на них не
+     * сработают (use-after-free исключён).
      */
     private fun scheduleDetachedRelease(detached: List<ModelBundle>) {
         if (detached.isEmpty()) return
-        synchronized(detachedQueue) { detachedQueue.addAll(detached) }
+        synchronized(detachedQueue) {
+            if (detachedDrainStalled) {
+                Timber.e(
+                    "slimt: дренаж отложенных освобождений недостижим " +
+                        "(очередь ${detachedQueue.size}/${DETACHED_QUEUE_MAX}, зависший nativeDestroy?) — " +
+                        "пучки потеряны без nativeDestroy"
+                )
+                return
+            }
+            val room = DETACHED_QUEUE_MAX - detachedQueue.size
+            if (detached.size <= room) {
+                detachedQueue.addAll(detached)
+            } else {
+                Timber.e(
+                    "slimt: очередь отложенных освобождений переполнена " +
+                        "(лимит $DETACHED_QUEUE_MAX) — потеряно ${detached.size - maxOf(room, 0)} " +
+                        "пучков без nativeDestroy, дренаж помечен недостижимым"
+                )
+                if (room > 0) detachedQueue.addAll(detached.take(room))
+                detachedDrainStalled = true
+            }
+        }
         if (!detachedWorkerActive.compareAndSet(false, true)) return
         releaseScope.launch(NonCancellable) {
             while (true) {
@@ -353,13 +431,28 @@ class SlimtRuntime @Inject constructor(
                     // очереди: конкурентный scheduleDetachedRelease либо
                     // застанет активного воркера (пучок дождётся этого
                     // цикла), либо добавит после сброса и сам поднимет
-                    // новый воркер.
-                    if (head == null) detachedWorkerActive.set(false)
+                    // новый воркер. Пустая очередь = дренаж достиг конца —
+                    // пометка недостижимости снимается, постановка
+                    // возобновляется.
+                    if (head == null) {
+                        detachedDrainStalled = false
+                        detachedWorkerActive.set(false)
+                    }
                     head
                 } ?: break
                 if (bundle.handle != 0L) {
                     try {
                         SlimtNative.nativeDestroy(bundle.handle)
+                        // Сессия уничтожена — handle зануляется ВЛАДЕЛЬЦЕМ
+                        // сразу после успешного destroy (re-review аудита):
+                        // любой поздний экспорт/повторный destroy по этому
+                        // пучку отбивается нулевой веткой checked_session без
+                        // разыменования освобождённой памяти; cookie-гейт в
+                        // C++ — только дешёвая эвристика поверх UB-чтения.
+                        // При исключении destroy handle не зануляется:
+                        // состояние сессии неизвестно, повторный проход
+                        // отложенного освобождения для пучка не делается.
+                        bundle.handle = 0L
                     } catch (e: Exception) {
                         Timber.e(e, "slimt: ошибка отложенного nativeDestroy")
                     }

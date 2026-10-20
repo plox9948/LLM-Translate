@@ -3,6 +3,8 @@ package com.plox.llmtranslate.data.backup
 import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.plox.llmtranslate.data.model.ModelRepository
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.model.InstalledModel
@@ -17,19 +19,25 @@ import io.mockk.coVerify
 import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.verify
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.OutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -44,6 +52,11 @@ import java.util.zip.ZipOutputStream
  *
  * Context/ContentResolver/Uri — mockk, файловые операции — на реальном FS
  * во временном каталогеJUnit TemporaryFolder.
+ *
+ * Ревью аудита, п.3: WorkManager не инициализирован на unit-test JVM и
+ * больше НЕ трактуется как «живой работы нет» (fail-closed), поэтому
+ * [WorkManager] мокается статически — пустой списокInfos = NOT_LIVE,
+ * подмена разрешена (как на устройстве с завершёнными загрузками).
  */
 class ModelBackupManagerRoundTripTest {
 
@@ -59,6 +72,7 @@ class ModelBackupManagerRoundTripTest {
     private val repository = mockk<ModelRepository>(relaxed = true)
     private val runtimeRouter = mockk<RuntimeRouter>(relaxed = true)
     private val preferences = mockk<ModelPreferences>(relaxed = true)
+    private val workManager = mockk<WorkManager>(relaxed = true)
     private val json = Json { ignoreUnknownKeys = true }
 
     @Before
@@ -73,12 +87,19 @@ class ModelBackupManagerRoundTripTest {
         every { contentResolver.openOutputStream(any()) } answers { FileOutputStream(zipFile) }
         every { contentResolver.openInputStream(any()) } answers { FileInputStream(zipFile) }
 
+        // WorkManager: ни одной живой unique-загрузки (терминальный снимок).
+        mockkStatic(WorkManager::class)
+        every { WorkManager.getInstance(any()) } returns workManager
+        val idleFuture =
+            mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
+        every { idleFuture.get(any(), any()) } returns emptyList()
+        every { workManager.getWorkInfosForUniqueWork(any()) } returns idleFuture
+
         // buildSettings читает СЫРЫЕ потоки (сбой = ошибка экспорта), не
-        // recover-обёрнутые значения.
+        // recover-обёрнутые значения; настройки ревью #53 — те же raw-потоки.
         every { preferences.rawTtsEngine } returns flowOf("system")
         every { preferences.rawUiLanguage } returns flowOf("system")
         every { preferences.rawTheme } returns flowOf("system")
-        // Настройки, добавленные в бэкап по ревью #53 — потоки для buildSettings.
         every { preferences.rawSttByLanguage } returns flowOf(mapOf("ru" to "s1"))
         every { preferences.rawTtsByLanguage } returns flowOf(mapOf("ru" to "system"))
         every { preferences.rawUnloadTimeoutMinutes } returns flowOf(5)
@@ -250,7 +271,10 @@ class ModelBackupManagerRoundTripTest {
         relativePath: String,
         sha256: String? = null,
         isBuiltin: Boolean = false,
-        sizeBytes: Int = 5,
+        // sizeBytes манифеста участвует в бюджете распаковки
+        // (backupExtractLimitBytes) — базовый запас покрывает тела файлов
+        // фикстур (ревью аудита, п.4).
+        sizeBytes: Int = 64,
         ramRequiredMb: Int = 100,
         urls: List<String> = emptyList(),
         sha256s: List<String?> = emptyList()
@@ -359,7 +383,7 @@ class ModelBackupManagerRoundTripTest {
             category = ModelCategory.STT,
             runtime = RuntimeType.SHERPA,
             relativePath = MODELS_PREFIX + "stt1.onnx",
-            sizeBytes = 4,
+            sizeBytes = 64,
             ramRequiredMb = 10,
             isBuiltin = true
         )
@@ -666,6 +690,198 @@ class ModelBackupManagerRoundTripTest {
             // а имя файла в корне моделей.
             assertEquals("sibling-bytes", File(modelsRoot, "seg.onnx").readText())
             assertTrue(!File(modelsRoot, "_x/seg.onnx").exists())
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Ревью аудита, п.1: CancellationException не глотается; при отмене
+    // экспорта целевой SAF-документ не удаляется.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `cancellation during export copy propagates and keeps target document`() {
+        coEvery { repository.observeAll() } returns flowOf(prepareModels())
+        mockkStatic(android.provider.DocumentsContract::class)
+        every { android.provider.DocumentsContract.deleteDocument(any(), any()) } returns true
+        // Открытие потока усекло документ; отмена — на первом write копи.
+        every { contentResolver.openOutputStream(any()) } answers {
+            object : OutputStream() {
+                override fun write(b: Int): Nothing = throw CancellationException("export cancelled")
+                override fun write(b: ByteArray, off: Int, len: Int): Nothing =
+                    throw CancellationException("export cancelled")
+            }
+        }
+
+        val outcome = runBlocking { runCatching { backupManager().exportToUri(mockk<Uri>()) } }
+        assertTrue(
+            "Отмена экспорта обязана пробрасываться, а не возвращать false",
+            outcome.exceptionOrNull() is CancellationException
+        )
+        verify(exactly = 0) {
+            android.provider.DocumentsContract.deleteDocument(any(), any())
+        }
+    }
+
+    @Test
+    fun `cancellation during import propagates instead of partial import result`() {
+        val entry = manifestEntry(
+            id = "cx",
+            category = ModelCategory.TRANSLATION,
+            runtime = RuntimeType.MARIAN_ONNX,
+            relativePath = MODELS_PREFIX + "cx.onnx"
+        )
+        writeZipWithModel(entry, "bytes")
+        every { contentResolver.openInputStream(any()) } throws CancellationException("import cancelled")
+
+        val outcome = runBlocking { runCatching { backupManager().importFromUri(mockk<Uri>()) } }
+        assertTrue(
+            "Отмена импорта обязана пробрасываться, а не превращаться в «частичный импорт»",
+            outcome.exceptionOrNull() is CancellationException
+        )
+    }
+
+    // -----------------------------------------------------------------
+    // Ревью аудита, п.2: обход/упаковка моделей в экспорте идут под общим
+    // ModelImportLock — при занятом локе экспорт отказывает без ожидания.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `export is refused while shared model lock is held`() {
+        coEvery { repository.observeAll() } returns flowOf(prepareModels())
+        runBlocking {
+            ModelImportLock.mutex.lock()
+            try {
+                assertTrue(
+                    "При занятом лока подмены экспорт обязан отказать без ожидания",
+                    !backupManager().exportToUri(mockk<Uri>())
+                )
+            } finally {
+                ModelImportLock.mutex.unlock()
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Ревью аудита, п.3: неинициализированный WorkManager — fail-closed
+    // (QUERY_FAILED), подмена файлов id пропускается.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `uninitialized WorkManager fails closed - swap skipped`() {
+        val entry = manifestEntry(
+            id = "wm1",
+            category = ModelCategory.TRANSLATION,
+            runtime = RuntimeType.MARIAN_ONNX,
+            relativePath = MODELS_PREFIX + "wm.onnx"
+        )
+        writeZipWithModel(entry, "bytes")
+        every { WorkManager.getInstance(any()) } throws
+            IllegalStateException("WorkManager is not initialized")
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNull(result.error)
+            assertEquals(0, result.importedCount)
+            assertEquals("Запись с неподтверждённым состоянием живости пропускается", 1, result.skippedCount)
+            assertTrue("Файл модели не должен появиться", !File(modelsRoot, "wm.onnx").exists())
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Ревью аудита, п.4: zip-bomb — лимиты чтения манифеста и объёма
+    // распаковки моделей.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `import fails when manifest entry exceeds read limit`() {
+        val pad = "\"" + "x".repeat((MANIFEST_ENTRY_READ_LIMIT_BYTES + 4096).toInt()) + "\""
+        ZipOutputStream(FileOutputStream(zipFile)).use { zip ->
+            zip.putNextEntry(ZipEntry(ModelBackupManager.MANIFEST_NAME))
+            zip.write(
+                ("""{"version":1,"exportedAt":0,"models":[],"pad":"""" + pad + "}")
+                    .toByteArray()
+            )
+            zip.closeEntry()
+        }
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNotNull("Манифест сверх лимита — явная ошибка «битого архива»", result.error)
+            assertTrue(result.error!!.contains("превышает лимит"))
+            assertEquals(0, result.importedCount)
+        }
+    }
+
+    @Test
+    fun `import aborts when extracted model bytes exceed budget`() {
+        // Манифест обещает крошечный размер, файл в архиве — в разы больше:
+        // суммарный счётчик распаковки обязан остановить импорт ошибкой.
+        val entry = manifestEntry(
+            id = "bomb1",
+            category = ModelCategory.TRANSLATION,
+            runtime = RuntimeType.MARIAN_ONNX,
+            relativePath = MODELS_PREFIX + "bomb.onnx",
+            sizeBytes = 8
+        )
+        writeZipWithModel(entry, "x".repeat(100_000))
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNotNull("Выход за бюджет распаковки — явная ошибка импорта", result.error)
+            assertTrue(result.error!!.contains("превысил расчётный лимит"))
+            assertEquals(0, result.importedCount)
+            coVerify(exactly = 0) { repository.upsert(any()) }
+            assertTrue("Файлы моделей не должны появиться", !File(modelsRoot, "bomb.onnx").exists())
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Ревью аудита, п.5: инвариант READY⇒filePath — пустой путь не должен
+    // попадать в манифест и резолвиться в корень моделей.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `export skips READY model without filePath`() {
+        val broken = readyModel(
+            "nopath", ModelCategory.TRANSLATION, RuntimeType.MARIAN_ONNX, "/unused"
+        ).copy(filePath = null)
+        coEvery { repository.observeAll() } returns flowOf(prepareModels() + broken)
+        val upserted = mutableListOf<InstalledModel>()
+        coEvery { repository.upsert(capture(upserted)) } returns Unit
+
+        runBlocking {
+            val manager = backupManager()
+            val uri = mockk<Uri>()
+            assertTrue("Экспорт обязан состояться по остальным моделям", manager.exportToUri(uri))
+            val result = manager.importFromUri(uri)
+            assertNull("Импорт не должен возвращать ошибку: ${result.error}", result.error)
+            // Модель без пути не попала ни в манифест, ни в импорт.
+            assertEquals(3, result.importedCount)
+            assertEquals(0, result.skippedCount)
+            assertTrue(upserted.none { it.id == "nopath" })
+        }
+    }
+
+    @Test
+    fun `import rejects manifest entry with blank relativePath without touching models root`() {
+        val entry = manifestEntry(
+            id = "blank1",
+            category = ModelCategory.TRANSLATION,
+            runtime = RuntimeType.MARIAN_ONNX,
+            relativePath = ""
+        )
+        writeZipWithModel(entry, "junk-bytes", modelEntryPath = MODELS_PREFIX + "junk.bin")
+
+        runBlocking {
+            val result = backupManager().importFromUri(mockk<Uri>())
+            assertNull(result.error)
+            assertEquals(0, result.importedCount)
+            assertEquals(1, result.skippedCount)
+            coVerify(exactly = 0) { repository.upsert(any()) }
+            // Пустой путь больше не резолвится в корень: temp-каталог не
+            // перенесён поверх него, junk-файл на месте импорта отсутствует.
+            assertTrue("modelsRoot must stay a directory", modelsRoot.isDirectory)
+            assertTrue(!File(modelsRoot, "junk.bin").exists())
         }
     }
 }

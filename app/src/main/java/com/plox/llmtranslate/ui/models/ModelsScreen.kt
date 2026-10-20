@@ -44,7 +44,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -96,6 +99,30 @@ fun ModelsScreen(
     val ttsEngine by viewModel.ttsEngine.collectAsStateWithLifecycle()
     val sttByLanguage by viewModel.sttByLanguage.collectAsStateWithLifecycle()
     val ttsByLanguage by viewModel.ttsByLanguage.collectAsStateWithLifecycle()
+    val pendingDeleteId by viewModel.pendingDeleteModelId.collectAsStateWithLifecycle()
+
+    // Диалог подтверждения удаления установленного пучка (решение пользователя:
+    // удаление необратимо). pending живёт в ViewModel (гейт «тап Delete ≠
+    // удаление» покрыт unit-тестом), id зеркалится в rememberSaveable —
+    // открытый диалог переживает recreation экрана (паттерн диалога очистки
+    // истории, ревью #17); модель для текста берётся из актуального списка.
+    var rememberedDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(pendingDeleteId) {
+        if (pendingDeleteId != null) rememberedDeleteId = pendingDeleteId
+    }
+
+    // Re-review: если pending-запись исчезла из установленных (удаление
+    // elsewhere, откат установки) — диалог под неё не показывается, а
+    // pending в ViewModel залипает. Снимаем pending и remembered-зеркало
+    // при несовпадении эффективного id с актуальным списком.
+    val installedIds = uiState.installed.map { it.id }
+    LaunchedEffect(pendingDeleteId, rememberedDeleteId, installedIds) {
+        val effectiveDeleteId = pendingDeleteId ?: rememberedDeleteId
+        if (effectiveDeleteId != null && effectiveDeleteId !in installedIds) {
+            rememberedDeleteId = null
+            viewModel.cancelDeleteConfirm()
+        }
+    }
 
     // Опрос PSS процесса живёт здесь, а не в ViewModel: цикл остановлен,
     // пока экран убран из composition (навигация с backstack) ИЛИ приложение
@@ -336,10 +363,12 @@ fun ModelsScreen(
                 )
                 val isActive =
                     if (card.category == ModelCategory.TTS) tts.selected else activeId == card.id
-                // Проверка совместимости мемоизирована по карточке и снимку
-                // устройства (ревью #16): домен-вызов без пересчёта на каждой
-                // рекомпозиции списка.
-                val check = remember(card.id, deviceInfo) {
+                // Проверка совместимости мемоизирована по объекту карточки и
+                // снимку устройства (ревью #16 + re-review): домен-вызов без
+                // пересчёта на каждой рекомпозиции списка; ключ — сама карточка
+                // (data class), а не только id, — при обновлении полей карточки
+                // под тем же id (изменённый каталог) мемоизация устаревает.
+                val check = remember(card, deviceInfo) {
                     deviceInfo?.let { viewModel.checkInstall(card, it) }
                 }
                 // Чипы «язык распознавания» — только на установленных STT-карточках
@@ -437,6 +466,45 @@ fun ModelsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.cancelLicenseConfirm() }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            }
+        )
+    }
+
+    // Диалог подтверждения удаления пучка (решение пользователя): модель для
+    // текста резолвится по сохранённому id из актуального списка установленных;
+    // если запись уже исчезла (удалена elsewhere) — диалог не показываем.
+    val deleteCandidate = (pendingDeleteId ?: rememberedDeleteId)?.let { id ->
+        uiState.installed.firstOrNull { it.id == id }
+    }
+    if (deleteCandidate != null) {
+        AlertDialog(
+            onDismissRequest = {
+                rememberedDeleteId = null
+                viewModel.cancelDeleteConfirm()
+            },
+            title = { Text(stringResource(R.string.models_delete_confirm_title)) },
+            text = {
+                Text(stringResource(R.string.models_delete_confirm_text, deleteCandidate.displayName))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        rememberedDeleteId = null
+                        viewModel.onDeleteConfirmed(deleteCandidate.id)
+                    }
+                ) {
+                    Text(stringResource(R.string.models_delete))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        rememberedDeleteId = null
+                        viewModel.cancelDeleteConfirm()
+                    }
+                ) {
                     Text(stringResource(R.string.cancel))
                 }
             }
@@ -1009,7 +1077,7 @@ private fun ttsChipLanguages(card: ModelCard): List<String> =
  * Чистая логика — вынесена из цикла карточек для читаемости; для карточек
  * не-TTS возвращает значения по умолчанию.
  */
-private data class TtsCardState(
+internal data class TtsCardState(
     /** Карточка подсветить как выбранную (Piper назначена языку / системный активен). */
     val selected: Boolean,
     val chips: List<String>,
@@ -1018,7 +1086,7 @@ private data class TtsCardState(
     val assignedLanguages: Set<String>
 )
 
-private fun ttsCardState(
+internal fun ttsCardState(
     card: ModelCard,
     installedReady: Boolean,
     ttsEngine: String,

@@ -3,6 +3,7 @@ package com.plox.llmtranslate.data.download
 import com.plox.llmtranslate.domain.model.RuntimeType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -197,5 +198,77 @@ class DownloadLayoutTest {
             runtimeDir, RuntimeType.MARIAN_ONNX, "mdl", listOf("https://h/part.onnx")
         )
         assertFalse(File(runtimeDir, "mdl__part.onnx.part").exists())
+    }
+
+    @Test
+    fun `model id validation rejects path-unsafe ids`() {
+        // Контрольный аудит: id используется как имя каталога записи и
+        // сносится deleteRecursively — файловые символы ограничены.
+        assertTrue(DownloadLayout.isSafeModelId("sherpa-ru"))
+        assertTrue(DownloadLayout.isSafeModelId("model_v1.2"))
+        assertFalse(DownloadLayout.isSafeModelId(""))
+        assertFalse(DownloadLayout.isSafeModelId("."))
+        assertFalse(DownloadLayout.isSafeModelId(".."))
+        assertFalse(DownloadLayout.isSafeModelId("a/b"))
+        assertFalse(DownloadLayout.isSafeModelId("a\\b"))
+        assertFalse(DownloadLayout.isSafeModelId("../evil"))
+        assertFalse(DownloadLayout.isSafeModelId("na me"))
+    }
+
+    @Test
+    fun `modelDir rejects unsafe id`() {
+        val runtimeDir = folder.newFolder("MARIAN_SLIMT")
+        val thrown = try {
+            DownloadLayout.modelDir(runtimeDir, "a/b")
+            null
+        } catch (e: IllegalArgumentException) {
+            e
+        }
+        assertNotNull("modelDir не бросил ошибку на небезопасный id", thrown)
+    }
+
+    @Test
+    fun `unsafe id cleanup does not delete outside the runtime dir`() {
+        // Id из манифеста бэкапа «../x» давал deleteRecursively по каталогу
+        // вне каталога рантайма — очистка такой записи пропускается целиком.
+        val runtimeDir = folder.newFolder("MARIAN_SLIMT")
+        val outside = File(runtimeDir.parentFile, "evil-dir")
+        touch(File(outside, "model.bin"))
+
+        DownloadLayout.deleteOrphanedFiles(
+            runtimeDir, RuntimeType.MARIAN_SLIMT, "../evil-dir", listOf("http://h/")
+        )
+
+        assertTrue("каталог вне каталога рантайма удалён очисткой", outside.isDirectory)
+        outside.deleteRecursively()
+    }
+
+    @Test
+    fun `installed candidates single source covers legacy single onnx and raw basename`() {
+        // Расхождение кандидатов (аудит): legacy-одиночный ONNX
+        // «<modelId>.onnx» и сырой basename без query обязаны входить в
+        // единый список — иначе bundleShaOk/сверка импорта не находят файл
+        // legacy-раскладки и модель молча скипается при восстановлении бэкапа.
+        val emptyBasename = DownloadLayout.installedFileCandidates("legacy-id", "http://host/path/", 0)
+        assertTrue("«modelId.onnx» не в кандидатах", emptyBasename.contains("legacy-id.onnx"))
+        assertTrue("legacy «file_0» не в кандидатах", emptyBasename.contains("file_0"))
+
+        val queryUrl = DownloadLayout.installedFileCandidates("m", "https://h/mod+el.onnx?raw=true", 0)
+        assertTrue("сырой basename без query не в кандидатах", queryUrl.contains("mod+el.onnx"))
+        assertTrue("sanitized-имя не в кандидатах", queryUrl.contains("model.onnx"))
+        assertTrue("имя с query не в кандидатах", queryUrl.contains("mod+el.onnx?raw=true"))
+    }
+
+    @Test
+    fun `verify uses unified candidates and finds legacy single onnx bundle file`() {
+        // End-to-end части аудита: файл legacy-раскладки «<id>.onnx» находится
+        // тем же списком кандидатов, которым пользуется сверка импорта/бэкапа.
+        val runtimeDir = folder.newFolder("MARIAN_ONNX")
+        touch(File(runtimeDir, "legacy-id.onnx"))
+        val found = DownloadLayout.installedFileCandidates("legacy-id", "http://host/path/", 0)
+            .asSequence()
+            .map { name -> File(runtimeDir, name) }
+            .firstOrNull { it.isFile }
+        assertNotNull("сверка не нашла legacy-файл по единым кандидатам", found)
     }
 }

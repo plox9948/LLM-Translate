@@ -34,7 +34,9 @@ fun interface UnloadTimeoutProvider {
  * Тайм-аут читается через [UnloadTimeoutProvider] на момент каждого [schedule],
  * поэтому смена настройки применяется сразу, без перезапуска процесса.
  *
- * Потокобезопасен: планирование и отмена синхронизированы по общему замку.
+ * Потокобезопасен: вход [schedule] и [cancel] сериализованы общим замком;
+ * сам коллбэк [onUnload] выполняется вне замка (после долгого ожидания),
+ * поэтому длительная выгрузка не блокирует планирование и отмену.
  */
 @Singleton
 class BackgroundUnloadScheduler @Inject constructor(
@@ -55,7 +57,7 @@ class BackgroundUnloadScheduler @Inject constructor(
     fun schedule(onUnload: () -> Unit) {
         synchronized(lock) {
             pendingJob?.cancel()
-            pendingJob = appScope.launch {
+            val job = appScope.launch {
                 val minutes = try {
                     timeoutProvider.timeoutMinutes()
                 } catch (e: CancellationException) {
@@ -89,6 +91,16 @@ class BackgroundUnloadScheduler @Inject constructor(
                     // Коллбэк выполняется в app-scope: ошибка не должна
                     // убивать корутину планирования без записи в лог.
                     Timber.e(e, "Ошибка при отложенной выгрузке рантаймов")
+                }
+            }
+            pendingJob = job
+            // Рецензия: завершившийся job (выгрузка отработала, тайм-аут
+            // отключён настройкой или job отменён) не должен переживать в
+            // поле — иначе оно удерживает Job и замыкание с onUnload до
+            // следующего schedule()/cancel().
+            job.invokeOnCompletion {
+                synchronized(lock) {
+                    if (pendingJob === job) pendingJob = null
                 }
             }
         }

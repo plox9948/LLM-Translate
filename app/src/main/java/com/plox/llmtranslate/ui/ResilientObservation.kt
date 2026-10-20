@@ -58,13 +58,19 @@ internal class ObserveErrorTracker {
  * Наблюдение репозиторного (Room) flow без риска уронить процесс (issue #67):
  * `viewModelScope.launch` без CoroutineExceptionHandler роняет приложение при
  * любом исключении источника. Выбрана перезапускаемая подписка в try/catch
- * вокруг всего collect-цикла (штатное завершение flow — выход без
- * переподписки), а не `.catch` на источнике: catch подменяет поток,
+ * вокруг получения источника и collect-цикла (штатное завершение flow — выход
+ * без переподписки), а не `.catch` на источнике: catch подменяет поток,
  * исчерпанный ошибкой, завершившимся — список остался бы без будущих
  * обновлений.
  *
  * Сбой и восстановление регистрируются в [errors] под маркером [marker] —
  * общий баннер живёт, пока хоть один источник остаётся сломанным (ревью).
+ *
+ * Исключение в обработчике значений [onValue] — НЕ сбой источника (re-review):
+ * оно логируется и регистрируется под отдельным маркером `handler:$marker`
+ * (sticky до скрытия в UI, как у [launchGuarded]), collect продолжается без
+ * перезапуска подписки — иначе дефект обработчика подменялся диагностикой
+ * «сбой источника» и порождал ложные ретраи.
  */
 internal fun <T> observeResilient(
     scope: CoroutineScope,
@@ -86,7 +92,15 @@ internal fun <T> observeResilient(
                         retrying = false
                         errors.recover(marker)
                     }
-                    onValue(value)
+                    // Обработчик значений отделён от диагностики источника:
+                    // его исключение не уходит в collect и не вызывает ретрай.
+                    try {
+                        onValue(value)
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Timber.e(e, "Сбой обработчика наблюдения ($marker)")
+                        errors.reportFailure("handler:$marker", messageRes)
+                    }
                 }
                 break
             } catch (e: Exception) {
@@ -105,14 +119,16 @@ internal fun <T> observeResilient(
  * процесс — ошибка логируется и регистрируется в [errors] под маркером
  * [marker] (sticky до скрытия в UI). [CancellationException] пробрасывается
  * как есть. Общий каркас try/catch+Timber операций ViewModel («История»,
- * «Избранное»).
+ * «Избранное»). Маркер [marker] обязателен (re-review unique): он ключ в
+ * множестве активных ошибок трекера — без него несколько операций с одним
+ * текстом сливались бы в одну запись.
  */
 internal fun launchGuarded(
     scope: CoroutineScope,
     @StringRes messageRes: Int,
     errors: ObserveErrorTracker,
     logMessage: String,
-    marker: String = "operation:$messageRes",
+    marker: String,
     block: suspend () -> Unit
 ) {
     scope.launch {

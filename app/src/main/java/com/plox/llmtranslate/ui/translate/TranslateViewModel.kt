@@ -286,17 +286,26 @@ class TranslateViewModel @Inject constructor(
     // экземпляр не воспроизводится при пересоздании ViewModel (возврат на вкладку).
 
     // Ресурс сообщения сбоя наблюдения Room-потоков (issue #67): observeResilient
-    // пишет сюда id текста, коллектор ниже переводит его в человекочитаемую
-    // ошибку uiState.error — семантика поля error не меняется. Трекер множества
-    // ошибок (ревью): баннер живёт, пока хоть один источник observation мёртв.
+    // пишет сюда id текста, коллектор-мост ниже переводит его в человекочитаемую
+    // ошибку uiState.error, а null гасит её (единая семантика с баннером
+    // «Моделей»/«Настроек»). Трекер множества ошибок (ревью): баннер живёт,
+    // пока хоть один источник observation мёртв.
     private val observeErrors = ObserveErrorTracker()
 
     init {
-        // Мост: id текста сбоя наблюдения → ошибка UI (без изменения семантики).
+        // Мост: id текста сбоя наблюдения → ошибка UI, и снятие при null
+        // (единая семантика с баннером экранов «Модели»/«Настройки» — ревью):
+        // при автовосстановлении Room-источника трекер публикует null, и
+        // диалог снимается сам, а не висит до ручного закрытия.
+        // Ограничение: так же снимается и ошибка, выставленная вне трекера
+        // (перевод, запись) — поле error общее, а снятие происходит только
+        // когда множество активных сбоев наблюдения стало пустым.
         viewModelScope.launch {
             observeErrors.state.collect { res ->
                 if (res != null) {
                     update { it.copy(error = appContext.getString(res)) }
+                } else {
+                    update { it.copy(error = null) }
                 }
             }
         }
@@ -430,8 +439,15 @@ class TranslateViewModel @Inject constructor(
             // отсчитанных рекордером секунд.
             audioRecorder.recordingFlow.collect { recording ->
                 if (recording) {
+                    // Attach фактически состоялся (re-review): только здесь
+                    // поднимаются индикатор, таймер и потолок — возврат
+                    // startRecording() не является подтверждением старта
+                    // (присоединение к стартующей записи). Эмиссия true
+                    // выполняется под мьютексом сцены синхронно с активацией.
+                    autoWavSelfClosedTaken = false
+                    _recordingElapsed.value = 0L
                     scheduleRecordingLimit()
-                    update { it.copy(isRecording = true) }
+                    update { it.copy(isRecording = true, error = null) }
                 } else {
                     // Запись снята извне — авто-остановка по потолку не нужна.
                     recordingLimitJob?.cancel()
@@ -491,10 +507,10 @@ class TranslateViewModel @Inject constructor(
                 }
             }
         }
-        viewModelScope.launch {
-            // Инициализация TTS текущим движком и переконфигурация при смене настройки.
-            ttsRuntime.trackEnginePreference(preferences.ttsEngine)
-        }
+        // Инициализация TTS текущим движком и переконфигурация при смене
+        // настройки. Идемпотентная регистрация (re-review): collect живёт в
+        // app-скоупе рантайма, вызов из «Избранного» дубль-подписку не создаёт.
+        ttsRuntime.trackEnginePreference(preferences.ttsEngine)
         viewModelScope.launch {
             // Статус общего TTS-плейбека (issue #50): флаг озвучивания,
             // автоскачивание Piper-модели и ошибки, не покрытые фолбэком.
@@ -1005,23 +1021,23 @@ class TranslateViewModel @Inject constructor(
     }
 
     /**
-     * Начать запись с микрофона.
-     * @return true при успешном старте.
+     * Начать запись с микрофона. Тяжёлая инициализация AudioRecord в
+     * рекордере выполняется на IO (аудит #83), поэтому запуск асинхронный:
+     * при отказе показывается баннер ошибки. Индикация (isRecording, таймер,
+     * потолок длительности) НЕ ставится по возврату startRecording():
+     * true может означать и присоединение к стартующей записи, исход старта
+     * поднимается коллектором recordingFlow только по фактической активации
+     * сцены (re-review: инициализация, упавшая после join-true, иначе
+     * оставляла фантомный индикатор при неэмитированной записи).
+     * Микрофон в состоянии «стартует» повторный тап не открывает дважды —
+     * резерв сцены в рекордере.
      */
-    fun startRecording(): Boolean {
-        if (!audioRecorder.startRecording()) {
-            update { it.copy(error = appContext.getString(R.string.translate_record_start_failed)) }
-            return false
+    fun startRecording() {
+        viewModelScope.launch {
+            if (!audioRecorder.startRecording()) {
+                update { it.copy(error = appContext.getString(R.string.translate_record_start_failed)) }
+            }
         }
-        update { it.copy(isRecording = true, error = null) }
-        _recordingElapsed.value = 0L
-        // Новая сцена: самозакрытие прошлой записи (с его авто-WAV) больше не
-        // учитывается (замечание 5 ревью #83).
-        autoWavSelfClosedTaken = false
-        // Потолок записи ставится коллектором recordingFlow (ревью #9) —
-        // он же восстанавливает таймер при пересоздании ViewModel на живой
-        // записи (уход на другой таб не оставляет микрофон без потолка).
-        return true
     }
 
     /**
@@ -1123,6 +1139,18 @@ class TranslateViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Скрыть ошибку (закрытие диалога в UI).
+     *
+     * Кросс-экранная семантика (ревью): [ttsCoordinator] — синглтон процесса,
+     * и [TtsPlaybackCoordinator.clearError] снимает ошибку плейбека ГЛОБАЛЬНО:
+     * закрытие диалога на «Переводе» убирает её и из статуса, который
+     * коллектор живущей одновременно ViewModel «Избранного» (backstack) мог бы
+     * залогировать/перевыпустить — это осознанно: экземпляр ошибки уже показан
+     * пользователю, повторный показ тем же или новым экраном не требуется.
+     * Трекер [observeErrors] — локальный для экрана: [ObserveErrorTracker.dismissAll]
+     * чистит только сбои наблюдения этого ViewModel.
+     */
     fun clearError() {
         update { it.copy(error = null) }
         // Сброс и множества сбоев наблюдения (ревью #6, re-review): трекер
@@ -1324,7 +1352,23 @@ class TranslateViewModel @Inject constructor(
         // Повторный тап до Room-эмиссии DOWNLOADING: id уже в локальном
         // гейте — скачивание не перевыпускается (ревью #83).
         if (!pendingMissingDownloads.add(card.id)) return
-        modelManager.startDownload(card)
+        // R-U2: запуск скачивания (enqueue WorkManager) под guard'ом —
+        // синхронный сбой не должен ронять процесс; при отказе id снимается
+        // из локального гейта, чтобы кнопка снова стала активной.
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.translate_download_start_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось запустить скачивание модели ${card.id}",
+            marker = "download_missing_model"
+        ) {
+            try {
+                modelManager.startDownload(card)
+            } catch (e: Exception) {
+                pendingMissingDownloads.remove(card.id)
+                throw e
+            }
+        }
     }
 
     private fun update(transform: (TranslateUiState) -> TranslateUiState) {

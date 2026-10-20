@@ -14,6 +14,7 @@ import com.plox.llmtranslate.domain.model.RuntimeType
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +25,8 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -97,7 +100,8 @@ class ModelsTransientStateTest {
             backupManager,
             mockk(relaxed = true),
             preferences,
-            context
+            context,
+            CoroutineScope(UnconfinedTestDispatcher())
         )
 
         // Поднимаем все транзиенты: статус, pending-sкачивание, запрос бэкапа.
@@ -122,5 +126,46 @@ class ModelsTransientStateTest {
         assertNotNull(viewModel.uiState.value.backupExportRequest)
         // Данные из потока при этом обновлены.
         assertEquals(listOf(pendingCard.id), viewModel.uiState.value.catalog.map { it.id })
+    }
+
+    @Test
+    fun `onExportResult with null uri is a safe no-op`() {
+        val viewModel = ModelsViewModel(
+            modelManager,
+            backupManager,
+            mockk(relaxed = true),
+            preferences,
+            context,
+            CoroutineScope(UnconfinedTestDispatcher())
+        )
+
+        // Отмена SAF-пикера точечного экспорта без живого запроса: только
+        // сброс транзиентов, без падения и без ложного статуса.
+        viewModel.onExportResult(null)
+
+        assertNull(viewModel.uiState.value.exportRequest)
+        assertNull(viewModel.uiState.value.exportingModelId)
+        assertNull(viewModel.uiState.value.statusMessage)
+    }
+
+    @Test
+    fun `second backup export click while request pending keeps the same request`() {
+        val viewModel = ModelsViewModel(
+            modelManager,
+            backupManager,
+            mockk(relaxed = true),
+            preferences,
+            context,
+            CoroutineScope(UnconfinedTestDispatcher())
+        )
+
+        viewModel.onBackupExportClick()
+        val first = viewModel.uiState.value.backupExportRequest
+        assertNotNull(first)
+
+        // Pending-гейт (ревью #83): пока запрос не запущен в пикер, повторный
+        // тап не перетирает его — второй CreateDocument-пикер не поднимается.
+        viewModel.onBackupExportClick()
+        assertSame(first, viewModel.uiState.value.backupExportRequest)
     }
 }

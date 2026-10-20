@@ -51,6 +51,9 @@ interface ModelManager {
      * Модели, загруженные в ОЗУ рантаймами в текущий момент
      * (движки перевода + STT). Реактивно: новый список при каждой
      * загрузке/разгрузке; пуст после [releaseAllRuntimes].
+     * Исключение: если разгрузка зависшего движка не уложилась в таймаут,
+     * его модели остаются в списке до следующей попытки разгрузки
+     * (ревью R-N18/S-N21).
      */
     val loadedModels: Flow<List<LoadedModelInfo>>
 
@@ -70,7 +73,9 @@ interface ModelManager {
     fun cancelDownload(modelId: String)
 
     /**
-     * Импорт модели из SAF-uri (ACTION_OPEN_DOCUMENT_TREE или файл).
+     * Импорт модели из SAF-uri: только одиночный файл
+     * (ACTION_OPEN_DOCUMENT — zip/одиночный файл модели); выбор дерева
+     * (ACTION_OPEN_DOCUMENT_TREE) не поддерживается.
      * @return id импортированной модели или null при ошибке.
      */
     suspend fun importFromUri(uri: android.net.Uri): String?

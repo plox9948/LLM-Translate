@@ -65,7 +65,8 @@ private const val PREFERENCE_RETRY_DELAY_MS = 2_000L
  * Каркас отказоустойчивых потоков настроек (ревью контрольного раунда 4):
  * исключение источника DataStore в `launch/collect` без обработчика роняло
  * процесс (тот же сценарий битого journal, что и для Room-потоков). ВСЕ
- * публичные потоки [ModelPreferences] построены через этот хелпер, поэтому
+ * публичные потоки [ModelPreferences] — кроме перечисленных ниже raw-
+ * исключений — построены через этот хелпер, поэтому
  * любая подписка на `preferences.*` (MainActivity, TranslateViewModel,
  * SettingsViewModel, ModelsViewModel, TtsRuntime.trackEnginePreference)
  * безопасна по построению — сбой источника не доходит до коллектора.
@@ -97,14 +98,14 @@ private const val PREFERENCE_RETRY_DELAY_MS = 2_000L
  * lastSourceLang/lastTargetLang — не должен сбрасывать выбранное направление).
  *
  * `observeResilient` в ViewModel остаётся второй линией защиты (Room-потоки).
- * Исключения без обёртки — только потоки, читаемые ОДНИМ `first()` с
- * консервативной обработкой сбоя у самого вызывающего (провайдер удержания
- * DomainModule: при ошибке — unload, а не дефолт keep; версия каталога для
- * очистки устаревших моделей; сырое чтение `uiLanguage` для prefetch/await,
- * где фолбэк нельзя прогревать в кэш как настоящее значение; экспорт бэкапа
- * читает сырые raw*-потоки — сбой чтения обязан быть ошибкой экспорта, а не
- * дефолтом в архиве). Их подписок в UI нет либо подписки идут через
- * `observeResilient` (SettingsScreen).
+ * Единственное публичное raw-исключение без обёртки — [modelDirectionRetention]:
+ * он читается ОДНИМ `first()` с консервативной обработкой сбоя у самого
+ * вызывающего (провайдер удержания DomainModule: при ошибке — unload, а не
+ * дефолт keep; экспорт бэкапа: сбой чтения обязан быть ошибкой экспорта, а не
+ * дефолтом в архиве). Подписка UI идёт через `observeResilient` (SettingsScreen).
+ * Сырые `raw*`-потоки (internal) читаются экспортом бэкапа — сбой чтения обязан
+ * быть ошибкой экспорта, а не дефолтом в архиве; сырое чтение `uiLanguage` для
+ * prefetch/await, где фолбэк нельзя прогревать в кэш как настоящее значение.
  */
 internal fun <T> flowWithRecovery(
     name: String,
@@ -253,21 +254,29 @@ class ModelPreferences @Inject constructor(
     )
 
     val activeModelId: (ModelCategory) -> Flow<String?> = { category ->
-        val key = activeModelKeys[category]!!
+        val key = requireNotNull(activeModelKeys[category]) {
+            "Нет preference-ключа активной модели для нового ModelCategory $category"
+        }
         flowWithRecovery("active_model_${category.name}") {
             context.dataStore.data.map { prefs -> prefs[key] }
         }
     }
 
     suspend fun setActiveModelId(category: ModelCategory, modelId: String?) {
-        val key = activeModelKeys[category]!!
+        val key = requireNotNull(activeModelKeys[category]) {
+            "Нет preference-ключа активной модели для нового ModelCategory $category"
+        }
         context.dataStore.edit { prefs ->
             if (modelId == null) prefs.remove(key) else prefs[key] = modelId
         }
     }
 
     suspend fun getActiveModelId(category: ModelCategory): String? =
-        context.dataStore.data.first()[activeModelKeys[category]!!]
+        context.dataStore.data.first()[
+            requireNotNull(activeModelKeys[category]) {
+                "Нет preference-ключа активной модели для нового ModelCategory $category"
+            }
+        ]
 
     // --- STT-модель на каждый язык (issue #28) ---
 
@@ -531,10 +540,12 @@ class ModelPreferences @Inject constructor(
      * [RETENTION_KEEP] — не выгружать модели другого направления по умолчанию,
      * [RETENTION_UNLOAD] — выгружать перед загрузкой новой модели.
      *
-     * Без recover-обёртки ([flowWithRecovery]): единственный подписчик —
-     * `watch` в SettingsScreen поверх `observeResilient`, а одноразовое
-     * `first()` в провайдере DomainModule на сбой чтения обязано отвечать
-     * conservative unload, а не дефолтом keep (ревью).
+     * Единственное осознанное публичное raw-исключение из [flowWithRecovery]
+     * (ревью обещания «все потоки через хелпер»): единственный подписчик UI —
+     * `watch` в SettingsScreen поверх `observeResilient`, а одноразовые `first()`
+     * обязаны получать СБОЙ чтения, а не дефолт: провайдер DomainModule отвечает
+     * conservative unload, а экспорт бэкапа — ошибкой экспорта, а не дефолтом
+     * «keep» в архиве.
      */
     val modelDirectionRetention: Flow<String> =
         context.dataStore.data.map {
@@ -548,8 +559,18 @@ class ModelPreferences @Inject constructor(
         }
     }
 
+    /**
+     * Версия применённого удалённого каталога (ревью: публичный поток без
+     * recover-обёртки противоречил контракту хелпера — обёрнут). Режим без
+     * константного фолбэка: холодный сбой чтения НЕ эмитит ложный 0 — иначе
+     * очистка устаревших моделей (OfflineTranslatorApp) сочла бы версию
+     * неприменённой и удалила READY-модели удалённого каталога; тёплый сбой —
+     * прежнее полученное значение, затем переподписка.
+     */
     val lastRemoteCatalogVersion: Flow<Int> =
-        context.dataStore.data.map { it[REMOTE_CATALOG_VERSION_KEY] ?: 0 }
+        flowWithRecovery(REMOTE_CATALOG_VERSION_NAME) {
+            context.dataStore.data.map { it[REMOTE_CATALOG_VERSION_KEY] ?: 0 }
+        }
 
     suspend fun setLastRemoteCatalogVersion(version: Int) {
         context.dataStore.edit { it[REMOTE_CATALOG_VERSION_KEY] = version }
@@ -626,5 +647,8 @@ class ModelPreferences @Inject constructor(
 
         /** Preference версии применённого удалённого каталога. */
         private val REMOTE_CATALOG_VERSION_KEY = intPreferencesKey("remote_catalog_version")
+
+        /** Имя preference версии удалённого каталога для логов. */
+        private const val REMOTE_CATALOG_VERSION_NAME = "remote_catalog_version"
     }
 }

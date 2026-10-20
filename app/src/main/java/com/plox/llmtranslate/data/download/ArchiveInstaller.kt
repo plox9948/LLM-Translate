@@ -126,7 +126,9 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                 Timber.e(e, "Сбой распаковки: $fileName")
                 return@run InstallResult.Failure("Ошибка распаковки: $fileName")
             }
-            archiveFile.delete()
+            // Архив больше не нужен — удаляем с логом при отказе (по образцу
+            // веток отмены/сбоя: осиротевший архив в корне каталога навсегда).
+            discardArchive(archiveFile, "распаковки")
             if (!extracted) {
                 // Содержимое архива уже прошло SHA-256 — сбой формата
                 // детерминирован: повтор лишь 5 раз перекачает гигабайтный
@@ -139,7 +141,14 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
                 )
             }
             // Архивы sherpa содержат единственный подкаталог — подтягиваем его наверх.
-            flattenModelDir(modelDir)
+            if (!flattenModelDir(modelDir)) {
+                // Перенос содержимого не удалов (rename + fallback-копия):
+                // сбой средовый (место/ФС/права), повтор после перекачки
+                // может пройти — permanent=false.
+                return@run InstallResult.Failure(
+                    "Не удалось перенести содержимое каталога модели наверх: $fileName"
+                )
+            }
             null
         }
         is DownloadOutcome.NetworkError ->
@@ -315,20 +324,84 @@ class ArchiveInstaller : ModelInstaller, BaseDownloader() {
 
     /**
      * Если файлы модели (tokens.txt) оказались в подкаталоге — переносим их наверх.
+     *
+     * Инварианты раскладки (контракт архивов sherpa STT и Piper TTS):
+     * - маркер бандла — `tokens.txt` в каталоге модели: если он уже в корне
+     *   [destDir], каталог плоский и трогать нечего;
+     * - однократный flatten: подтягивается только ПЕРВЫЙ подкаталог с маркером —
+     *   архивы с несколькими бандлами раскладкой не поддерживаются;
+     * - подкаталоги без маркера (обломки, ресурсы) наверх не поднимаются.
+     *
+     * Ревью повт. аудита, п.5:
+     * (а) нечитаемый список каталога модели ([File.listFiles] == null) — больше
+     *     НЕ тихий успех: возврат false (иначе неполный/битый пучок
+     *     регистрировался READY);
+     * (б) при отказе среднего entry уже перенесённые наверх entry ОТКАТЫВАЮТСЯ
+     *     обратно в подкаталог (best-effort с логом). Иначе в корне остаются
+     *     свежие маркеры (tokens.txt), частичный перенос доживает до повторной
+     *     установки, и ранний возврат по устаревшему маркеру даёт ложный
+     *     flatten с неполным пучком в READY. Откат выбран вместо «чистить
+     *     modelDir на входе install» — очистка молча уничтожала бы предыдущую
+     *     установку при сетевом сбое перекачки, а откат оставляет исходную
+     *     раскладку нетронутой.
+     *
+     * @return false — содержимое не перенесено: нечитаемый список каталога, или
+     * [renameTo] не прошёл и [copyRecursively]-фолбэк тоже (ENOSPC/сбой ФС);
+     * частичная копия подчищается на месте, уже перенесённое откатывается,
+     * вызывающий переводит это в повторяемую ошибку установки.
      */
-    private fun flattenModelDir(destDir: File) {
-        if (File(destDir, "tokens.txt").exists()) return
-        val subdirs = destDir.listFiles()?.filter { it.isDirectory } ?: return
+    internal fun flattenModelDir(destDir: File): Boolean {
+        if (File(destDir, "tokens.txt").exists()) return true
+        val subdirs = destDir.listFiles() ?: run {
+            Timber.w("Не удалось прочитать список каталога модели для flatten: ${destDir.path}")
+            return false
+        }
         for (subdir in subdirs) {
             if (!File(subdir, "tokens.txt").exists()) continue
-            subdir.listFiles()?.forEach { entry ->
+            val entries = subdir.listFiles() ?: run {
+                Timber.w("Не удалось прочитать список подкаталога ${subdir.name} при flatten")
+                return false
+            }
+            val moved = mutableListOf<File>()
+            for (entry in entries) {
                 val target = File(destDir, entry.name)
-                if (!entry.renameTo(target)) {
-                    entry.copyRecursively(target, overwrite = true)
+                if (!entry.renameTo(target) && !entry.copyRecursively(target, overwrite = true)) {
+                    // Копия могла оборваться на середине — убираем частичный
+                    // осколок, чтобы он не смешивался со следующим распакованным
+                    // деревом при повторе установки.
+                    target.deleteRecursively()
+                    Timber.w(
+                        "Не удалось перенести ${entry.name} из ${subdir.name} в корень модели"
+                    )
+                    rollbackFlattenMoves(subdir, moved)
+                    return false
                 }
+                moved += target
             }
             subdir.deleteRecursively()
-            return
+            return true
+        }
+        return true
+    }
+
+    /**
+     * Best-effort откат уже выполненных переносов flatten (ревью повт. аудита,
+     * п.5б): [moved] — файлы в корне модели, возвращаются в [subdir] в обратном
+     * порядке; неудача отката одного элемента не прерывает остальные (лог).
+     * internal — покрыто unit-тестом (инъекция отказа move на desktop-JVM
+     * platforms-зависима, сам откат проверяется напрямую).
+     */
+    internal fun rollbackFlattenMoves(subdir: File, moved: List<File>) {
+        for (target in moved.asReversed()) {
+            val back = File(subdir, target.name)
+            val restored = target.renameTo(back) ||
+                (target.copyRecursively(back, overwrite = true) && target.deleteRecursively())
+            if (!restored) {
+                Timber.w(
+                    "Не удалось откатить ${target.name} обратно в ${subdir.name} — " +
+                        "каталог модели останется частичным до переустановки"
+                )
+            }
         }
     }
 }

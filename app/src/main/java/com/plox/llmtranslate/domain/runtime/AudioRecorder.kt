@@ -8,6 +8,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -292,7 +293,7 @@ class AudioRecorder @Inject constructor(
         private const val ORPHAN_WAV_TTL_MS = 24 * 60 * 60 * 1000L
 
         /**
-         * Общая точка очистки osиротевших временных WAV записей (cacheDir,
+         * Общая точка очистки осиротевших временных WAV записей (cacheDir,
          * префикс recording_): вызывается при старте записи (ниже) и при
          * старте приложения (OfflineTranslatorApp) — логика в одном месте.
          */
@@ -304,17 +305,17 @@ class AudioRecorder @Inject constructor(
             } ?: return
             for (f in stale) {
                 if (!f.delete()) {
-                    Timber.w("Не удалось удалить osиротевшую запись: ${f.path}")
+                    Timber.w("Не удалось удалить осиротевшую запись: ${f.path}")
                 }
             }
             if (stale.isNotEmpty()) {
-                Timber.d("Удалено osиротевших временных WAV: ${stale.size}")
+                Timber.d("Удалено осиротевших временных WAV: ${stale.size}")
             }
         }
     }
 
     /**
-     * Удалить из кэша osиротевшие временные WAV записей старше
+     * Удалить из кэша осиротевшие временные WAV записей старше
      * [ORPHAN_WAV_TTL_MS] (общий хелпер [cleanupOrphanRecordings], ревью).
      */
     private fun cleanupOrphanRecordings() = cleanupOrphanRecordings(context.cacheDir)
@@ -343,7 +344,8 @@ class AudioRecorder @Inject constructor(
         get() = _recordingFlow.value
 
     // Сцена записи (ревью раунд 4): на неё входят из разных потоков —
-    // startRecording()/stopRecording() из UI (Main), cancel() из разгрузки
+    // startRecording()/stopRecording() из UI (Main; тяжёлая инициализация
+    // старта — на IO, аудит #83), cancel() из разгрузки
     // рантаймов (IO app-scope). Мьютекс sceneLock фиксирует вход: перевод
     // флага записи, снятие поколения и захват целевых объектов под замком;
     // долгоживущие cleanup-участки (join цикла чтения, stop/release,
@@ -388,15 +390,40 @@ class AudioRecorder @Inject constructor(
     private val limitFinishedWavPath = AtomicReference<String?>(null)
 
     /**
-     * Начать запись с микрофона.
-     * Тяжёлая инициализация AudioRecord — вне блокировки; перевод состояния
-     * в «записываем» (проверка активной записи, установка полей и поколения,
-     * старт цикла чтения) — единой сценой под [sceneLock] (ревью раунд 4),
-     * чтобы конкурентный вход cancel()/stopRecording() не перемешался со
-     * стартом.
-     * @return true при успехе, false при ошибке (нет разрешения/устройства).
+     * Резерв сцены «запись стартует» (placeholder-статус, аудит #83):
+     * фиксируется под [sceneLock] ДО открытия микрофона и удерживается всю
+     * тяжёлую IO-инициализацию ([initRecordingDevice]). Два конкурентных
+     * [startRecording] не вскрывают AudioRecord дважды — второй видит живой
+     * резерв и присоединяется; [stopRecording]/[cancel] в этом окне помечают
+     * резерв снятым ([abortStartingScene]), и старт освобождает ресурсы без
+     * активации сцены. Re-review: снятый резерв продолжает удерживать поле
+     * до фактического освобождения устройства — повторный вход в этом окне
+     * не открывает второй рекордер, обнуление поля — только за владельцем
+     * резерва.
      */
-    fun startRecording(): Boolean {
+    @Volatile
+    private var startingScene: AtomicBoolean? = null
+
+    /**
+     * Начать запись с микрофона.
+     * Фазы (аудит #83): (1) резерв сцены атомарно под [sceneLock] ДО касания
+     * аудио-HAL — конкурентный вход не открывает микрофон дважды;
+     * (2) тяжёлая инициализация (обход осиротевших WAV, getMinBufferSize,
+     * конструктор AudioRecord с binder'ом, WAV-столец) — на [Dispatchers.IO]
+     * вне замка (ANR-риск прежней синхронной фазы в UI); (3) активация сцены
+     * и старт цикла чтения — короткой секцией под [sceneLock] без IO
+     * (ревью раунд 4), чтобы конкурентный вход cancel()/stopRecording() не
+     * перемешался со стартом.
+     * @return true — запись идёт или успешно активирована (включая
+     *   присоединение к ЖИВОМУ резерву стартующей записи: «запись идёт или
+     *   стартует», но не гарантия успешного исхода старта — итог публикует
+     *   только [recordingFlow], ре-review); false — ошибка (нет
+     *   разрешения/устройства), старт отменён остановкой в окне
+     *   инициализации, либо резерв стартующей записи уже снят и её
+     *   AudioRecord ещё не освобождён (повторный тап — после завершения
+     *   освобождения).
+     */
+    suspend fun startRecording(): Boolean {
         if (isRecording) return true
 
         if (ContextCompat.checkSelfPermission(
@@ -407,9 +434,84 @@ class AudioRecorder @Inject constructor(
             return false
         }
 
-        // Osиротевшие WAV прошлых записей из кэша не удаляет никто
-        // (вызывающий снимает только свой живой файл) — чистим старые
-        // при старте (ревью).
+        // Фаза 1 — резерв под sceneLock до открытия микрофона (аудит #83).
+        val reservation = synchronized(sceneLock) {
+            if (isRecording) {
+                return true
+            }
+            startingScene?.let { pending ->
+                // Re-review: снятый остановкой/отменой резерв ещё удерживается
+                // своим владельцем до освобождения AudioRecord — второй
+                // AudioRecord конкурентно не открываем; присоединяться к
+                // заведомо отменённому старту не к чему — false.
+                return if (pending.get()) true else false
+            }
+            AtomicBoolean(true).also { startingScene = it }
+        }
+        try {
+            // Фаза 2 — тяжёлая инициализация на IO, вне главного потока и вне
+            // замка. Локальный холдер устройства: при отмене вызывающей
+            // корутины (смерть ViewModel в окне старта) withContext бросает
+            // CancellationException и теряает результат блока — без холдера
+            // созданные AudioRecord/WavSink остались бы unreleased
+            // (микрофон занят до GC, ре-review).
+            var initializedDevice: RecordingDevice? = null
+            val device = try {
+                withContext(Dispatchers.IO) {
+                    initRecordingDevice()?.also { initializedDevice = it }
+                }
+            } catch (e: CancellationException) {
+                initializedDevice?.let { releaseStartingDevice(it) }
+                throw e
+            } ?: return false
+            // Фаза 3 — активация сцены короткой секцией под sceneLock.
+            return attachRecordingScene(reservation, device)
+        } finally {
+            // Резерв держим до освобождения тяжёлых ресурсов (в том числе на
+            // пути отмены — re-review: обнуление резерва только владельцем);
+            // снимаем по идентичности — чужой новый резерв не затирается.
+            synchronized(sceneLock) {
+                if (startingScene === reservation) {
+                    startingScene = null
+                }
+            }
+        }
+    }
+
+    /** Тяжёлые ресурсы записи, созданные фазой инициализации до активации сцены. */
+    private class RecordingDevice(
+        val record: AudioRecord,
+        val readBufferBytes: Int,
+        val sink: WavSink
+    )
+
+    /**
+     * Освободить тяжёлые ресурсы, созданные инициализацией до активации
+     * сцены (отмена старта в окне IO-фазы, ре-review): микрофон и
+     * незавершённый WAV не должны оставаться занятыми/на диске.
+     */
+    private fun releaseStartingDevice(device: RecordingDevice) {
+        try {
+            device.record.release()
+        } catch (e: Exception) {
+            Timber.e(e, "Не удалось освободить AudioRecord при отмене старта")
+        }
+        device.sink.discard()
+    }
+
+    /**
+     * Фаза инициализации тяжёлых ресурсов записи (только [Dispatchers.IO],
+     * аудит #83): Осиротевшие WAV прошлых записей из кэша не удаляет никто
+     * (вызывающий снимает только свой живой файл) — чистим старые при старте
+     * (ревью); getMinBufferSize и конструктор AudioRecord — binder к аудио-HAL;
+     * потоковый WAV-столец в каталог кэша (issue #68, по образцу временных
+     * файлов импорта моделей): каталог кэша система чистит сама, живой файл
+     * всё равно удаляет вызывающий код после распознавания
+     * (TranslateViewModel.transcribeAudio).
+     * @return набор ресурсов или null при ошибке (созданное освобождено,
+     *   ошибка залогирована).
+     */
+    private fun initRecordingDevice(): RecordingDevice? {
         cleanupOrphanRecordings()
 
         val minBuffer = AudioRecord.getMinBufferSize(
@@ -419,7 +521,7 @@ class AudioRecorder @Inject constructor(
         )
         if (minBuffer <= 0) {
             Timber.e("Не удалось определить буфер AudioRecord")
-            return false
+            return null
         }
 
         val record = try {
@@ -432,18 +534,14 @@ class AudioRecorder @Inject constructor(
             )
         } catch (e: SecurityException) {
             Timber.e(e, "SecurityException при создании AudioRecord")
-            return false
+            return null
         }
         if (record.state != AudioRecord.STATE_INITIALIZED) {
             Timber.e("AudioRecord не инициализирован")
             record.release()
-            return false
+            return null
         }
 
-        // Потоковый WAV-столец в каталог кэша (issue #68, по образцу
-        // временных файлов импорта моделей): каталог кэша система чистит
-        // сама, живой файл всё равно удаляет вызывающий код после
-        // распознавания (TranslateViewModel.transcribeAudio).
         val sink = try {
             WavSink(
                 File(context.cacheDir, "recording_${System.currentTimeMillis()}.wav"),
@@ -454,18 +552,29 @@ class AudioRecorder @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "Не удалось создать файл потоковой записи")
             record.release()
-            return false
+            return null
         }
+        return RecordingDevice(record, minBuffer, sink)
+    }
 
+    /**
+     * Фаза активации зарезервированной сцены под [sceneLock] (короткая
+     * секция, аудит #83): публикует поля сцены и поколение, запускает цикл
+     * чтения. Если резерв снят [stopRecording]/[cancel] во время IO-фазы —
+     * ресурсы освобождаются, старт возвращает false.
+     */
+    private fun attachRecordingScene(reservation: AtomicBoolean, device: RecordingDevice): Boolean {
+        // Инвариант резерва: пока reservation активна, ни один параллельный
+        // вход не мог установить isRecording=true (единственный путь — этот
+        // attach), поэтому повторная проверка «идёт ли запись» здесь не нужна.
         return synchronized(sceneLock) {
-            if (isRecording) {
-                // Пока инициализировали устройство, запись уже запустил
-                // повторный вход — выбрасываем свеже созданные экземпляры.
-                record.release()
-                sink.discard()
-                return@synchronized true
+            if (!reservation.get()) {
+                // Резерв снят конкурентной остановкой/отменой в окне
+                // инициализации — сцену не активируем (аудит #83).
+                releaseStartingDevice(device)
+                return@synchronized false
             }
-            audioRecord = record
+            audioRecord = device.record
             // Новая запись инвалидирует WAV, дозакрытый по потолку старой
             // сцены (issue #83): его больше никто не отдаст, удаляет orphan-
             // очистка кэша.
@@ -475,26 +584,27 @@ class AudioRecorder @Inject constructor(
             // даже если к тому моменту уже стартовала новая запись.
             val currentGeneration = AtomicBoolean(true)
             generation = currentGeneration
-            wavSink = sink
+            wavSink = device.sink
             _recordingElapsedMs.value = 0L
             // startRecording() может бросить IllegalStateException (ревью раунд 5):
             // освобождаем рекордер и откатываем сцену, иначе залипший экземпляр
             // микрофона никто не снимет (cancel() увидит isRecording==false).
             try {
-                record.startRecording()
+                device.record.startRecording()
             } catch (e: IllegalStateException) {
                 Timber.e(e, "AudioRecord.startRecording() не удался")
-                record.release()
+                device.record.release()
                 audioRecord = null
                 wavSink = null
-                sink.discard()
+                device.sink.discard()
                 generation = null
                 return@synchronized false
             }
+            startingScene = null
             _recordingFlow.value = true
 
             readJob = scope.launch {
-                val readBuffer = ByteArray(minBuffer)
+                val readBuffer = ByteArray(device.readBufferBytes)
                 val startedAtNs = System.nanoTime()
                 var lastReportedMs = 0L
                 var writtenBytes = 0L
@@ -507,23 +617,25 @@ class AudioRecorder @Inject constructor(
                     // возвращает код ошибки, а бросает IllegalStateException —
                     // без try/catch исключение роняло весь readJob: индикатор
                     // залипал (_recordingFlow оставался true), AudioRecord —
-                    // занят. Путь тот же, что для read<0 (finishAfterReadFailure;
-                    // снимает сцену только пока поколение наше).
+                    // занят. Та же аварийная сцена, что для read<0, но выход
+                    // сразу из catch: через ветку read<0 прошёл бы ложный
+                    // повторный лог «read() вернул ошибку -1» и второй abort
+                    // уже снятого поколения (аудит).
                     val read = try {
-                        record.read(readBuffer, 0, readBuffer.size)
+                        device.record.read(readBuffer, 0, readBuffer.size)
                     } catch (e: IllegalStateException) {
                         Timber.e(e, "AudioRecord.read() бросил исключение — запись аварийно останавливается")
                         abortCurrentGeneration(currentGeneration)
-                        -1
+                        break
                     } catch (e: IllegalArgumentException) {
                         Timber.e(e, "AudioRecord.read() с некорректными аргументами — запись аварийно останавливается")
                         abortCurrentGeneration(currentGeneration)
-                        -1
+                        break
                     }
                     if (read > 0) {
                         try {
-                            synchronized(sink) {
-                                sink.write(readBuffer, 0, read)
+                            synchronized(device.sink) {
+                                device.sink.write(readBuffer, 0, read)
                             }
                         } catch (e: IOException) {
                             // Сбой записи WAV (заполненный диск/сбой файловой
@@ -591,6 +703,23 @@ class AudioRecorder @Inject constructor(
         val record: AudioRecord?,
         val sink: WavSink?
     )
+
+    /**
+     * Снять резерв «стартующей» записи (placeholder, аудит #83): если
+     * IO-инициализация ещё идёт, её участник увидит снятый флаг резерва,
+     * освободит созданные ресурсы и не активирует сцену.
+     * Re-review: поле [startingScene] НЕ обнуляется — снятый резерв
+     * удерживается до гарантированного освобождения AudioRecord и обнуляет
+     * его только владелец резерва (finally в [startRecording] после release,
+     * либо attach при успехе). Иначе быстрый повторный тап в окне
+     * освобождения открывал бы второй AudioRecord конкурентно с ещё не
+     * освобождённым.
+     */
+    private fun abortStartingScene() {
+        synchronized(sceneLock) {
+            startingScene?.set(false)
+        }
+    }
 
     /**
      * Фиксированная сцена остановки (ревью раунд 4): null — активной записи
@@ -747,6 +876,8 @@ class AudioRecorder @Inject constructor(
      * не трогается.
      */
     fun cancel() {
+        // Стартующая запись (IO-инициализация идёт) при выгрузке тоже снимается.
+        abortStartingScene()
         val scene = captureStopScene()
         // WAV, дозакрытый по потолку (issue #83), при выгрузке тоже не нужен —
         // удаляем вместе со сценой.
@@ -789,8 +920,16 @@ class AudioRecorder @Inject constructor(
         // (замечание 4 ревью #83).
         val autoPath = limitFinishedWavPath.getAndSet(null)
         if (autoPath != null) {
+            // Re-review: стартующая в этом окне запись отменяется так же, как
+            // на обычном пути, — иначе тап «стоп» отдавал бы старый WAV
+            // потолковой сцены, а параллельный старт новой активировался бы
+            // незамеченным (индикатор поднялся бы после «остановки»).
+            abortStartingScene()
             return if (File(autoPath).exists()) autoPath else null
         }
+        // Стартующая запись (резерв, аудит #83): остановка снимает резерв —
+        // инициализация освободит ресурсы и сцену не активирует.
+        abortStartingScene()
         val scene = captureStopScene() ?: return null
         // Сцена освобождения целиком под NonCancellable+IO (ревью повт.
         // аудита): ViewModel, дождавшийся отмены, иначе уничтожался в окне

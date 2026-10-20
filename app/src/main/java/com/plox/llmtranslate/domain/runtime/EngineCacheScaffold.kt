@@ -1,5 +1,6 @@
 package com.plox.llmtranslate.domain.runtime
 
+import com.plox.llmtranslate.BuildConfig
 import com.plox.llmtranslate.domain.ModelRetentionProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,7 +18,9 @@ import timber.log.Timber
  * движков остаются на местах и делегируют сюда; тексты логов строятся из
  * [logLabel] байт-в-байт как раньше.
  *
- * Все методы с суффиксом `Unlocked` вызывать только под [sessionMutex].
+ * Все методы с суффиксом `Unlocked` вызывать только под [sessionMutex];
+ * в debug-сборке инвариант енфорсится гейтом [requireSessionLock]
+ * (в release — нулевые затраты).
  * Освобождение ресурсов пучка делегировано [releaseBundle] (сессии ORT
  * либо нативный handle slimt), метаданные для UI — [infoOf].
  *
@@ -59,8 +62,15 @@ internal class EngineCacheScaffold<T>(
          * новый активный пучок защищён. slimt не ограничивается осознанно:
          * его модели отображены mmap, чистые страницы изымаются ОС под
          * давлением без выгрузки пучка.
+         *
+         * Бюджет выделяется КАЖДОМУ ORT-движку отдельно (Marian + IndicTrans
+         * сосуществуют), поэтому понижен с 1 GiB до 640 MiB (ревью аудита,
+         * итерация 2): сумма двух движков — ~1.25 GiB вместо потенциальных
+         * 2 GiB. Полноценный процесс-wide пересчёт бюджета отложен
+         * осознанно (большая работа, без новых зависимостей и глобального
+         * счётчика).
          */
-        const val ORT_CACHE_BYTE_BUDGET = 1_024L * 1024 * 1024
+        const val ORT_CACHE_BYTE_BUDGET = 640L * 1024 * 1024
     }
 
     /**
@@ -96,7 +106,10 @@ internal class EngineCacheScaffold<T>(
      * Активный пучок по [activeId] с отметкой использования, или null,
      * если активного/загруженного пучка нет. Вызывать только под [sessionMutex].
      */
-    fun activeBundle(): T? = activeId?.let { cache.get(it) }
+    fun activeBundle(): T? {
+        requireSessionLock("activeBundle")
+        return activeId?.let { cache.get(it) }
+    }
 
     /**
      * Быстрый путь загрузки: если пучок [modelId] уже в кэше — сделать его
@@ -104,6 +117,7 @@ internal class EngineCacheScaffold<T>(
      * только текущую модель) и вернуть true. Вызывать только под [sessionMutex].
      */
     suspend fun reuseCachedUnlocked(modelId: String): Boolean {
+        requireSessionLock("reuseCachedUnlocked")
         if (cache.get(modelId) == null) return false
         if (!retentionProvider.keepModelsOnDirectionChange()) {
             unloadOtherBundlesUnlocked(modelId)
@@ -119,6 +133,7 @@ internal class EngineCacheScaffold<T>(
      * только под [sessionMutex].
      */
     suspend fun applyRetentionUnlocked() {
+        requireSessionLock("applyRetentionUnlocked")
         if (!retentionProvider.keepModelsOnDirectionChange()) {
             releaseUnlocked()
         }
@@ -130,6 +145,7 @@ internal class EngineCacheScaffold<T>(
      * нативный ресурс не должен переживать замену (ревью #79).
      */
     fun putBundleUnlocked(modelId: String, bundle: T) {
+        requireSessionLock("putBundleUnlocked")
         cache.put(modelId, bundle)?.let { previous ->
             Timber.w("$logLabel: пучок $modelId уже был в кэше — прежний освобождён")
             releaseBundle(previous)
@@ -146,6 +162,7 @@ internal class EngineCacheScaffold<T>(
      * Вызывать только под [sessionMutex].
      */
     fun reserveByteBudgetUnlocked(modelId: String, incomingBytes: Long) {
+        requireSessionLock("reserveByteBudgetUnlocked")
         cache.evictOverByteBudget(protect = setOf(modelId), reserveBytes = incomingBytes)
             .forEach { (evictedId, bundle) ->
                 Timber.d("$logLabel: вытеснена по байтовому бюджету до загрузки модель $evictedId")
@@ -159,6 +176,7 @@ internal class EngineCacheScaffold<T>(
      * под [sessionMutex] (пучок уже в [cache]).
      */
     fun publishActiveUnlocked(modelId: String) {
+        requireSessionLock("publishActiveUnlocked")
         // Вытеснение сверх ёмкости — ДО фиксации активного id (ревью):
         // иначе [activeId] может остаться, ссылаясь на уже освобождённый
         // (вытесненный) пучок.
@@ -211,6 +229,7 @@ internal class EngineCacheScaffold<T>(
      * чтобы не пересекаться с активным инференсом.
      */
     fun releaseUnlocked() {
+        requireSessionLock("releaseUnlocked")
         cache.clear().forEach { (_, bundle) -> releaseBundle(bundle) }
         activeId = null
         _loadedModels.value = emptyList()
@@ -226,6 +245,7 @@ internal class EngineCacheScaffold<T>(
      * вызывающего (вне мьютекса). Вызывать только под [sessionMutex].
      */
     fun detachAllUnlocked(): List<T> {
+        requireSessionLock("detachAllUnlocked")
         val detached = cache.clear().map { (_, bundle) -> bundle }
         activeId = null
         _loadedModels.value = emptyList()
@@ -237,10 +257,29 @@ internal class EngineCacheScaffold<T>(
      * Вызывать только под [sessionMutex].
      */
     fun publishLoadedUnlocked() {
+        requireSessionLock("publishLoadedUnlocked")
         val active = activeId
         _loadedModels.value = cache.all()
             .sortedByDescending { (id, _) -> id == active }
             .map { (_, bundle) -> infoOf(bundle) }
+    }
+
+    /**
+     * Debug-гейт инварианта «*Unlocked — только под [sessionMutex]» (ревью):
+     * в debug-сборке (отладка и unit-тесты) прямой вызов без удержанного
+     * мьютекса падает сразу с внятным сообщением; в release-сборке branch
+     * недостижим (`BuildConfig.DEBUG` — compile-time constant), на hot path
+     * инференса атомарных затрат нет — гейт стоит только на операционных
+     * путях загрузки/выгрузки. [kotlinx.coroutines.sync.Mutex.isLocked]
+     * не различает владельца: случай «Unlocked без своего withLock, но чужой
+     * withLock удержан» не детектируется — ловятся прямые нарушения порядка.
+     */
+    private fun requireSessionLock(method: String) {
+        if (BuildConfig.DEBUG) {
+            check(sessionMutex.isLocked) {
+                "$logLabel: метод $method вызван вне sessionMutex — гонка за кэшем/activeId"
+            }
+        }
     }
 
     /**

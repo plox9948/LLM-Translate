@@ -1,10 +1,10 @@
 package com.plox.llmtranslate.data.download
 
 import com.plox.llmtranslate.domain.model.ArchiveFormats
+import com.plox.llmtranslate.domain.model.ModelFileNaming
 import com.plox.llmtranslate.domain.model.RuntimeType
 import timber.log.Timber
 import java.io.File
-import java.security.MessageDigest
 
 /**
  * Единая раскладка файлов загрузки инсталляторов.
@@ -20,23 +20,15 @@ object DownloadLayout {
     fun isArchive(fileName: String): Boolean = ArchiveFormats.isArchive(fileName)
 
     /**
-     * Санитизированное имя целевого файла по URL (ревью, п.15): basename без
-     * query/fragment; пустое, «.», «..» или имя после очистки — детерминированное
-     * имя из SHA-256 URL, чтобы небезопасное/пустое имя не попадало на диск.
+     * Санитизированное имя целевого файла по URL — делегирование единому
+     * чистому источнику [ModelFileNaming.sanitizedBasename] (ревью аудита:
+     * хелпер перенесён в domain, чтобы domain-логика
+     * [com.plox.llmtranslate.domain.model.InstallCheckLogic] не
+     * импортировала data-слой; кандидаты установленных файлов —
+     * [installedFileCandidates], не дублируются).
      */
-    fun sanitizedBasename(url: String, index: Int): String {
-        val raw = url.substringAfterLast('/').substringBefore('?').substringBefore('#')
-        val cleaned = raw.filter { it.isLetterOrDigit() || it in "._-" }
-        return if (cleaned.isEmpty() || cleaned.all { it == '.' }) {
-            val hash = MessageDigest.getInstance("SHA-256")
-                .digest(url.toByteArray(Charsets.UTF_8))
-                .joinToString("") { "%02x".format(it) }
-                .take(16)
-            "file_${index}_$hash"
-        } else {
-            cleaned
-        }
-    }
+    fun sanitizedBasename(url: String, index: Int): String =
+        ModelFileNaming.sanitizedBasename(url, index)
 
     /** Имя модели в составе имени файла корня: всё вне [A-Za-z0-9_.-] → '_'. */
     private fun sanitizeId(modelId: String): String =
@@ -75,14 +67,22 @@ object DownloadLayout {
 
     /**
      * Кандидаты имени УСТАНОВЛЕННОГО файла модели для сверки SHA-256
-     * (импорт ZIP в ModelManagerImpl и восстановление бэкапа): имя новой
-     * схемы с префиксом id, санитизированный basename без префикса и
-     * legacy-сырое имя URL вместе с query (старые загрузки писали
-     * «?raw=true» прямо в имя файла). Единая точка, чтобы сверки
-     * находили файлы всех схем одинаково.
+     * (импорт ZIP в ModelManagerImpl.verifyImportChecksums, восстановление
+     * бэкапа в ModelBackupManager.bundleShaOk) И очистки остатков в корне
+     * каталога рантайма ([deletePendingParts], [deleteOrphanedFiles]) —
+     * единый список обеих раскладок, чтобы сверка и очистка находили
+     * файлы всех схем одинаково (расхождение наборов молча скипало
+     * legacy-раскладку «<modelId>.onnx» при восстановлении бэкапа):
+     * имя новой схемы с префиксом id, legacy-склейка «id__basename»,
+     * санитизированный basename без префикса, legacy-сырой basename без
+     * query, сырой basename вместе с query (старые загрузки писали
+     * «?raw=true» прямо в имя файла) и legacy-фолбэк старого одиночного
+     * ONNX «<modelId>.onnx» при пустом basename URL.
      */
     fun installedFileCandidates(modelId: String, url: String, index: Int): List<String> {
         val sanitized = sanitizedBasename(url, index)
+        val raw = url.substringAfterLast('/').substringBefore('?').substringBefore('#')
+        val legacyRootName = if (raw.isBlank() || raw.all { it == '.' }) "file_$index" else raw
         return buildList {
             add(targetFileName(modelId, url, index, inModelDir = false))
             // Legacy-имя прежней схемы склейки «id__basename» (issue #83):
@@ -90,13 +90,45 @@ object DownloadLayout {
             val legacyPrefixed = legacyPrefixedName(modelId, sanitized)
             if (legacyPrefixed !in this) add(legacyPrefixed)
             if (sanitized !in this) add(sanitized)
-            val raw = url.substringAfterLast('/')
-            if (raw.isNotBlank() && raw !in this) add(raw)
+            if (legacyRootName !in this) add(legacyRootName)
+            val rawWithQuery = url.substringAfterLast('/')
+            if (rawWithQuery.isNotBlank() && !rawWithQuery.all { it == '.' } &&
+                rawWithQuery !in this
+            ) {
+                add(rawWithQuery)
+            }
+            if (raw.isBlank() || raw.all { it == '.' }) {
+                val legacySingle = "$modelId.onnx"
+                if (legacySingle !in this) add(legacySingle)
+            }
         }
     }
 
-    /** Каталог мультифайловой модели: `<каталог рантайма>/<modelId>`. */
-    fun modelDir(runtimeDir: File, modelId: String): File = File(runtimeDir, modelId)
+    /** Разрешённые файловые символы modelId для каталога записи. */
+    private val SAFE_MODEL_ID = Regex("[A-Za-z0-9._-]+")
+
+    /**
+     * Проверка modelId как имени каталога записи `<runtimeDir>/<modelId>`
+     * (контрольный аудит): id используется в пути напрямую ([modelDir]),
+     * а [deleteOrphanedFiles] сносит этот каталог через deleteRecursively —
+     * id из внешнего манифеста бэкапа с «/», «\», «..» дал бы удаление или
+     * подмену файлов вне каталога рантайма. Разрешены только
+     * [A-Za-z0-9._-], «.» и «..» отклоняются.
+     */
+    fun isSafeModelId(modelId: String): Boolean =
+        SAFE_MODEL_ID.matches(modelId) && modelId != "." && modelId != ".."
+
+    /**
+     * Каталог мультифайловой модели: `<каталог рантайма>/<modelId>`.
+     * НЕБЕЗОПАСНЫЙ id (см. [isSafeModelId]) — [IllegalArgumentException]:
+     * явная ошибка вместо тихой подстановки, вызывающий (воркер — через
+     * общий перехват установки, импорт — через предварительную валидацию
+     * записи манифеста) фиксирует её как отказ.
+     */
+    fun modelDir(runtimeDir: File, modelId: String): File {
+        require(isSafeModelId(modelId)) { "Небезопасный id модели для каталога записи: $modelId" }
+        return File(runtimeDir, modelId)
+    }
 
     /** Признак «файл скачивается в персональный каталог модели» для раскладки [fileDir]. */
     private fun inModelDirFor(
@@ -131,41 +163,6 @@ object DownloadLayout {
         }
 
     /**
-     * Кандидаты имён целевого файла в корне каталога рантайма: новое имя
-     * (префикс modelId + санитизированный basename, п.15), санитизированный
-     * basename без префикса и legacy-имена загрузок, начатых до смены схемы:
-     * сырой basename без query/fragment, сырой basename ВМЕСТЕ с query
-     * (старый `substringAfterLast('/')` не отрезал «?raw=true» — он попадал
-     * в имя файла и в `.part`), fallback старого одиночного ONNX
-     * `<modelId>.onnx` при пустом basename — очистка обязана находить
-     * остатки всех схем.
-     */
-    private fun rootNameCandidates(modelId: String, url: String, index: Int): List<String> {
-        val raw = url.substringAfterLast('/').substringBefore('?').substringBefore('#')
-        val legacy = if (raw.isBlank() || raw.all { it == '.' }) "file_$index" else raw
-        return buildList {
-            add(targetFileName(modelId, url, index, inModelDir = false))
-            val sanitized = sanitizedBasename(url, index)
-            if (sanitized !in this) add(sanitized)
-            // Legacy-имена обеих прежних схем (issue #83) - очистка обязана
-            // находить остатки и с новым, и со старым префиксным разделителем.
-            val legacyPrefixed = legacyPrefixedName(modelId, sanitized)
-            if (legacyPrefixed !in this) add(legacyPrefixed)
-            if (legacy !in this) add(legacy)
-            val rawWithQuery = url.substringAfterLast('/')
-            if (rawWithQuery.isNotBlank() && !rawWithQuery.all { it == '.' } &&
-                rawWithQuery !in this
-            ) {
-                add(rawWithQuery)
-            }
-            if (raw.isBlank() || raw.all { it == '.' }) {
-                val legacySingle = "$modelId.onnx"
-                if (legacySingle !in this) add(legacySingle)
-            }
-        }
-    }
-
-    /**
      * Удалить в каталоге [dir] часть докачки `<name>.part` и её метаданные
      * `<name>.part.meta` (целые целевые файлы не касаются). Общий для очисток
      * [deletePendingParts] и [deleteOrphanedFiles].
@@ -191,12 +188,16 @@ object DownloadLayout {
         urls: List<String>
     ) {
         if (urls.isEmpty()) return
+        if (!isSafeModelId(modelId)) {
+            Timber.w("Небезопасный id модели «$modelId» — части докачки не удаляются")
+            return
+        }
         val modelDir = modelDir(runtimeDir, modelId)
         urls.forEachIndexed { index, url ->
             val fileName = sanitizedBasename(url, index)
             val dir = fileDir(runtimeDir, runtime, modelId, urls, fileName)
             val names = if (dir == modelDir) listOf(fileName)
-            else rootNameCandidates(modelId, url, index)
+            else installedFileCandidates(modelId, url, index)
             for (name in names) {
                 deletePartVariants(dir, name)
             }
@@ -213,8 +214,10 @@ object DownloadLayout {
      * содержимое архива). Каталог модели принадлежит только этой записи
      * (ключ — id), поэтому сносится без разбора отдельных файлов.
      *
-     * Имена в корне каталога перебираются по всем кандидатам обеих схем
-     * нейминга (ревью, п.15) — legacy-остатки не должны переживать очистку.
+     * Имена в корне каталога перебираются по единому списку кандидатов
+     * [installedFileCandidates] (все схемы нейминга, ревью, п.15) —
+     * legacy-остатки не должны переживать очистку, а сверки (импорт,
+     * бэкап) видят тот же набор, что и очистка.
      *
      * Вызывается только когда живой загрузки по этому id нет (после
      * cancelUniqueWork) или запись удалена/не READY — иначе удаляются
@@ -227,6 +230,13 @@ object DownloadLayout {
         urls: List<String>
     ) {
         if (urls.isEmpty()) return
+        // Небезопасный id (например, из внешнего манифеста бэкапа) дал бы
+        // File(runtimeDir, "a/../x") и deleteRecursively вне каталога
+        // рантайма — такую запись очистки пропускаем целиком.
+        if (!isSafeModelId(modelId)) {
+            Timber.w("Небезопасный id модели «$modelId» — остатки не удаляются")
+            return
+        }
         val modelDir = modelDir(runtimeDir, modelId)
 
         var usesModelDir = false
@@ -240,7 +250,7 @@ object DownloadLayout {
             // Корень каталога рантайма: части докачки, метаданные докачки и
             // осиротевший целый целевой файл — одиночный ONNX или архив до
             // распаковки (для не READY-модели это остаток её же загрузки).
-            for (name in rootNameCandidates(modelId, url, index)) {
+            for (name in installedFileCandidates(modelId, url, index)) {
                 deletePartVariants(dir, name)
                 val doneFile = File(dir, name)
                 if (doneFile.isFile && !doneFile.delete()) {

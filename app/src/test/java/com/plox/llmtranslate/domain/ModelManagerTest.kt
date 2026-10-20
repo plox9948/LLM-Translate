@@ -2,6 +2,7 @@ package com.plox.llmtranslate.domain
 
 import android.content.Context
 import android.net.Uri
+import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -28,8 +29,11 @@ import io.mockk.spyk
 import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.joinAll
@@ -46,6 +50,7 @@ import org.junit.Before
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.File
+import kotlinx.coroutines.withTimeout
 
 /**
  * Тесты ModelManager: выбор и удаление моделей.
@@ -265,7 +270,10 @@ class ModelManagerTest {
 
         manager.cancelDownload("m1")
 
-        coVerify { repository.deleteById("m1") }
+        // Ожидание терминального статуса отменённого воркера уходит на
+        // Dispatchers.IO (реальный поток) — завершение отмены подтверждаем
+        // с wall-clock таймаутом, файловая очистка идёт до deleteById.
+        coVerify(timeout = 5000) { repository.deleteById("m1") }
         assertFalse(modelDir.exists())
         modelsDir.deleteRecursively()
     }
@@ -285,7 +293,7 @@ class ModelManagerTest {
 
         manager.cancelDownload("m2")
 
-        coVerify { repository.deleteById("m2") }
+        coVerify(timeout = 5000) { repository.deleteById("m2") }
         assertFalse(File(runtimeDir, "opus.onnx").exists())
         assertFalse(File(runtimeDir, "opus.onnx.part").exists())
         assertFalse(File(runtimeDir, "opus.onnx.part.meta").exists())
@@ -970,8 +978,14 @@ class ModelManagerTest {
         // Отказ schedule — upsert (DOWNLOADING) не выполняется вовсе, а
         // уже возможная строка DOWNLOADING переводится в ERROR, иначе UI
         // навсегда остался бы в pending-гарде без кнопки «Повторить».
+        // Ревью повт. аудита, п.6: статусное обновление гейтировано
+        // (только из DOWNLOADING) — READY-готовность отказ постановки в
+        // очередь не затирает.
         coVerify(exactly = 0) { repository.upsert(any()) }
-        coVerify(exactly = 1) { repository.updateDownloadStatus("dl2", ModelStatus.ERROR) }
+        coVerify(exactly = 1) {
+            repository.updateDownloadStatusWhileDownloading("dl2", ModelStatus.ERROR)
+        }
+        coVerify(exactly = 0) { repository.updateDownloadStatus(any(), any()) }
     }
 
     @Test
@@ -988,6 +1002,9 @@ class ModelManagerTest {
         manager.startDownload(cardForDownload("dl3"))
 
         coVerify(exactly = 0) { repository.updateDownloadStatus(any(), any()) }
+        coVerify(exactly = 0) {
+            repository.updateDownloadStatusWhileDownloading(any(), any())
+        }
     }
 
     @Test
@@ -1063,5 +1080,137 @@ class ModelManagerTest {
             assertFalse("Удалённая модель оставила файлы", leftoverFiles)
         }
         modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `startDownload keeps blocked live work instead of replacing it`() = runTest {
+        // Замечание аудита (противоречивая живость): BLOCKED — загрузка,
+        // ожидающая ограничения (напр. CONNECTED), по единому предикату
+        // живости она ЖИВАЯ. Повторный тап «Скачать» обязан оставить её
+        // под KEEP: перестановка с REPLACE отменяла легитимную очередь,
+        // а сверка после enqueue не должна видеть «отсутствующую живую
+        // работу» при BLOCKED.
+        val blockedInfo = mockk<WorkInfo>()
+        every { blockedInfo.state } returns WorkInfo.State.BLOCKED
+        val future = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
+        every { future.get(any(), any()) } returns listOf(blockedInfo)
+        every {
+            workManager.getWorkInfosForUniqueWork("download_model_dl4")
+        } returns future
+        every {
+            workManager.enqueueUniqueWork(any(), any(), any<OneTimeWorkRequest>())
+        } returns mockk<androidx.work.Operation>(relaxed = true)
+
+        manager.startDownload(cardForDownload("dl4"))
+
+        verify(exactly = 1) {
+            workManager.enqueueUniqueWork(
+                "download_model_dl4",
+                ExistingWorkPolicy.KEEP,
+                any<OneTimeWorkRequest>()
+            )
+        }
+        verify(exactly = 0) {
+            workManager.enqueueUniqueWork(
+                any(),
+                ExistingWorkPolicy.REPLACE,
+                any<OneTimeWorkRequest>()
+            )
+        }
+        coVerify(exactly = 0) { repository.updateDownloadStatus(any(), any()) }
+        coVerify(exactly = 0) {
+            repository.updateDownloadStatusWhileDownloading(any(), any())
+        }
+    }
+
+    @Test
+    fun `cancel download waits for terminal worker status before file cleanup`() = runBlocking<Unit> {
+        // Замечание аудита (асимметрия путей отмены): cancelDownload не должен
+        // удалять файлы/запись, не дождавшись терминального статуса
+        // отменённого воркера, — иначе живой воркер восстановит `.part`
+        // после очистки (та же механика, что в cancelSupersededDownload).
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        val runtimeDir = File(modelsDir, "MARIAN_ONNX").apply { mkdirs() }
+        val part = File(runtimeDir, "opus.onnx.part").apply { writeBytes(byteArrayOf(2)) }
+        val partMeta = File(runtimeDir, "opus.onnx.part.meta").apply { writeText("m") }
+        val model = partialModel("m9", listOf("http://host/opus.onnx"))
+        coEvery { repository.getById("m9") } returns model
+        val liveInfo = mockk<WorkInfo>()
+        every { liveInfo.state } returns WorkInfo.State.RUNNING
+        val cancelledInfo = mockk<WorkInfo>()
+        every { cancelledInfo.state } returns WorkInfo.State.CANCELLED
+        val liveFuture = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
+        every { liveFuture.get(any(), any()) } returns listOf(liveInfo)
+        val cancelledFuture = mockk<com.google.common.util.concurrent.ListenableFuture<List<WorkInfo>>>()
+        every { cancelledFuture.get(any(), any()) } returns listOf(cancelledInfo)
+        val futures = java.util.ArrayDeque(listOf(liveFuture, cancelledFuture))
+        var polls = 0
+        every { workManager.getWorkInfosForUniqueWork("download_model_m9") } answers {
+            polls++
+            if (futures.size > 1) futures.removeFirst() else futures.peek()
+        }
+        val deleted = CompletableDeferred<Int>()
+        coEvery { repository.deleteById("m9") } answers { deleted.complete(polls); Unit }
+
+        manager.cancelDownload("m9")
+
+        // Цепочка отмены уходит на реальные диспетчеры (ожидание статуса —
+        // реальные паузы), поэтому ждём терминалом в реальном времени.
+        val pollsAtDelete = withTimeout(15_000) { deleted.await() }
+        assertTrue(
+            "Файловая очистка и удаление записи обязаны идти после наблюдения " +
+                "терминального статуса отменённого воркера, pollsAtDelete=$pollsAtDelete",
+            pollsAtDelete >= 2
+        )
+        assertFalse(part.exists())
+        assertFalse(partMeta.exists())
+        modelsDir.deleteRecursively()
+    }
+
+    @Test
+    fun `delete proceeds to file removal when engine release hangs`() = runBlocking<Unit> {
+        // Замечание аудита: зависший releaseModel (нативный инференс держит
+        // мьютекс движка) не должен вешать delete навсегда под importMutex —
+        // ожидание ограничено таймаутом по образцу RuntimeRouter.releaseSafely,
+        // после таймаута удаляются запись и файлы.
+        val modelsDir = tempModelsDir()
+        every { context.getExternalFilesDir("models") } returns modelsDir
+        val modelFile = File(modelsDir, "imported_hang1").apply { writeBytes(byteArrayOf(1)) }
+        val model = readyModel("hang1", ModelCategory.TRANSLATION).copy(
+            filePath = modelFile.absolutePath,
+            isBuiltin = false
+        )
+        coEvery { repository.getById("hang1") } returns model
+        val hang = CompletableDeferred<Unit>()
+        coEvery { runtimeRouter.releaseModel(any()) } coAnswers { hang.await() }
+        val deleted = CompletableDeferred<Unit>()
+        coEvery { repository.deleteById("hang1") } answers { deleted.complete(Unit); Unit }
+
+        // Реальный scope: виртуальный тестовый диспетчер не двигал бы
+        // виртуальные таймауты с реального hang-ожидания.
+        val realScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val realManager = ModelManagerImpl(
+                context,
+                catalogProvider,
+                repository,
+                preferences,
+                deviceInfoProvider,
+                runtimeRouter,
+                Json { ignoreUnknownKeys = true },
+                realScope
+            )
+            realManager.delete("hang1")
+            withTimeout(25_000) { deleted.await() }
+            coVerify(exactly = 1) { repository.deleteById("hang1") }
+            assertFalse(
+                "Файлы удаляются после таймаута освобождения движка",
+                modelFile.exists()
+            )
+        } finally {
+            realScope.cancel()
+            modelsDir.deleteRecursively()
+        }
     }
 }

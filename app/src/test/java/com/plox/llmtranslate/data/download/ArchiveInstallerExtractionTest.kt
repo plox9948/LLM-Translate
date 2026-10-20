@@ -189,6 +189,67 @@ class ArchiveInstallerExtractionTest {
         return out.toByteArray()
     }
 
+    // -----------------------------------------------------------------
+    // Ревью повт. аудита, п.5: flattenModelDir — нечитаемый список и
+    // откат частичного переноса.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `flatten rejects unreadable model dir instead of silent success`() {
+        val root = tempDir()
+        try {
+            // destDir — обычный файл: listFiles() == null (нечитаемый
+            // список) — раньше был тихий «успех» и неполный пучок
+            // регистрировался READY.
+            val notAdir = File(root, "model").apply { writeText("x") }
+            assertFalse(installer.flattenModelDir(notAdir))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `flatten moves bundle subdir to root`() {
+        val root = tempDir()
+        try {
+            val modelDir = File(root, "m1").apply { mkdirs() }
+            val subdir = File(modelDir, "pack").apply { mkdirs() }
+            File(subdir, "tokens.txt").writeText("tokens")
+            File(subdir, "model.onnx").writeText("weights")
+            assertTrue(installer.flattenModelDir(modelDir))
+            assertEquals("tokens", File(modelDir, "tokens.txt").readText())
+            assertEquals("weights", File(modelDir, "model.onnx").readText())
+            assertFalse(subdir.exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `rollback returns already moved entries back into subdir`() {
+        val root = tempDir()
+        try {
+            val modelDir = File(root, "m1").apply { mkdirs() }
+            val subdir = File(modelDir, "pack").apply { mkdirs() }
+            File(subdir, "tokens.txt").writeText("tokens")
+            File(subdir, "model.onnx").writeText("weights")
+            // Симулируем частичный перенос до отказа среднего entry:
+            // tokens.txt и model.onnx уже в корне модели.
+            val moved = listOf("tokens.txt", "model.onnx").map { name ->
+                val target = File(modelDir, name)
+                assertTrue(File(subdir, name).renameTo(target))
+                target
+            }
+            installer.rollbackFlattenMoves(subdir, moved)
+            assertFalse("tokens.txt не должен остаться в корне", File(modelDir, "tokens.txt").exists())
+            assertFalse("model.onnx не должен остаться в корне", File(modelDir, "model.onnx").exists())
+            assertEquals("tokens", File(subdir, "tokens.txt").readText())
+            assertEquals("weights", File(subdir, "model.onnx").readText())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     @Test
     fun `tar symlink entry is skipped and not written through as regular file`() = runBlocking {
         // Issue #83, п.4 (CVE-2022-41405): symlink-запись нельзя писать как

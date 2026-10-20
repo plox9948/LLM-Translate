@@ -24,7 +24,19 @@ interface TranslationHistoryDao {
     @Query("DELETE FROM translation_history")
     suspend fun clear()
 
-    @Query("DELETE FROM translation_history WHERE id NOT IN (SELECT id FROM translation_history ORDER BY created_at DESC LIMIT :keep)")
+    /**
+     * Обрезка истории до [keep] самых свежих записей. Вторичная сортировка
+     * по id (автоинкремент = порядок вставки): при одинаковых created_at
+     * (мс) без неё `LIMIT` выберал бы удаляемые строки недетерминированно —
+     * с ней всегда вытесняются самые ранние вставки. Детерминизм проверяется
+     * instrumentation-тестом TranslationHistoryTrimTest на реальном Room
+     * (unit-фейк DAO лишь повторяет этот порядок в памяти).
+     */
+    @Query(
+        "DELETE FROM translation_history WHERE id NOT IN (" +
+            "SELECT id FROM translation_history " +
+            "ORDER BY created_at DESC, id DESC LIMIT :keep)"
+    )
     suspend fun trim(keep: Int)
 
     @Query("DELETE FROM translation_history WHERE source_lang = :sourceLang AND target_lang = :targetLang AND input_text = :inputText")

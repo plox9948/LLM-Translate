@@ -58,8 +58,9 @@ data class ModelCatalogDto(
  */
 class ModelCatalogParser(
     private val json: Json = Json {
+        // Формат каталога собственный и строгий: isLenient допускал мусор
+        // вроде кавычек-чисел и нецитированных ключей (ревью).
         ignoreUnknownKeys = true
-        isLenient = true
     }
 ) {
     /**
@@ -70,6 +71,19 @@ class ModelCatalogParser(
     fun parse(raw: String): List<ModelCard> {
         val dto = json.decodeFromString(ModelCatalogDto.serializer(), raw)
         // Реверс карты defaults: id карточки → язык, для которого она назначена.
+        // Конфликт битого каталога — одна модель назначена дефолтом нескольким
+        // языкам: молча побеждает алфавитно последний язык; случай фиксируется
+        // в логе (ревью), семантику выбора не меняем.
+        dto.defaultForLanguage.entries
+            .groupBy { it.value }
+            .filterValues { entries -> entries.size > 1 }
+            .forEach { (modelId, entries) ->
+                Timber.w(
+                    "Каталог default_for_language: модель $modelId значится дефолтом " +
+                        "для нескольких языков (${entries.joinToString { it.key }}) — " +
+                        "применяется алфавитно последний"
+                )
+            }
         val defaultByModel = dto.defaultForLanguage.entries
             .sortedBy { it.key }
             .associate { (language, modelId) -> modelId to language }
@@ -110,6 +124,19 @@ private fun CatalogModelDto.toCard(defaultLanguage: String?): ModelCard {
         ?: throw IllegalStateException("Неизвестная категория: ${this.category}")
     val runtimeValue = RuntimeType.entries.firstOrNull { it.name == runtime.uppercase() }
         ?: throw IllegalStateException("Неизвестный рантайм: ${this.runtime}")
+    val resolvedUrls = urls ?: emptyList()
+    val resolvedSha256s = resolveSha256s(sha256, sha256s)
+    // Битый каталог (ревью): элементов sha256s больше/меньше, чем urls —
+    // perUrlSha256s недостающие позиции получает как null и молча пропускает
+    // сверку скачивания; рассогласование фиксируем в логе.
+    if (sha256s != null && sha256s.isNotEmpty() && resolvedUrls.isNotEmpty() &&
+        sha256s.size != resolvedUrls.size
+    ) {
+        Timber.w(
+            "Каталог $id: длина sha256s (${sha256s.size}) не равна числу urls " +
+                "(${resolvedUrls.size}) — для недостающих файлов проверка будет пропущена"
+        )
+    }
     return ModelCard(
         id = id,
         category = categoryValue,
@@ -122,9 +149,9 @@ private fun CatalogModelDto.toCard(defaultLanguage: String?): ModelCard {
         quality = quality,
         speed = speed,
         url = url,
-        urls = urls ?: emptyList(),
+        urls = resolvedUrls,
         sha256 = sha256,
-        sha256s = resolveSha256s(sha256, sha256s),
+        sha256s = resolvedSha256s,
         license = license,
         minAndroidSdk = minAndroidSdk,
         recommendedRamMb = recommendedRamMb,

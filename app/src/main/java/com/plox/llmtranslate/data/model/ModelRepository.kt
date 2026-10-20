@@ -47,16 +47,24 @@ class ModelRepository @Inject constructor(
         dao.getFirstReady(category.name)?.toDomainOrNull()
 
     /**
-     * Сохранить модель. Timestamp'ы createdAt/updatedAt поддерживаются автоматически.
+     * Сохранить модель. Timestamp'ы createdAt/updatedAt поддерживаются
+     * автоматически: read-modify-write прежней createdAt выполняется в одном
+     * Room-[@Transaction] ([ModelDao.upsertPreservingCreatedAt]) — параллельные
+     * upsert одной id не затирают createdAt взаимно.
+     *
+     * Требование к вызывающему: файловые операции с той же моделью
+     * (подмена файлов, импорт, удаление/отмена скачивания) обязаны идти
+     * под общим [com.plox.llmtranslate.data.backup.ModelImportLock] —
+     * атомарность транзакции защищает только строку БД от перемешивания
+     * upsert'ов, но не согласует её с заменой файлов на диске; под локом
+     * параллельный upsert одной id невозможен вовсе.
      */
     suspend fun upsert(model: InstalledModel) {
-        val existing = dao.getById(model.id)
         val now = System.currentTimeMillis()
-        dao.upsert(
-            model.toEntity(
-                createdAt = existing?.createdAt ?: now,
-                updatedAt = now
-            )
+        dao.upsertPreservingCreatedAt(
+            entity = model.toEntity(createdAt = now, updatedAt = now),
+            createdAtFallback = now,
+            updatedAt = now
         )
     }
 
@@ -68,6 +76,10 @@ class ModelRepository @Inject constructor(
      * @return false, если запись удалена/не найдена (защита от гонки с
      * cancel/delete — удалённая запись не восстанавливается).
      */
+    @Deprecated(
+        "Продакшн-вызывающих не осталось: используйте гейтированные " +
+            "updateDownloadStatusWhileDownloading/finalizeDownload (status-гейт, issue #83)"
+    )
     suspend fun updateDownloadStatus(id: String, status: ModelStatus): Boolean =
         dao.updateStatusById(id, status.name, System.currentTimeMillis()) > 0
 
@@ -77,6 +89,19 @@ class ModelRepository @Inject constructor(
      */
     suspend fun updateDownloadProgress(id: String, status: ModelStatus, progress: Int): Boolean =
         dao.updateProgressById(id, status.name, progress, System.currentTimeMillis()) > 0
+
+    /**
+     * Точечная терминальная запись статуса воркером (permanent-отказ,
+     * исчерпание попыток, повтор) только пока запись остаётся в
+     * DOWNLOADING — единый статусный гейт с [finalizeDownload]
+     * (см. [ModelDao.updateStatusWhileDownloadingById]): запись, промоутнутую
+     * параллельным импортом в READY в окне между фейлом установки и этой
+     * записью, ERROR/DOWNLOADING не затираем.
+     *
+     * @return false, если запись удалена или уже не в DOWNLOADING.
+     */
+    suspend fun updateDownloadStatusWhileDownloading(id: String, status: ModelStatus): Boolean =
+        dao.updateStatusWhileDownloadingById(id, status.name, System.currentTimeMillis()) > 0
 
     /**
      * Точечное завершение скачивания: READY, прогресс 100, filePath, bytesDone
@@ -112,21 +137,29 @@ class ModelRepository @Inject constructor(
      * отмонтирован): такие записи не трогаются ни для каталожных, ни для
      * IMPORTED-моделей.
      *
-     * @return id записей, переведённых в ERROR.
+     * @return id записей, реально переведённых в ERROR (гейтированный
+     * UPDATE — запись, выведенную из READY между снимком и обновлением,
+     * не трогаем и в список не включаем).
      */
     internal suspend fun markBrokenReadyRecords(snapshot: (String) -> FileSnapshot?): List<String> {
         val now = System.currentTimeMillis()
         val broken = dao.observeAll().first()
             .filter { it.status == ModelStatus.READY.name }
             .filter { !readyRecordIsConsistent(it.filePath, snapshot) }
-        broken.forEach { dao.updateStatusById(it.id, ModelStatus.ERROR.name, now) }
-        if (broken.isNotEmpty()) {
+        // Регресс-аудит: UPDATE с гейтом status='READY'
+        // (см. ModelDao.markBrokenReadyById) — иначе гонка с переустановкой
+        // (READY→DOWNLOADING) между снимком списка и UPDATE затирает живую
+        // загрузку в ERROR. Возвращаются только реально обновлённые id.
+        val repaired = broken.filter {
+            dao.markBrokenReadyById(it.id, ModelStatus.ERROR.name, now) > 0
+        }
+        if (repaired.isNotEmpty()) {
             Timber.w(
                 "READY-записи без файлов на диске переведены в ERROR: " +
-                    broken.joinToString { "${it.id} (${it.filePath})" }
+                    repaired.joinToString { "${it.id} (${it.filePath})" }
             )
         }
-        return broken.map { it.id }
+        return repaired.map { it.id }
     }
 
     /**

@@ -62,7 +62,7 @@ class ModelDownloadWorker @AssistedInject constructor(
         // иначе модель навсегда останется «скачивающейся» в UI.
         if (urlsCsv == null || installer == null) {
             Timber.e("Модель $modelId: некорректные входные данные скачивания")
-            markError(modelId)
+            markStatusNonCancellable(modelId, ModelStatus.ERROR)
             return Result.failure()
         }
 
@@ -94,7 +94,7 @@ class ModelDownloadWorker @AssistedInject constructor(
                     "Модель $modelId: недостаточно места — требуется $requiredFreeBytes байт, " +
                         "доступно $freeBytes"
                 )
-                markError(modelId)
+                markStatusNonCancellable(modelId, ModelStatus.ERROR)
                 return Result.failure(workDataOf(KEY_ERROR to "Недостаточно свободного места"))
             }
         }
@@ -126,7 +126,7 @@ class ModelDownloadWorker @AssistedInject constructor(
             // перехвата воркер падает терминально (WorkManager не повторяет
             // упавший CoroutineWorker), а запись навеки остаётся DOWNLOADING.
             Timber.e(e, "Необработанный сбой установки модели $modelId")
-            markErrorNonCancellable(modelId)
+            markStatusNonCancellable(modelId, ModelStatus.ERROR)
             return Result.failure(workDataOf(KEY_ERROR to "Сбой установки: ${e.message}"))
         }
 
@@ -135,10 +135,14 @@ class ModelDownloadWorker @AssistedInject constructor(
                 // bytesDone — по ФАКТУ установленных файлов (обход пути и сумма
                 // length()), а не по каталожному sizeBytes: у архивных установок
                 // размер распакованного содержимого отличается от размера
-                // архива/пучка в каталоге.
-                val installedBytes = File(result.path).walkTopDown()
-                    .filter { it.isFile }
-                    .sumOf { it.length() }
+                // архива/пучка в каталоге. Обход — на [Dispatchers.IO]
+                // (doWork CoroutineWorker живёт на Default — файловые операции
+                // там занимают поток пула вычислений).
+                val installedBytes = withContext(Dispatchers.IO) {
+                    File(result.path).walkTopDown()
+                        .filter { it.isFile }
+                        .sumOf { it.length() }
+                }
                 val saved = try {
                     repository.finalizeDownload(modelId, result.path, installedBytes)
                 } catch (e: CancellationException) {
@@ -152,7 +156,7 @@ class ModelDownloadWorker @AssistedInject constructor(
                     // Установленные файлы не удаляем: повторная попытка повторит
                     // установку по той же раскладке и доведёт запись до READY.
                     Timber.e(e, "Не удалось зафиксировать READY для модели $modelId")
-                    markErrorNonCancellable(modelId)
+                    markStatusNonCancellable(modelId, ModelStatus.ERROR)
                     return Result.failure(workDataOf(KEY_ERROR to "Сбой завершения установки: ${e.message}"))
                 }
                 if (!saved) {
@@ -173,7 +177,7 @@ class ModelDownloadWorker @AssistedInject constructor(
             is InstallResult.Failure -> {
                 if (result.permanent) {
                     // Повторная попытка не поможет — файл повреждён на сервере.
-                    repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
+                    markStatusNonCancellable(modelId, ModelStatus.ERROR)
                     return Result.failure(workDataOf(KEY_ERROR to result.message))
                 }
                 if (runAttemptCount >= MAX_ATTEMPTS) {
@@ -181,33 +185,28 @@ class ModelDownloadWorker @AssistedInject constructor(
                         "Модель $modelId: исчерпаны попытки скачивания " +
                             "(попытка $runAttemptCount): ${result.message}"
                     )
-                    repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
+                    markStatusNonCancellable(modelId, ModelStatus.ERROR)
                     return Result.failure(workDataOf(KEY_ERROR to result.message))
                 }
                 // Сетевая ошибка или mismatch после докачки (часть уже отброшена) —
                 // повторяем: докачка продолжит с места обрыва либо начнётся с нуля.
-                repository.updateDownloadStatus(modelId, ModelStatus.DOWNLOADING)
+                markStatusNonCancellable(modelId, ModelStatus.DOWNLOADING)
                 Result.retry()
             }
         }
     }
 
     /**
-     * Перевести запись модели из DOWNLOADING в ERROR (ранний отказ воркера).
-     * Запись может быть удалена во время работы — тогда обновление пропускается.
+     * Финальная статусная запись воркера (ранний отказ, терминальный фейл,
+     * повтор): выполняется на [NonCancellable] + [Dispatchers.IO] и через
+     * гейтированный DAO-запрос (гейт status='DOWNLOADING', единая политика
+     * с finalizeDownloadById): запись, промоутнутую импортом той же id в
+     * READY в окне между фейлом установки и этой записью, не затирается,
+     * и удалённая при отмене запись не воскресает.
      */
-    private suspend fun markError(modelId: String) {
-        repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
-    }
-
-    /**
-     * Пометить ERROR после необработанного исключения: запись статуса — на
-     * [NonCancellable], чтобы она выполнилась даже при нестабильном/
-     * отменяющемся контексте воркера.
-     */
-    private suspend fun markErrorNonCancellable(modelId: String) =
+    private suspend fun markStatusNonCancellable(modelId: String, status: ModelStatus) =
         withContext(NonCancellable + Dispatchers.IO) {
-            repository.updateDownloadStatus(modelId, ModelStatus.ERROR)
+            repository.updateDownloadStatusWhileDownloading(modelId, status)
         }
 
     /**

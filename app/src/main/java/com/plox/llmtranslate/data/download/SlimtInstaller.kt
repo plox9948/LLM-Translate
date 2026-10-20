@@ -81,7 +81,13 @@ class SlimtInstaller : ModelInstaller, BaseDownloader() {
                     created += out
                     gunzip(unpack = downloaded, to = out)
                     currentCoroutineContext().ensureActive()
-                    downloaded.delete()
+                    // Результат удаления не игнорируем: осиротевший .gz останется
+                    // лежать рядом с распакованным файлом в каталоге модели
+                    // (съедает место, попадает в обход bytesDone и в экспорт
+                    // бэкапа) — минимум, который можно сделать здесь, — лог.
+                    if (!downloaded.delete()) {
+                        Timber.w("Не удалось удалить осиротевший gzip-источник: ${downloaded.name}")
+                    }
                     if (out != unpacked) {
                         // Бросок имени на место: осколков после rename не остаётся.
                         if (!out.renameTo(unpacked)) {

@@ -76,6 +76,32 @@ class ModelRepositoryTest {
             return 1
         }
 
+        override suspend fun markBrokenReadyById(
+            id: String,
+            status: String,
+            updatedAt: Long
+        ): Int {
+            val existing = store[id] ?: return 0
+            // Гейт того же SQL-запроса Room (регресс-аудит):
+            // UPDATE ... WHERE id = :id AND status = 'READY'.
+            if (existing.status != ModelStatus.READY.name) return 0
+            store[id] = existing.copy(status = status, updatedAt = updatedAt)
+            return 1
+        }
+
+        override suspend fun updateStatusWhileDownloadingById(
+            id: String,
+            status: String,
+            updatedAt: Long
+        ): Int {
+            val existing = store[id] ?: return 0
+            // Гейт того же SQL-запроса Room (единая политика терминальных
+            // записей воркера): UPDATE ... WHERE id = :id AND status = 'DOWNLOADING'.
+            if (existing.status != ModelStatus.DOWNLOADING.name) return 0
+            store[id] = existing.copy(status = status, updatedAt = updatedAt)
+            return 1
+        }
+
         override suspend fun updateProgressById(
             id: String,
             status: String,
@@ -449,6 +475,66 @@ class ModelRepositoryTest {
         assertEquals(ModelStatus.READY.name, dao.store.getValue("offline").status)
         assertEquals(ModelStatus.DOWNLOADING.name, dao.store.getValue("downloading").status)
     }
+
+    @Test
+    fun `markBrokenReadyRecords does not overwrite records reinstalled between snapshot and update`() =
+        runTest {
+            // Регресс-аудит (зеркало гонки #83, п.2): если между снимком
+            // READY-списка и UPDATE модель переустановили (READY→DOWNLOADING),
+            // гейтированный markBrokenReadyById (WHERE status='READY') не
+            // затирает живую загрузку ERROR, и id не возвращается залеченным.
+            // Гонка смоделирована снимком: он вызывается уже по READY-фильтру
+            // и переводит строку в DOWNLOADING до DAO-гейта.
+            val dao = FakeDao()
+            dao.upsert(entity(id = "racing", filePath = "/files/empty"))
+            dao.upsert(entity(id = "broken", filePath = "/files/gone"))
+            val repo = ModelRepository(dao)
+
+            val repaired = repo.markBrokenReadyRecords { path ->
+                if (path == "/files/empty") {
+                    dao.store["racing"] = dao.store.getValue("racing")
+                        .copy(status = ModelStatus.DOWNLOADING.name)
+                }
+                FileSnapshot(isDirectory = false, size = 0, childCount = 0)
+            }
+
+            assertEquals(listOf("broken"), repaired)
+            assertEquals(ModelStatus.DOWNLOADING.name, dao.store.getValue("racing").status)
+            assertEquals(ModelStatus.ERROR.name, dao.store.getValue("broken").status)
+        }
+
+    @Test
+    fun `updateDownloadStatusWhileDownloading spares rows promoted out of downloading`() =
+        runTest {
+            // Регресс-аудит терминальных веток воркера: permanent/retry-запись
+            // применяется, только пока запись ещё в DOWNLOADING (гейт DAO по
+            // образцу finalizeDownloadById). Импорт, промоутнувший id в READY
+            // в окне между install-фейлом и UPDATE, не затирается.
+            val dao = FakeDao()
+            dao.upsert(entity(id = "promoted", filePath = "/files/m1"))
+            dao.upsert(entity(id = "failed", status = ModelStatus.ERROR.name, filePath = null))
+            dao.upsert(
+                entity(id = "live", status = ModelStatus.DOWNLOADING.name, filePath = null)
+            )
+            val repo = ModelRepository(dao)
+
+            // READY-запись импорта не затирается ни ERROR, ни DOWNLOADING.
+            assertFalse(repo.updateDownloadStatusWhileDownloading("promoted", ModelStatus.ERROR))
+            assertFalse(repo.updateDownloadStatusWhileDownloading("promoted", ModelStatus.DOWNLOADING))
+            assertEquals(ModelStatus.READY.name, dao.store.getValue("promoted").status)
+
+            // ERROR не возвращается в DOWNLOADING запоздалым повтором воркера.
+            assertFalse(repo.updateDownloadStatusWhileDownloading("failed", ModelStatus.DOWNLOADING))
+            assertEquals(ModelStatus.ERROR.name, dao.store.getValue("failed").status)
+
+            // Живая DOWNLOADING-запись обновляется как раньше (permanent-ERROR).
+            assertTrue(repo.updateDownloadStatusWhileDownloading("live", ModelStatus.ERROR))
+            assertEquals(ModelStatus.ERROR.name, dao.store.getValue("live").status)
+
+            // Удалённая запись — no-op.
+            dao.deleteById("live")
+            assertFalse(repo.updateDownloadStatusWhileDownloading("live", ModelStatus.DOWNLOADING))
+        }
 
     @Test
     fun `late progress from dead worker cannot overwrite ready or error record`() = runTest {

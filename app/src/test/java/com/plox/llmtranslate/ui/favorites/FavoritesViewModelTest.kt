@@ -189,6 +189,29 @@ class FavoritesViewModelTest {
         assertEquals(SpeakingSelection(7L, FavoriteSpeakField.RESULT), recreated.speaking.value)
     }
 
+    @Test
+    fun `regression doc - restore highlight binds by first text match of live phrase`() {
+        // Регресс-док текущей семантики restoreSpeakingFromCoordinator (ревью #83):
+        // TtsPlaybackCoordinator-статус хранит только ТЕКСТ живой фразы (без id
+        // записи), поэтому привязка «стоп»-подсветки идёт совпадением текста с
+        // первой записью в списке избранного. Живая фраза «hello» — это и
+        // перевод записи 7, и оригинал записи 9; подсветка ложится на первую
+        // совпавшую запись (7, поле перевода), а не на «более точную» по типу
+        // текста. Полная привязка потребовала бы id фразы в статусе координатора.
+        val duplicate = entry.copy(id = 9L, inputText = "hello", resultText = "hi")
+        every { favoritesRepository.observeAll() } returns flowOf(listOf(entry, duplicate))
+
+        // Фраза запущена координатором напрямую (не через эту VM) — сценарий
+        // recreation: VM гибнет при живой фразе синглтона-координатора.
+        ttsCoordinator.speak("hello", "en")
+
+        val recreated = FavoritesViewModel(
+            favoritesRepository, ttsRuntime, ttsCoordinator, preferences, pendingHolder,
+            SavedStateHandle()
+        )
+        assertEquals(SpeakingSelection(7L, FavoriteSpeakField.RESULT), recreated.speaking.value)
+    }
+
     /** Новый VM со списком [entries] — для тестов фильтрации поиска. */
     private fun newViewModelWith(entries: List<FavoriteEntry>): FavoritesViewModel {
         every { favoritesRepository.observeAll() } returns flowOf(entries)

@@ -251,3 +251,31 @@ internal fun estimateGraphBytes(graphs: List<File>): Long {
     }
     return total
 }
+
+/**
+ * Коэффициент запаса (ревью аудита, итерация 2): [estimateGraphBytes]
+ * считает только файлы графов, а ORT держит сверх весов arena-пул
+ * аллокатора и тензоры активаций — пик resident-памяти загрузки выше
+ * размера файлов, поэтому резерв бюджета умножается на 1.4.
+ */
+private const val RESERVE_HEADROOM_PERCENT = 40L
+
+/**
+ * Верхняя оценка ожидаемого resident-пика нового пучка для резерва
+ * байтового бюджета ([EngineCacheScaffold.reserveByteBudgetUnlocked]),
+ * ревью аудита (итерация 2): из двух оценок берётся большая —
+ * файлы графов с коэффициентом запаса 1.4 (arena/активации ORT) либо
+ * заявленный каталогом [ramRequiredMb] (если задан > 0 — обычно учитывает
+ * и активации); [extraBytes] — заметные не-ORT части пучка (например
+ * файлы tokenizer.json, разбираемого целиком в DOM с пиком 2-3x файла).
+ * Чистый хелпер — покрыт unit-тестом без нативного ONNX.
+ */
+internal fun reserveIncomingBytes(
+    graphBytes: Long,
+    ramRequiredMb: Int,
+    extraBytes: Long = 0L,
+): Long {
+    val graphHeadroom = graphBytes + graphBytes * RESERVE_HEADROOM_PERCENT / 100L
+    val declaredBytes = if (ramRequiredMb > 0) ramRequiredMb * (1024L * 1024L) else 0L
+    return maxOf(graphHeadroom, declaredBytes) + extraBytes
+}

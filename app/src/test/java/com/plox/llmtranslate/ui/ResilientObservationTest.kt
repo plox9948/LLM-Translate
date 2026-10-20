@@ -146,4 +146,73 @@ class ResilientObservationTest {
         errors.recover("source-b")
         assertNull(errors.state.value)
     }
+
+    @Test
+    fun `handler exception keeps source subscribed and reports under handler marker`() = runTest {
+        val errors = ObserveErrorTracker()
+        val received = mutableListOf<Int>()
+        var calls = 0
+
+        observeResilient(
+            scope = this,
+            source = {
+                calls++
+                flow {
+                    emit(1)
+                    emit(2)
+                }
+            },
+            messageRes = 42,
+            errors = errors,
+            marker = "source-a"
+        ) { value ->
+            received.add(value)
+            if (value == 1) throw IllegalStateException("сбой обработчика")
+        }
+
+        advanceUntilIdle()
+        // Исключение в onValue не перезапускает подписку (не путать со сбоем
+        // источника): collect продолжился, вторая эмиссия получена, вызовов
+        // source() был один.
+        assertEquals(1, calls)
+        assertEquals(listOf(1, 2), received)
+        // Сбой обработчика зарегистрирован под отдельным маркером — баннер
+        // показан, но это не метка живого источника.
+        assertEquals(42, errors.state.value)
+        errors.recover("source-a")
+        // Снятие ошибки источника не убирает ошибку обработчика: она живёт
+        // под маркером "handler:source-a" до скрытия в UI.
+        assertEquals(42, errors.state.value)
+        errors.recover("handler:source-a")
+        assertNull(errors.state.value)
+    }
+
+    @Test
+    fun `source invocation failure retries subscription`() = runTest {
+        val errors = ObserveErrorTracker()
+        val received = mutableListOf<Int>()
+        var calls = 0
+
+        observeResilient(
+            scope = this,
+            source = {
+                calls++
+                if (calls == 1) throw IllegalStateException("источник не создан")
+                flow { emit(1) }
+            },
+            messageRes = 42,
+            errors = errors,
+            marker = "source-a"
+        ) { value -> received.add(value) }
+
+        runCurrent()
+        // Исключение при получении flow — это сбой источника: зарегистрирован,
+        // подписка будет перезапущена после паузы.
+        assertEquals(42, errors.state.value)
+
+        advanceUntilIdle()
+        assertEquals(2, calls)
+        assertEquals(listOf(1), received)
+        assertNull(errors.state.value)
+    }
 }

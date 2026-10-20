@@ -1,5 +1,7 @@
 package com.plox.llmtranslate.domain.runtime
 
+import timber.log.Timber
+
 /**
  * LRU-кэш пучков моделей одного движка (issue #36).
  *
@@ -93,7 +95,9 @@ class EngineModelCache<T>(
      * поведение возврата в бюджет. Ключи из [protect] (активный
      * пучок) не вытесняются; если после обхода бюджет всё ещё превышен —
      * остались только защищённые/единственный массивный пучок, это
-     * допустимо (иначе кэш было бы нельзя использовать вовсе).
+     * допустимо (иначе кэш было бы нельзя использовать вовсе), но
+     * логируется (ревью аудита): молчаливое вечное превышение
+     * бюджета на защищённом массивном пучке должно быть видно в логе.
      * @return вытесненные пары (id, значение) в порядке вытеснения.
      */
     fun evictOverByteBudget(
@@ -101,6 +105,15 @@ class EngineModelCache<T>(
         reserveBytes: Long = 0L,
     ): List<Pair<String, T>> {
         val limitBytes = byteBudget - reserveBytes
+        // Ревью аудита: при reserveBytes > byteBudget лимит
+        // отрицательный — вытесняются ВСЕ незащищённые пучки; это штатная
+        // реакция («хотя бы один пучок всегда пускаем»), но молчаливая.
+        if (limitBytes < 0) {
+            Timber.w(
+                "Байтовый бюджет кэша ($byteBudget) меньше резерва нового пучка " +
+                    "($reserveBytes) — выгружаются все незащищённые пучки"
+            )
+        }
         if (storedBytes <= limitBytes) return emptyList()
         val evicted = ArrayList<Pair<String, T>>()
         val iterator = map.entries.iterator()
@@ -110,6 +123,16 @@ class EngineModelCache<T>(
             evicted += entry.key to entry.value
             iterator.remove()
             storedBytes -= sizeOf(entry.value)
+        }
+        // Остались только защищённые, а лимит всё ещё превышен —
+        // превышение бюджета переживёт загрузку; загрузка продолжается,
+        // но она должна быть наблюдаема.
+        if (storedBytes > limitBytes) {
+            Timber.w(
+                "Байтовый бюджет превышен даже после выгрузки всех незащищённых " +
+                    "пучков: resident=$storedBytes, limit=$limitBytes " +
+                    "(защищённые: $protect)"
+            )
         }
         return evicted
     }

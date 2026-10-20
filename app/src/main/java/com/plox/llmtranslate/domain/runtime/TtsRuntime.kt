@@ -7,15 +7,18 @@ import com.plox.llmtranslate.domain.model.RuntimeError
 import com.plox.llmtranslate.domain.model.TtsEngines
 import com.plox.llmtranslate.domain.model.userMessage
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
+import java.util.Collections
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -58,6 +61,55 @@ class TtsRuntime @Inject constructor(
      * иначе вызывающий экран остаётся с залипшим флагом «озвучиваем» (issue #40).
      */
     private val utterances = TtsUtteranceRegistry()
+
+    /**
+     * Настройки движка с уже активной подпиской [trackEnginePreference]
+     * (идемпотентность, re-review): экраны «Перевод» и «Избранное» живут
+     * одновременно (backstack) и оба ViewModel вызывают подписку — вторая
+     * подписка на тот же flow не создаётся. Ключ — ссылка на flow:
+     * ModelPreferences синглтон, обе подписки получают один и тот же
+     * [com.plox.llmtranslate.data.prefs.ModelPreferences.ttsEngine].
+     * Подписка выполняется в app-скоупе [scope] синглтона, а не в скоупе
+     * экрана: она переживает уничтожение инициирующей ViewModel, иначе после
+     * её гибели не осталось бы ни одной подписки и смена движка не
+     * применялась бы, пока жив только второй экран. Ключ снимается при
+     * завершении подписывающей корутины (re-review) — «отслеживание» не
+     * может остаться мёртвым навсегда.
+     */
+    private val trackedEngineFlows =
+        Collections.newSetFromMap(ConcurrentHashMap<Flow<String>, Boolean>())
+
+    /**
+     * Идемпотентная регистрация подписки на настройку движка: первый вызов
+     * для flow запускает collect в app-скоупе [scope], повторные — no-op.
+     * Re-review: collect обёрнут в цикл перезапуска — штатное завершение или
+     * сбой подписки иначе оставляли бы ключ в [trackedEngineFlows] мёртвым
+     * навсегда: повторный вызов не подписался бы, и смена движка больше не
+     * применялась бы. При гибели корутины ключ снимается (finally) —
+     * следующая регистрация поднимет подписку заново.
+     */
+    internal fun ensureEnginePreferenceTracking(engine: Flow<String>) {
+        if (!trackedEngineFlows.add(engine)) return
+        scope.launch {
+            try {
+                while (isActive) {
+                    try {
+                        engine.collect { value ->
+                            init(value)?.let { error ->
+                                Timber.w("TTS недоступен: ${error.userMessage()}")
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.e(e, "Подписка на настройку TTS-движка завершилась сбоем — перезапуск")
+                    }
+                }
+            } finally {
+                trackedEngineFlows.remove(engine)
+            }
+        }
+    }
 
     /**
      * Сериализует инициализацию: несколько подписчиков настройки ttsEngine
@@ -258,7 +310,16 @@ class TtsRuntime @Inject constructor(
      * остаётся залипший флаг «озвучиваем» (ревью).
      */
     fun stop() {
-        tts?.stop()
+        // Минимальная защита (аудит): stop() читает tts вне initMutex, и
+        // экземпляр мог быть параллельно shutdown()'нут в releaseUnlocked() —
+        // на части реализаций TextToSpeech.stop() после shutdown бросает
+        // IllegalStateException; наружу на путь остановки из UI выпускать её
+        // нельзя, drain колбэков выполняется в любом случае.
+        try {
+            tts?.stop()
+        } catch (e: IllegalStateException) {
+            Timber.w(e, "TTS stop() на уже освобождённом экземпляре движка — пропущен")
+        }
         notifyFinished(utterances.drain())
     }
 
@@ -354,17 +415,15 @@ internal class TtsUtteranceRegistry {
 }
 
 /**
- * Подписка экрана на настройку движка синтеза речи ([Flow] значения
- * [TtsEngines]): инициализация текущим движком при старте collecting и
- * переконфигурация при смене значения; ошибка инициализации только
- * логируется (экран продолжает работать без озвучивания). Вызывать внутри
- * области видимости экрана; параллельные подписчики экранных ViewModel
- * сериализуются мьютексом [TtsRuntime.init].
+ * Регистрация подписки экрана на настройку движка синтеза речи ([Flow] значения
+ * [TtsEngines]): инициализация текущим движком и переконфигурация при смене
+ * значения; ошибка инициализации только логируется (экран продолжает работать
+ * без озвучивания). Идемпотентна (re-review): экраны «Перевод» и «Избранное»
+ * вызывают её одновременно из своих ViewModel — collect живёт ровно один раз
+ * на flow в app-скоупе рантайма (см. [TtsRuntime.ensureEnginePreferenceTracking]),
+ * повторные вызовы безвредны. Вызывается из init экрана без собственной
+ * корутины: подписка сознательно не привязана к жизненному цикту ViewModel.
  */
-internal suspend fun TtsRuntime.trackEnginePreference(engine: Flow<String>) {
-    engine.collect { value ->
-        init(value)?.let { error ->
-            Timber.w("TTS недоступен: ${error.userMessage()}")
-        }
-    }
+internal fun TtsRuntime.trackEnginePreference(engine: Flow<String>) {
+    ensureEnginePreferenceTracking(engine)
 }

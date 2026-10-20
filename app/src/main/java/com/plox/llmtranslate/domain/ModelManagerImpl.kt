@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import timber.log.Timber
 import java.io.File
@@ -90,6 +91,27 @@ class ModelManagerImpl @Inject constructor(
 
         /** Лимит размера записи model_meta.json в импортируемом ZIP. */
         const val META_MAX_BYTES = 1 shl 20
+
+        /**
+         * Живые состояния unique-загрузки — единый предикат для [isWorkLive],
+         * [hasLiveDownloadWork] и ветки staleWork в [startDownload]
+         * (замечание аудита: расхождение давало перестановку с REPLACE
+         * работы, ожидающей CONNECTED-constraint). BLOCKED — не «залипшая»
+         * работа, а легитимная очередь в ожидании ограничения.
+         */
+        val LIVE_WORK_STATES = setOf(
+            WorkInfo.State.ENQUEUED,
+            WorkInfo.State.RUNNING,
+            WorkInfo.State.BLOCKED
+        )
+
+        /**
+         * Лимит ожидания releaseModel одного движка в delete() — по образцу
+         * [RuntimeRouter.releaseSafely] (зависший нативный инференс,
+         * удерживающий мьютекс движка, не должен вешать удаление и все
+         * импорты под importMutex).
+         */
+        const val RELEASE_MODEL_TIMEOUT_MS = 10_000L
     }
 
     /** Единый корень моделей ([ModelStorage]) — без дублирующего разрешения. */
@@ -246,21 +268,20 @@ class ModelManagerImpl @Inject constructor(
             // уже DOWNLOADING); если же строку успели удалить — upsert всё
             // равно создаёт её.
             //
-            // Ревью повт. аудита, п.7: гонка «отмена → скачать» в окне
-            // работы умирающего unique work — существующая работа уже
-            // CANCELLED/FAILED/BLOCKED (cancelDownload отменил её и
-            // пересохранить строку), а KEEP дропает новый enqueue в её
-            // пользу → залипший DOWNLOADING без воркера. Такая работа не
-            // живая, но и не освобождает unique-имя — переставляем её с
-            // REPLACE.
-            val states = uniqueWorkStates(model.id)
-            val liveWork = states.any {
-                it == WorkInfo.State.ENQUEUED || it == WorkInfo.State.RUNNING
-            }
-            val staleWork = states.any {
-                it == WorkInfo.State.CANCELLED || it == WorkInfo.State.FAILED ||
-                    it == WorkInfo.State.BLOCKED
-            }
+             // Ревью повт. аудита, п.7 + фикс противоречивой живости:
+             // живое состояние — единый предикат [LIVE_WORK_STATES]
+             // (ENQUEUED/RUNNING/BLOCKED), тот же, что в [isWorkLive] и
+             // [hasLiveDownloadWork]. BLOCKED — загрузка, ожидающая
+             // ограничения (напр. CONNECTED): она ЖИВАЯ, повторный тап
+             // «Скачать» обязан сохранить её под KEEP, а не переставлять
+             // с REPLACE (так отменялась легитимная очередь). staleWork —
+             // только терминальные CANCELLED/FAILED: не живые, но и не
+             // освобождают unique-имя — переставляем с REPLACE.
+             val states = uniqueWorkStates(model.id)
+             val liveWork = states.any { it in LIVE_WORK_STATES }
+             val staleWork = states.any {
+                 it == WorkInfo.State.CANCELLED || it == WorkInfo.State.FAILED
+             }
             try {
                 ModelDownloadWorker.schedule(
                     context,
@@ -274,11 +295,7 @@ class ModelManagerImpl @Inject constructor(
                     // живой работы так и нет, а терминальная/умирающая
                     // есть — перестановка с REPLACE.
                     val after = uniqueWorkStates(model.id)
-                    if (after.isNotEmpty() &&
-                        after.none {
-                            it == WorkInfo.State.ENQUEUED || it == WorkInfo.State.RUNNING
-                        }
-                    ) {
+                    if (after.isNotEmpty() && after.none { it in LIVE_WORK_STATES }) {
                         Timber.w(
                             "Загрузка ${model.id}: enqueue под KEEP не дал живой работы " +
                                 "(${after.joinToString()}) — перестановка с REPLACE"
@@ -290,13 +307,21 @@ class ModelManagerImpl @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "Не удалось поставить на скачивание модель ${card.id}")
-                // Ревью: воркер не встал в очередь — возможная строка
-                // DOWNLOADING от прошлой попытки осталась бы «скачивающейся»
-                // вечно (pending-гард UI, карточка без кнопки). Помечаем её
-                // ERROR: карточка покажет «Повторить». Для новой модели без
-                // строки в БД обновление — no-op (0 строк).
+                // Ревью + фикс ревью повт. аудита, п.6: воркер не встал в
+                // очередь — возможная строка DOWNLOADING от прошлой попытки
+                // осталась бы «скачивающейся» вечно (pending-гард UI, карточка
+                // без кнопки). Помечаем её ERROR гейтированным обновлением
+                // (только из DOWNLOADING, единый статусный гейт
+                // ModelDao.updateStatusWhileDownloadingById): для READY-модели
+                // статус не меняется вообще — негейтовый ERROR затирал бы
+                // готовность успешно установленной модели; ERROR здесь нужен
+                // только для «залипших» DOWNLOADING-строк. Для новой модели
+                // без строки в БД обновление — no-op (0 строк).
                 try {
-                    repository.updateDownloadStatus(model.id, ModelStatus.ERROR)
+                    repository.updateDownloadStatusWhileDownloading(
+                        model.id,
+                        ModelStatus.ERROR
+                    )
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -332,19 +357,16 @@ class ModelManagerImpl @Inject constructor(
 
     /**
      * Сырая проверка живости unique-работы [workName] в WorkManager
-     * (ENQUEUED/RUNNING/BLOCKED). Блокирующий [.get] будущего допустим:
-     * вызывается только с [Dispatchers.IO], фьючерс WorkManager читает
-     * локальную БД. При недоступности WorkManager бросает — вызывающий
-     * сам решает fallback-семантику и логирует её.
+     * ([LIVE_WORK_STATES]: ENQUEUED/RUNNING/BLOCKED). Блокирующий [.get]
+     * будущего допустим: вызывается только с [Dispatchers.IO], фьючерс
+     * WorkManager читает локальную БД. При недоступности WorkManager
+     * бросает — вызывающий сам решает fallback-семантику и логирует её.
      */
-    private fun isWorkLive(workName: String): Boolean =        WorkManager.getInstance(context)
+    private fun isWorkLive(workName: String): Boolean =
+        WorkManager.getInstance(context)
             .getWorkInfosForUniqueWork(workName)
             .get(WORK_INFO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .any { info ->
-                info.state == WorkInfo.State.ENQUEUED ||
-                    info.state == WorkInfo.State.RUNNING ||
-                    info.state == WorkInfo.State.BLOCKED
-            }
+            .any { info -> info.state in LIVE_WORK_STATES }
 
     /**
      * Состояния unique-работы загрузки модели (пусто при недоступном
@@ -363,9 +385,10 @@ class ModelManagerImpl @Inject constructor(
     }
 
     /**
-     * Есть ли живая unique-загрузка модели в WorkManager (ENQUEUED/RUNNING/
-     * BLOCKED) — см. [startDownload]. Неинициализированный/недоступный
-     * WorkManager считается «живой работы нет» (обычный путь schedule).
+     * Есть ли живая unique-загрузка модели в WorkManager
+     * ([LIVE_WORK_STATES]: ENQUEUED/RUNNING/BLOCKED) — см. [startDownload].
+     * Неинициализированный/недоступный WorkManager считается «живой работы
+     * нет» (обычный путь schedule).
      */
     private suspend fun hasLiveDownloadWork(modelId: String): Boolean = try {
         isWorkLive(ModelDownloadWorker.workName(modelId))
@@ -379,6 +402,19 @@ class ModelManagerImpl @Inject constructor(
         false
     }
 
+    /**
+     * Отменить скачивание модели по явной команде пользователя: отмена
+     * unique-работы + удаление незавершённой записи и её файлов.
+     *
+     * Замечание аудита (асимметрия с [cancelSupersededDownload]): раньше
+     * файловая подмена шла сразу после асинхронного cancel, не дожидаясь
+     * терминального статуса воркера — живой воркер дописывал `.part` и
+     * переименовывал цели уже после нашей очистки. Теперь та же механика:
+     * перед файловыми операциями ждём терминального статуса
+     * ([awaitWorkCancellation], предел [CANCEL_TERMINAL_TIMEOUT_MS]); при
+     * превышении ожидания остаточная гонка закрывается повторной очисткой
+     * на стороне воркера (`ModelDownloadWorker.cleanupCancelledModel`).
+     */
     override fun cancelDownload(modelId: String) {
         ModelDownloadWorker.cancel(context, modelId)
         scope.launch {
@@ -390,6 +426,10 @@ class ModelManagerImpl @Inject constructor(
                     val model = repository.getById(modelId) ?: return@launch
                     if (model.status != ModelStatus.READY) {
                         // Незавершённую запись удаляем, чтобы UI снова показал «Скачать».
+                        // Замечание аудита: до файловых операций ждём терминального
+                        // статуса отменённого воркера (как cancelSupersededDownload) —
+                        // иначе незавершённый воркер восстановит файлы после очистки.
+                        awaitWorkCancellation(modelId)
                         // При явной отмене пользователем удаляем и осиротевшие
                         // .part-файлы: частичная загрузка этой модели не нужна,
                         // при повторном скачивании начнётся заново.
@@ -421,14 +461,18 @@ class ModelManagerImpl @Inject constructor(
     /**
      * Удалить осиротевшие файлы незавершённой установки модели (issue #2, #40).
      * Вызывается только после [ModelDownloadWorker.cancel] (явная отмена в UI
-     * или удаление записи), поэтому живой WorkManager-загрузки по этому id нет
-     * и все файлы по URL записи — остатки её же прерванной установки: и
+     * или удаление записи); в путях явной отмены ([cancelDownload],
+     * [cancelSupersededDownload]) перед этим ждём терминального статуса
+     * воркера ([awaitWorkCancellation]), а не мгновенно полагаемся на
+     * асинхронный cancel (замечание аудита). Если зависший воркер так и не
+     * достиг терминального статуса в пределах [CANCEL_TERMINAL_TIMEOUT_MS],
+     * файлы по URL записи — остатки её же прерванной установки: и
      * недокачанные `.part` с метаданными докачки (конвенция BaseDownloader:
      * рядом с целевым файлом `<имя>.part` и `<имя>.part.meta`), и уже
      * переименованные целевые файлы, и остаток архива в корне каталога
      * рантайма (ArchiveInstaller распаковывает в каталог модели). Пока
-     * загрузка жива (сетевые повторы `Result.retry()`), метод не вызывается —
-     * докачка по `.part`-файлам сохраняется.
+     * загрузка жива и НЕ отменена (сетевые повторы `Result.retry()`),
+     * метод не вызывается — докачка по `.part`-файлам сохраняется.
      *
      * Размещение файлов задаёт общий с инсталляторами [DownloadLayout]
      * (см. [ModelDownloadWorker]): мультифайловые пачки, одиночные файлы
@@ -486,9 +530,12 @@ class ModelManagerImpl @Inject constructor(
      * исчезновения unique-работы) после [ModelDownloadWorker.cancel]. Опрос
      * каждые [CANCEL_POLL_INTERVAL_MS] с общим пределом
      * [CANCEL_TERMINAL_TIMEOUT_MS] на [Dispatchers.IO]. Превышение предела —
-     * только [Timber.w]: импорт продолжается, остаточная гонка «воркер ещё
-     * не прерван» ограничена грубыми границами отмены в распаковщиках и
-     * закрывается самовосстановлением сверки READY-записей с диском
+     * только [Timber.w]: вызывающий ([cancelSupersededDownload],
+     * [cancelDownload]) продолжает файловые операции, остаточная гонка
+     * «воркер ещё не прерван» ограничена грубыми границами отмены в
+     * распаковщиках, перекрывается повторной очисткой на стороне воркера
+     * (`ModelDownloadWorker.cleanupCancelledModel`) и для импорта —
+     * самовосстановлением сверки READY-записей с диском
      * (checkReadyRecordsAgainstDisk при старте приложения).
      */
     private suspend fun awaitWorkCancellation(modelId: String) = withContext(Dispatchers.IO) {
@@ -661,7 +708,25 @@ class ModelManagerImpl @Inject constructor(
                     // стирать, пока slimt mmap / ORT-сессии держат их занятыми:
                     // сначала освобождение движка, затем запись БД, и только
                     // потом диск.
-                    runtimeRouter.releaseModel(model)
+                    // Замечание аудита: под importMutex ожидание releaseModel
+                    // (движок ждёт окончания инференса под СВОИМ мьютексом)
+                    // зависшим нативным инференсом вешало удаление и все
+                    // импорты навсегда. Ожидание ограничено [RELEASE_MODEL_TIMEOUT_MS]
+                    // по образцу [RuntimeRouter.releaseSafely]; после таймаута
+                    // переходим к файловому удалению (движок отпустит пучок
+                    // позже под своим мьютексом; удаление mmap-файла на Android
+                    // безопасно до unmapping — inode живёт до закрытия).
+                    val engineReleased = withTimeoutOrNull(RELEASE_MODEL_TIMEOUT_MS) {
+                        runtimeRouter.releaseModel(model)
+                        true
+                    }
+                    if (engineReleased == null) {
+                        Timber.w(
+                            "Освобождение движка модели $modelId не завершилось за " +
+                                "$RELEASE_MODEL_TIMEOUT_MS мс (зависший инференс?) — " +
+                                "удаляем запись и файлы без освобождения пучка"
+                        )
+                    }
                     repository.deleteById(modelId)
                     // Ревью: назначения «язык → модель» (STT/TTS) с удалённым id
                     // снимаются — иначе настройка ссылается на несуществующую

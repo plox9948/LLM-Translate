@@ -42,12 +42,19 @@ object TranslationModelSelector {
         val langs = languages.toSet()
 
         // 1) Явная стрелка в имени/описании: "RU→EN", "ru→en".
+        // Неоднозначность (ревью аудита, по образцу уже сделанной неоднозначности токена
+        // indic ниже): при нескольких РАЗЛИЧНЫХ arrow-направлениях в тексте
+        // (импорт с описанием «ru→en, en→ru») прежнее первое совпадение
+        // выбирало направление произвольно — возвращаем неопределённость.
         val text = (displayName + " " + description).lowercase()
+        val arrows = mutableSetOf<Pair<String, String>>()
         for (m in DIRECTION_REGEX.findAll(text)) {
             val a = m.groupValues[1]
             val b = m.groupValues[2]
-            if (a in langs && b in langs && a != b) return a to b
+            if (a in langs && b in langs && a != b) arrows.add(a to b)
         }
+        if (arrows.size > 1) return null
+        arrows.firstOrNull()?.let { return it }
 
         // 2) Пара кодов языков через разделитель в id: "ru-en", "en-ru".
         val id = rawId.lowercase()

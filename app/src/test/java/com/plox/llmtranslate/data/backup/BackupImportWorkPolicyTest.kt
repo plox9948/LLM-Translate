@@ -42,7 +42,8 @@ class BackupImportWorkPolicyTest {
     @Test
     fun `decision skips swap when pre-cancel observation is QUERY_FAILED`() = runBlocking {
         var cancelled = false
-        assertFalse(
+        assertEquals(
+            ImportSwapDecision.DENIED_WITHOUT_CANCEL,
             decideImportWorkSwap(
                 modelId = "m",
                 firstObservation = ImportWorkObservation.QUERY_FAILED,
@@ -64,7 +65,8 @@ class BackupImportWorkPolicyTest {
         // второго наблюдения после паузы.
         val queries = AtomicInteger(0)
         var cancelled = false
-        assertTrue(
+        assertEquals(
+            ImportSwapDecision.SWAP_ALLOWED,
             decideImportWorkSwap(
                 modelId = "m",
                 firstObservation = ImportWorkObservation.LIVE,
@@ -89,7 +91,8 @@ class BackupImportWorkPolicyTest {
     fun `QUERY_FAILED after cancel is terminal and allows swap`() = runBlocking {
         // Отмена уже отправлена — не подтвержденное состояние после неё не
         // запрещает подмену (п.4 итерации 3).
-        assertTrue(
+        assertEquals(
+            ImportSwapDecision.SWAP_ALLOWED,
             decideImportWorkSwap(
                 modelId = "m",
                 firstObservation = ImportWorkObservation.LIVE,
@@ -103,19 +106,29 @@ class BackupImportWorkPolicyTest {
     }
 
     @Test
-    fun `no terminal status within timeout keeps previous swap path`() = runBlocking {
+    fun `no terminal status within timeout denies swap after cancel`() = runBlocking {
+        // Ревью аудита, п.3: LIVE по истечении дедлайна — живой воркер ещё
+        // работает, подмену НЕ разрешаем (fail-closed, соответствует KDoc
+        // importSwapAllowed); запись будет пропущена, повтор импорта позже
+        // увидит завершённую (отменённую) работу. Ревью повт. аудита, п.7:
+        // исход различается как DENIED_AFTER_CANCEL — cancel УЖЕ отправлен,
+        // загрузка пользователя потеряна без замещения и попадает в
+        // ImportResult.downloadsInterrupted.
         val clock = java.util.concurrent.atomic.AtomicLong(0L)
-        assertTrue(
+        var cancelled = false
+        assertEquals(
+            ImportSwapDecision.DENIED_AFTER_CANCEL,
             decideImportWorkSwap(
                 modelId = "m",
                 firstObservation = ImportWorkObservation.LIVE,
                 query = { ImportWorkObservation.LIVE },
-                cancelLive = { },
+                cancelLive = { cancelled = true },
                 nowMs = { clock.addAndGet(1_000L) },
                 pollIntervalMs = 1L,
                 terminalTimeoutMs = 50L
             )
         )
+        assertTrue(cancelled)
     }
 
     @Test
@@ -144,6 +157,78 @@ class BackupImportWorkPolicyTest {
             assertFalse(preparedTempDirBeforeSpaceGate(occupied))
         } finally {
             root.deleteRecursively()
+        }
+    }
+
+    // ── ревью аудита, п.4 + ревью повт. аудита, п.1/п.2: лимиты распаковки ──
+
+    @Test
+    fun `extract budget is max of manifest and zip declared estimates`() {
+        // Известный манифест: оценка гейта (уже с раздуванием) + 50 % запас.
+        assertEquals(1500L, backupExtractLimitBytes(1000L, 0L))
+        // Старый архив (sizeBytes=0) с объявленными размерами в заголовках ZIP:
+        // бюджет по ZIP-оценке — легитимные пучки в сотни МБ проходят
+        // (прежний floor 64 МБ их отклонял).
+        assertEquals(150_000L, backupExtractLimitBytes(0L, 100_000L))
+        // Обе оценки — берётся максимум с тем же запасом.
+        assertEquals(3000L, backupExtractLimitBytes(1000L, 2000L))
+        // Обе оценки недоступны (манифест 0 + ZIP без объявленных размеров) —
+        // повышенный предельный бюджет для легитимных старых архивов.
+        assertEquals(BACKUP_EXTRACT_UNKNOWN_BUDGET_BYTES, backupExtractLimitBytes(0L, 0L))
+    }
+
+    /** ZipInputStream с одной записью фиксированного размера. */
+    private fun zipWithEntry(bytes: Int): java.util.zip.ZipInputStream {
+        val data = java.io.ByteArrayOutputStream().apply {
+            java.util.zip.ZipOutputStream(this).use { zip ->
+                zip.putNextEntry(java.util.zip.ZipEntry("f"))
+                zip.write(ByteArray(bytes) { 7 })
+                zip.closeEntry()
+            }
+        }.toByteArray()
+        return java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(data)).apply { nextEntry }
+    }
+
+    @Test
+    fun `copyEntryCapped copies within budget and returns remainder`() {
+        val source = zipWithEntry(100)
+        val sink = java.io.ByteArrayOutputStream()
+        val remaining = copyEntryCapped(source, sink, 150L, 150L)
+        assertEquals(100, sink.size())
+        assertEquals(50L, remaining)
+        source.close()
+    }
+
+    @Test
+    fun `copyEntryCapped rejects content beyond remaining budget`() {
+        val source = zipWithEntry(100)
+        val overflow = java.io.ByteArrayOutputStream()
+        val error = runCatching { copyEntryCapped(source, overflow, 50L, 50L) }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error!!.message!!.contains("превысил расчётный лимит"))
+        source.close()
+    }
+
+    @Test
+    fun `budget is cumulative across entries of one pass`() {
+        // Ревью повт. аудита, п.1: остаток бюджета перетекает между записями
+        // прохода — суммарно N записей не пишут N×лимит (прежний баг: счётчик
+        // был локален на запись). Две по 100 байт при бюджете 150 байт: первая
+        // оставляет остаток 50, вторая выходит за суммарный лимит.
+        val first = zipWithEntry(100)
+        val second = zipWithEntry(100)
+        try {
+            val remaining = copyEntryCapped(first, java.io.ByteArrayOutputStream(), 150L, 150L)
+            assertEquals(50L, remaining)
+            val error = runCatching {
+                copyEntryCapped(second, java.io.ByteArrayOutputStream(), remaining, 150L)
+            }.exceptionOrNull()
+            assertTrue(error is IllegalStateException)
+            assertTrue(error!!.message!!.contains("суммарный объём распаковки"))
+            assertTrue(error.message!!.contains("150"))
+        } finally {
+            first.close()
+            second.close()
         }
     }
 }

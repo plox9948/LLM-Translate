@@ -1,5 +1,7 @@
 package com.plox.llmtranslate.domain.model
 
+import java.security.MessageDigest
+
 /**
  * Чистые правила именования файлов моделей для экспорта и распознавания
  * формата при импорте одиночного файла (ревью раунд 9: экспорт готовой
@@ -7,12 +9,38 @@ package com.plox.llmtranslate.domain.model
  * импорт отвергал — цикл экспорт→импорт own-моделей был сломан).
  * Вынесено в объект для unit-теста round-trip без Android-специфики.
  * Расширения архивов — общий источник [ArchiveFormats] (ревью, п.13:
- * импорт data-слоя `DownloadLayout` из domain устранён).
+ * импорт data-слоя `DownloadLayout` из domain устранён; ревью аудита: туда же
+ * перенесён чистый хелпер имён по URL [sanitizedBasename], DownloadLayout
+ * делегирует ему).
  */
 object ModelFileNaming {
 
     /** Расширения, которые осмысленно нести в имени файла (GGUF в приложении мёртв). */
     private val KNOWN_EXTENSIONS = setOf("onnx", "bin", "zip", "spm")
+
+    /**
+     * Санитизированное имя целевого файла по URL (ревью, п.15): basename без
+     * query/fragment; пустое, «.», «..» или имя после очистки — детерминированное
+     * имя из SHA-256 URL, чтобы небезопасное/пустое имя не попадало на диск.
+     * Чистый хелпер вынесен в domain (ревью аудита: domain не импортирует data):
+     * им пользуются загрузочная раскладка [com.plox.llmtranslate.data.download.DownloadLayout]
+     * (делегирование) и классификация раскладки [InstallCheckLogic] — имена URLs
+     * извлекаются одной точкой, иначе классификация расходится на URL с
+     * query/спец-символами.
+     */
+    fun sanitizedBasename(url: String, index: Int): String {
+        val raw = url.substringAfterLast('/').substringBefore('?').substringBefore('#')
+        val cleaned = raw.filter { it.isLetterOrDigit() || it in "._-" }
+        return if (cleaned.isEmpty() || cleaned.all { it == '.' }) {
+            val hash = MessageDigest.getInstance("SHA-256")
+                .digest(url.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+                .take(16)
+            "file_${index}_$hash"
+        } else {
+            cleaned
+        }
+    }
 
     /**
      * Имя файла экспорта одиночного файла или ZIP-архива каталога модели.
@@ -37,9 +65,15 @@ object ModelFileNaming {
     }
 
     /**
-     * Угадать рантайм по имени файла импорта. null — формат не распознан:
-     * импорт отклоняется вызывающим кодом (с предупреждением в лог и ошибкой
-     * в UI) вместо записи с битым умолчанием MARIAN_ONNX.
+     * Угадать рантайм по имени файла импорта — эвристика по имени, а не
+     * гарантия формата. null — формат не распознан: импорт отклоняется
+     * вызывающим кодом (с предупреждением в лог и ошибкой в UI) вместо
+     * записи с битым умолчанием MARIAN_ONNX. Одиночный `.onnx` уверенно
+     * помечается MARIAN_ONNX только как fallback-эвристика: это единственный
+     * рантайм, принимающий одиночный ONNX, — корректность графа (Marian-ли
+     * это экспорт или иная ONNX-модель) именем не проверяется и
+     * подтверждается только успешной загрузкой в рантайме (ревью аудита:
+     * честная формулировка вместо обещания «формат распознан»).
      */
     fun guessRuntime(fileName: String): RuntimeType? {
         val lower = fileName.lowercase()

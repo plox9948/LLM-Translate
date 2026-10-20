@@ -118,9 +118,12 @@ internal fun pickGreedyTokenSafe(
  * [sourceText] (текст чанка входа, если передан): повторяющийся паттерн
  * входа переносится декодером в вывод легитимно («no no no…» → «no no no…») —
  * если блок, повторяющийся в выводе, повторяется подряд и в нормализованном
- * входе, вырождением НЕ считается (в т.ч. при упоре в лимит), иначе ретрай
- * с no_repeat_ngram возвращал ошибку на корректном повторении входного
- * паттерна (ревью).
+ * входе, вырождением НЕ считается, иначе ретрай с no_repeat_ngram возвращал
+ * ошибку на корректном повторении входного паттерна (ревью). При упоре в
+ * лимит ([hitMaxLength]) такая скидка действует только когда хвостовой цикл
+ * вывода — тот самый повтор, из-за которого генерация упёрлась в лимит, —
+ * повторяется подряд и во входе: единичный случайный повтор из входа не
+ * должен обнулять сигнал вырождения для длинного остаточного цикла (ревью).
  */
 internal fun isDegenerateOutput(
     text: String,
@@ -129,27 +132,18 @@ internal fun isDegenerateOutput(
 ): Boolean {
     val words = wordsOf(text)
     // Повтор пришёл из входа — не вырождение.
-    if (sourceText != null && repeatsComeFromInput(words, wordsOf(sourceText))) {
-        return false
+    val sourceBlocks = sourceText?.let { repeatingBlocks(wordsOf(it)) } ?: emptySet()
+    if (sourceBlocks.isNotEmpty() && repeatingBlocks(words).any { it in sourceBlocks }) {
+        if (!hitMaxLength) return false
+        val tailCycle = tailCycleBlock(words)
+        if (tailCycle != null && tailCycle in sourceBlocks) return false
     }
     if (hitMaxLength) return true
     // Слова: split по пробельным, отбрасываем чисто пунктуационные токены.
     if (words.size >= MIN_WORDS_FOR_RATIO) {
         if (uniqueWordRatio(words) < MIN_UNIQUE_RATIO) return true
     }
-    for (period in 1..MAX_CYCLE_PERIOD) {
-        val needed = period * CYCLE_REPEATS
-        if (words.size < needed) continue
-        val tailStart = words.size - needed
-        var cyclic = true
-        for (i in 0 until needed) {
-            if (words[tailStart + i] != words[tailStart + (i % period)]) {
-                cyclic = false
-                break
-            }
-        }
-        if (cyclic) return true
-    }
+    if (tailCycleBlock(words) != null) return true
     return false
 }
 
@@ -191,13 +185,23 @@ private fun repeatingBlocks(words: List<String>): Set<List<String>> {
 }
 
 /**
- * «Повтор пришёл из входа»: любое повторённое подряд слово/блок вывода
- * встречается повторяется и в нормализованном входе (ревью — легитимные
- * повторы входа вроде «no no no…»).
+ * Блок хвостового цикла: последние `period * [CYCLE_REPEATS]` слов вывода
+ * образуют повтор периода `period` (1..[MAX_CYCLE_PERIOD]) — возвращается
+ * нормализованный блок периода, иначе null.
  */
-private fun repeatsComeFromInput(outputWords: List<String>, sourceWords: List<String>): Boolean {
-    if (sourceWords.isEmpty() || outputWords.isEmpty()) return false
-    val sourceBlocks = repeatingBlocks(sourceWords)
-    if (sourceBlocks.isEmpty()) return false
-    return repeatingBlocks(outputWords).any { it in sourceBlocks }
+private fun tailCycleBlock(words: List<String>): List<String>? {
+    for (period in 1..MAX_CYCLE_PERIOD) {
+        val needed = period * CYCLE_REPEATS
+        if (words.size < needed) continue
+        val tailStart = words.size - needed
+        var cyclic = true
+        for (i in 0 until needed) {
+            if (words[tailStart + i] != words[tailStart + (i % period)]) {
+                cyclic = false
+                break
+            }
+        }
+        if (cyclic) return words.subList(tailStart, tailStart + period).map { it.lowercase() }
+    }
+    return null
 }

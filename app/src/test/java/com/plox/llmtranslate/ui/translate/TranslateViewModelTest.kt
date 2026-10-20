@@ -516,6 +516,27 @@ class TranslateViewModelTest {
     }
 
     @Test
+    fun `startRecording true without flow attach leaves no phantom recording indicator`() {
+        // Re-review: startRecording() возвращает true и при присоединении к
+        // стартующей записи; если её инициализация затем упадёт, recordingFlow
+        // так и не эмитит true. Индикация (isRecording, таймер) ставится
+        // ТОЛЬКО коллектором по фактической эмиссии attach — без фантомного
+        // индикатора и залипшего потолка.
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        val recording = kotlinx.coroutines.flow.MutableStateFlow(false)
+        every { audioRecorder.recordingFlow } returns recording
+        coEvery { audioRecorder.startRecording() } returns true
+        createViewModel()
+
+        viewModel.startRecording()
+        assertFalse(viewModel.uiState.value.isRecording)
+
+        // Фактическая активация сцены рекордером — эмиссия true под мьютексом.
+        recording.value = true
+        assertTrue(viewModel.uiState.value.isRecording)
+    }
+
+    @Test
     fun `taken auto-wav suppresses record-empty error on later stop tap`() {
         // Замечание 5 ревью #83: цикл чтения сам закрыл сцену по потолку,
         // flow-коллектор забрал авто-WAV и запустил транскрайб. Последующий

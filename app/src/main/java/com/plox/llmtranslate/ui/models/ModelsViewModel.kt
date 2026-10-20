@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.backup.ModelBackupManager
+import com.plox.llmtranslate.data.backup.ModelImportLock
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.DiskUsage
 import com.plox.llmtranslate.domain.ModelManager
@@ -30,7 +31,9 @@ import com.plox.llmtranslate.ui.launchGuarded
 import com.plox.llmtranslate.ui.observeResilient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,6 +41,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.max
 import java.io.File
 import javax.inject.Inject
 
@@ -110,7 +114,19 @@ class ModelsViewModel @Inject constructor(
     private val preferences: ModelPreferences,
     // Прикладной контекст — только для локализованных статусных сообщений
     // импорта/экспорта (значения из ресурсов, утечки нет).
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    // App-scope (поставщик DomainModule, без квалификатора): долгая SAF-работа
+    // (импорт/экспорт модели и бэкапа) запускается здесь, а не в viewModelScope —
+    // уход с вкладки «Модели» (popUpTo(saveState) в MainScreen) уничтожает
+    // ViewModel, и viewModelScope отменил бы операцию посреди подмены файлов
+    // пучка (data-слой теперь пробрасывает CancellationException, а не
+    // дорабатывает под NonCancellable). Операция, начатая до уничтожения VM,
+    // завершается атомарно в app-скоупе; collect статусов остаётся в VM.
+    // Ограничение (минимальная мера, осознанно): статусное сообщение операции
+    // не переживает recreation — после возвращения на вкладку виден только
+    // терминальный результат из Room-потоков (установленная модель/ошибка
+    // записи), SavedStateHandle для transient-статуса избыточен.
+    private val appScope: CoroutineScope
 ) : ViewModel() {
 
     internal companion object {
@@ -382,8 +398,44 @@ class ModelsViewModel @Inject constructor(
         modelManager.startDownload(card)
     }
 
+    /**
+     * Id установленного пучка, ожидающего подтверждения удаления (решение
+     * пользователя: удаление необратимо — один тап по «Удалить» больше не
+     * стирает файлы). Тап по «Удалить» только поднимает pending; удаление
+     * выполняет [onDeleteConfirmed] из диалога (гейт проверяется unit-тестом).
+     */
+    private val _pendingDeleteModelId = MutableStateFlow<String?>(null)
+    val pendingDeleteModelId: StateFlow<String?> = _pendingDeleteModelId
+
+    /**
+     * Счётчик владельцев занятого флага isBusy (финальное ревью): каждая
+     * живая операция (экспорт/импорт бэкапа) владеет своей единицей —
+     * синхронно (главный поток SAF-колбэка) инкрементируется при захвате
+     * занятости и декрементируется в finally только «своей» операцией;
+     * isBusy сбрасывается лишь при исчерпании владельцев (иначе младшая
+     * операция снимала бы флаг при живой старшей). Все обращения — с главного
+     * потока (колбэки SAF); app-скоуп корутины обращаются к счётчику только
+     * из withContext(Main.immediate).
+     */
+    private var busyOwners = 0
+
+    /** Тап «Удалить»: пометить модель ожидающей подтверждения (без удаления). */
     fun onDeleteClick(model: InstalledModel) {
-        modelManager.delete(model.id)
+        _pendingDeleteModelId.value = model.id
+    }
+
+    /** Скрыть диалог подтверждения удаления без удаления. */
+    fun cancelDeleteConfirm() {
+        _pendingDeleteModelId.value = null
+    }
+
+    /**
+     * Подтверждение удаления в диалоге: удалить пучок (файл + запись).
+     * pending снимается, если он относится к этой же id.
+     */
+    fun onDeleteConfirmed(modelId: String) {
+        if (_pendingDeleteModelId.value == modelId) _pendingDeleteModelId.value = null
+        modelManager.delete(modelId)
     }
 
     fun onActiveClick(model: InstalledModel) {
@@ -417,17 +469,50 @@ class ModelsViewModel @Inject constructor(
         modelManager.cancelDownload(model.id)
     }
 
+    /** Pending-гейт импорта модели (re-review): живой SAF-колбэк уже принят. */
+    private var modelImportInFlight = false
+
+    /**
+     * Точечный импорт модели из SAF-файла. Работает в [appScope] под
+     * [launchGuarded] (ревью аудита): неизвестный сбой IO не роняет процесс —
+     * banner трекера; начатый импорт не отменяется уходом с вкладки
+     * (см. KDoc [appScope]). Pending-гейт по образцу [onBackupExportClick]
+     * (re-review, одинаковая защитная семантика): повторный/задвоенный
+     * колбэк пикера не запускает второй импорт поверх живого; гейт
+     * ставится/снимается только с главного потока.
+     */
     fun onImportResult(uri: Uri) {
-        viewModelScope.launch {
-            // Результат импорта показываем статусным сообщением, как в
-            // бэкап-ветках: молчаливый null при ошибке не оставлял UI без ответа.
-            _uiState.value = _uiState.value.copy(
-                statusMessage = statusResult(
-                    ok = modelManager.importFromUri(uri) != null,
-                    doneRes = R.string.models_import_done,
-                    failedRes = R.string.models_import_failed
-                )
-            )
+        if (modelImportInFlight) return
+        modelImportInFlight = true
+        launchGuarded(
+            scope = appScope,
+            messageRes = R.string.models_import_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось импортировать модель из SAF",
+            marker = "import_model"
+        ) {
+            try {
+                // Результат импорта показываем статусным сообщением, как в
+                // бэкап-ветках: молчаливый null при ошибке не оставлял UI без ответа.
+                // Правки UI-состояния — обратно на Main (app-скоуп работает на IO;
+                // гонка RMW с Main-коллектором Room-цепочки — см. onDownloadClick).
+                val ok = modelManager.importFromUri(uri) != null
+                withContext(Dispatchers.Main.immediate) {
+                    _uiState.update {
+                        it.copy(
+                            statusMessage = statusResult(
+                                ok = ok,
+                                doneRes = R.string.models_import_done,
+                                failedRes = R.string.models_import_failed
+                            )
+                        )
+                    }
+                }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main.immediate) {
+                    modelImportInFlight = false
+                }
+            }
         }
     }
 
@@ -574,24 +659,53 @@ class ModelsViewModel @Inject constructor(
         }
         // Пока идёт запись ZIP, карточка этой модели блокируется (issue #31):
         // удаление mid-экспорта обрезает архив, и импорт даёт неполную модель.
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(exportingModelId = request.modelId)
-            val ok = modelManager.exportToUri(request.modelId, uri)
-            _uiState.value = _uiState.value.copy(
-                exportingModelId = null,
-                statusMessage = statusResult(
-                    ok = ok,
-                    doneRes = R.string.models_export_done,
-                    failedRes = R.string.models_export_failed
-                )
-            )
+        // Флаг блокировки ставится синхронно (колбэк SAF — на Main), запись
+        // ZIP — в [appScope] под guard'ом (ревью аудита): сбой IO не роняет
+        // процесс, начатый экспорт не отменяется уничтожением VM (KDoc [appScope]).
+        _uiState.update { it.copy(exportingModelId = request.modelId) }
+        launchGuarded(
+            scope = appScope,
+            messageRes = R.string.models_export_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось экспортировать модель ${request.modelId} в SAF",
+            marker = "export_model"
+        ) {
+            try {
+                val ok = modelManager.exportToUri(request.modelId, uri)
+                withContext(Dispatchers.Main.immediate) {
+                    _uiState.update {
+                        it.copy(
+                            exportingModelId = null,
+                            statusMessage = statusResult(
+                                ok = ok,
+                                doneRes = R.string.models_export_done,
+                                failedRes = R.string.models_export_failed
+                            )
+                        )
+                    }
+                }
+            } finally {
+                // Разблокировка карточки при любом исходе (ошибка/отмена) —
+                // иначе залипшая блокировка кнопки «Удалить» до перезахода.
+                // Правки — только под Main.immediate (re-review): RMW из
+                // app-скоупа (IO) гонялся с Main-коллектором Room-цепочки.
+                withContext(Dispatchers.Main.immediate) {
+                    if (_uiState.value.exportingModelId == request.modelId) {
+                        _uiState.update { it.copy(exportingModelId = null) }
+                    }
+                }
+            }
         }
     }
 
     /**
      * Запросить экспорт резервной копии (все модели + настройки).
+     * Pending-гейт по образцу [onBackupRestoreClick] (request-in-state):
+     * пока незапущенный запрос активен, повторный тап его не перетирает —
+     * двойной тап не поднимает второй CreateDocument-пикер.
      */
     fun onBackupExportClick() {
+        if (_uiState.value.backupExportRequest != null) return
         _uiState.value = _uiState.value.copy(
             backupExportRequest = BackupExportRequest(
                 "llm_translate_backup_${System.currentTimeMillis()}.zip"
@@ -601,53 +715,123 @@ class ModelsViewModel @Inject constructor(
 
     /**
      * Завершить экспорт бэкапа: записать ZIP в выбранный SAF-uri.
+     * Работа — в [appScope] под [launchGuarded] (ревью аудита): неизвестный
+     * сбой IO не роняет процесс; начатый экспорт не отменяется уходом с
+     * вкладки (KDoc [appScope]). Занятость захватывается СИНХРОННО на
+     * главном потоке (re-review) и снимается в finally только «своей»
+     * единицей владельца ([busyOwners]) — иначе сбой оставил бы все карточки
+     * заблокированными, а гонка с другой занятой операцией сняла бы её
+     * флаг. Все мутации _uiState из app-скоуп — под Main.immediate
+     * (RMW-гонка с Main-коллектором Room-цепочки, см. onDownloadClick).
      */
     fun onBackupExportResult(uri: Uri?) {
-        _uiState.value = _uiState.value.copy(backupExportRequest = null)
+        _uiState.update { it.copy(backupExportRequest = null) }
         if (uri == null) return
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(
+        busyOwners++
+        _uiState.update {
+            it.copy(
                 isBusy = true,
                 statusMessage = context.getString(R.string.models_backup_export_in_progress)
             )
-            val ok = backupManager.exportToUri(uri)
-            _uiState.value = _uiState.value.copy(
-                isBusy = false,
-                statusMessage = statusResult(
-                    ok = ok,
-                    doneRes = R.string.models_backup_export_done,
-                    failedRes = R.string.models_backup_export_failed
-                )
-            )
+        }
+        launchGuarded(
+            scope = appScope,
+            messageRes = R.string.models_backup_export_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось экспортировать бэкап в SAF",
+            marker = "backup_export"
+        ) {
+            try {
+                val ok = backupManager.exportToUri(uri)
+                withContext(Dispatchers.Main.immediate) {
+                    _uiState.update {
+                        it.copy(
+                            statusMessage = statusResult(
+                                ok = ok,
+                                doneRes = R.string.models_backup_export_done,
+                                failedRes = R.string.models_backup_export_failed
+                            )
+                        )
+                    }
+                }
+            } finally {
+                withContext(Dispatchers.Main.immediate) {
+                    busyOwners = max(0, busyOwners - 1)
+                    if (busyOwners == 0) {
+                        _uiState.update { it.copy(isBusy = false) }
+                    }
+                }
+            }
         }
     }
 
     /**
-     * Импортировать резервную копию из SAF-uri.
+     * Импортировать резервную копию из SAF-uri. Работа — в [appScope] под
+     * [launchGuarded] (ревью аудита): unknown-сбой не роняет процесс, а
+     * начатый импорт завершает подмену файлов пучков атомарно даже после
+     * уничтожения ViewModel (KDoc [appScope], [ModelImportLock] в data-слое).
+     * Re-review: гейт занятости проверяется и выставляется СИНХРОННО на
+     * главном потоке до запуска корутины — повторный/задвоенный колбэк
+     * пикера не запускает второй импорт поверх живого; finally снимает
+     * занятость только «своей» единицей владельца ([busyOwners]). Мутации
+     * _uiState из app-скоуп — под Main.immediate (RMW-гонка с
+     * Main-коллектором Room-цепочки).
      */
     fun onBackupImportResult(uri: Uri?) {
         if (uri == null) return
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(
+        // Синхронный гейт (главный поток колбэка): live-импорт/экспорт уже
+        // занят — второй импорт не поднимается.
+        if (_uiState.value.isBusy) return
+        busyOwners++
+        _uiState.update {
+            it.copy(
                 isBusy = true,
                 statusMessage = context.getString(R.string.models_backup_import_in_progress)
             )
-            val result = backupManager.importFromUri(uri)
-            val msg = when {
-                result.error != null ->
-                    context.getString(R.string.models_backup_import_error, result.error)
-                result.settingsRestored -> context.getString(
-                    R.string.models_backup_import_done_settings,
-                    result.importedCount,
-                    result.skippedCount
-                )
-                else -> context.getString(
-                    R.string.models_backup_import_done,
-                    result.importedCount,
-                    result.skippedCount
-                )
+        }
+        launchGuarded(
+            scope = appScope,
+            messageRes = R.string.models_backup_import_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось импортировать бэкап из SAF",
+            marker = "backup_import"
+        ) {
+            try {
+                val result = backupManager.importFromUri(uri)
+                val msg = (
+                    when {
+                        result.error != null ->
+                            context.getString(R.string.models_backup_import_error, result.error)
+                        result.settingsRestored -> context.getString(
+                            R.string.models_backup_import_done_settings,
+                            result.importedCount,
+                            result.skippedCount
+                        )
+                        else -> context.getString(
+                            R.string.models_backup_import_done,
+                            result.importedCount,
+                            result.skippedCount
+                        )
+                    }
+                    ) + if (result.downloadsInterrupted > 0) {
+                    // Ревью повт. аудита, п.7: импорт отменил живые загрузки и
+                    // не заменил их извлечёнными моделями — потери не должны
+                    // быть молчаливыми.
+                    "\n" + context.getString(R.string.models_backup_import_download_interrupted)
+                } else {
+                    ""
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    _uiState.update { it.copy(statusMessage = msg) }
+                }
+            } finally {
+                withContext(Dispatchers.Main.immediate) {
+                    busyOwners = max(0, busyOwners - 1)
+                    if (busyOwners == 0) {
+                        _uiState.update { it.copy(isBusy = false) }
+                    }
+                }
             }
-            _uiState.value = _uiState.value.copy(isBusy = false, statusMessage = msg)
         }
     }
 

@@ -107,4 +107,23 @@ class PiperStopGateTest {
         assertTrue(gate.isStopped(old))
         assertTrue(gate.isStopped(fresh))
     }
+
+    @Test
+    fun `late gate stop of cancelled old phrase does not silence newer generation`() {
+        // Регрессия позднего stop: снятая ранее фраза finally-вызывает
+        // stopThrough(своё поколение) уже ПОСЛЕ пользовательского stopAll()
+        // и старта следующей фразы. Поздний stopThrough не откатывает границу
+        // снятых поколений и не глушит новое активное озвучивание.
+        val gate = PiperStopGate()
+        val old = gate.reserve()
+        val cancelled = gate.reserve()
+        gate.stopAll() // явная остановка пользователем
+        val next = gate.reserve() // следующая фраза стартует после stopAll
+
+        gate.stopThrough(old) // поздняя отмена самой старой фразы
+
+        assertTrue(gate.isStopped(old))
+        assertTrue(gate.isStopped(cancelled))
+        assertFalse(gate.isStopped(next))
+    }
 }

@@ -13,6 +13,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "slimt/slimt.hh"
 
@@ -20,7 +21,20 @@ using namespace slimt;  // NOLINT
 
 namespace {
 
+// Магический cookie живого объекта Session (ревью аудита): ДЕШЁВАЯ эвристика
+// против повторного использования handle без рефкаунтинга — nativeDestroy
+// переводит cookie в destroyed-состояние ПЕРЕД delete, checked_session
+// сверяет его. Честная оговорка (re-review): после delete чтение cookie —
+// формально read-after-free UB, паттерн «обычно ещё читается», но гарантии
+// нет; полная защита — поток-контракт SlimtNative (все вызовы одного handle
+// сериализуются вызывающим) и зануление handle в Kotlin SlimtRuntime после
+// успешного nativeDestroy, чтобы поздние вызовы отбивались нулевой веткой
+// проверки вообще без разыменования.
+constexpr uint64_t kSessionLiveCookie = 0x534C494D545F4C45ULL;       // "SLIMT_LE"
+constexpr uint64_t kSessionDestroyedCookie = 0x534C494D545F4445ULL;  // "SLIMT_DE"
+
 struct Session {
+    uint64_t cookie = kSessionLiveCookie;
     std::shared_ptr<Model> model;
     std::atomic<bool> cancel{false};
     // frontend объявлен ПОСЛЕ cancel: деструкция идёт в обратном порядке,
@@ -50,29 +64,39 @@ void throw_java(JNIEnv *env, const char *message) {
 }
 
 // Проверка валидности handle для всех экспортов, работающих с сессией:
-// нулевой handle — одна и та же Java-ошибка; nullptr в ответе означает
-// «исключение уже брошено», вызывающий выходит со своим значением by default.
+// нулевой handle (Kotlin-контракт: зануляется после успешного nativeDestroy)
+// или cookie != живой (освобождённый nativeDestroy handle) — одна и та же
+// Java-ошибка; nullptr в ответе означает «исключение уже брошено»,
+// вызывающий выходит со своим значением by default. Сверка cookie —
+// эвристика (после delete чтение UB, см. комментарий констант), корректность
+// даёт сериализация вызовов одним потоком.
 Session *checked_session(JNIEnv *env, jlong handle) {
-    if (handle == 0) {
+    auto *session = reinterpret_cast<Session *>(handle);  // NOLINT
+    if (session == nullptr || session->cookie != kSessionLiveCookie) {
         throw_java(env, "slimt: некорректный handle");
         return nullptr;
     }
-    return reinterpret_cast<Session *>(handle);  // NOLINT
+    return session;
 }
 
-std::string jstr_to_utf8(JNIEnv *env, jstring value) {
+// Чтение jstring в UTF-8. std::nullopt — неудача GetStringUTFChars:
+// причина либо уже pending Java-исключение (например OutOfMemoryError),
+// либо тихая JNI-ошибка. Утилита САМА в JVM ничего не бросает
+// (ревью аудита): прежняя связка «ThrowNew + std::runtime_error» заставляла
+// catch экспорта бросать второй раз (ThrowNew перезатирал только что
+// установленное исключение), а при pending-OOM FindClass внутри throw_java
+// возвращал nullptr и ветка ExceptionClear() смазывала исходный
+// OutOfMemoryError — экспорт возвращал «успех» без pending. Выбор ошибки и
+// ровно один бросок — на ответственности экспорта (см. read_jstr).
+std::optional<std::string> jstr_to_utf8(JNIEnv *env, jstring value) {
     if (value == nullptr) {
-        return {};
+        return std::string{};
     }
     const char *chars = env->GetStringUTFChars(value, nullptr);
     if (chars == nullptr) {
-        // nullptr означает уже pending Java-исключение (например
-        // OutOfMemoryError) либо тихую JNI-ошибку. Пустая строка молча
-        // подменила бы входные данные — пробрасываем явную ошибку.
-        if (!env->ExceptionCheck()) {
-            throw_java(env, "slimt: JNI GetStringUTFChars failed");
-        }
-        throw std::runtime_error("slimt: JNI GetStringUTFChars failed");
+        // Пустая строка молча подменила бы входные данные — возвращаем
+        // признак неудачи, экспорт разберётся с причиной.
+        return std::nullopt;
     }
     std::string cesu(chars);
     env->ReleaseStringUTFChars(value, chars);
@@ -123,6 +147,23 @@ std::string jstr_to_utf8(JNIEnv *env, jstring value) {
         ++i;
     }
     return utf8;
+}
+
+// Чтение jstring для экспортов: false — неудача, при этом в JVM уже
+// установлено РОВНО ОДНО исключение: pending-исключение потока
+// (например OutOfMemoryError из GetStringUTFChars) пробрасывается как есть,
+// без подмены; тихая JNI-ошибка оформляется через throw_java один раз.
+// Экспорт обязан немедленно выйти со своим default-значением.
+bool read_jstr(JNIEnv *env, jstring value, std::string &out) {
+    auto text = jstr_to_utf8(env, value);
+    if (!text.has_value()) {
+        if (!env->ExceptionCheck()) {
+            throw_java(env, "slimt: JNI GetStringUTFChars failed");
+        }
+        return false;
+    }
+    out = std::move(*text);
+    return true;
 }
 
 jstring utf8_to_jstr(JNIEnv *env, const std::string &text) {
@@ -264,13 +305,16 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeCreate(
     JNIEnv *env, jclass /*clazz*/, jstring jmodel, jstring jvocab,
     jstring jshortlist, jstring jtarget_vocab) {
     try {
-        // jstr_to_utf8 может бросить JNI-ошибку чтения строки — только
-        // внутри try, иначе исключение уйдёт через границу JNI.
+        // Чтение строк пакета: при неудаче read_jstr уже установил ровно
+        // одно Java-исключение (pending проброшено как есть) — выходим с 0.
+        // Исключения создания модели/движка перехватывает общий catch ниже.
         Package<std::string> package;
-        package.model = jstr_to_utf8(env, jmodel);
-        package.vocabulary = jstr_to_utf8(env, jvocab);
-        package.shortlist = jstr_to_utf8(env, jshortlist);
-        package.target_vocabulary = jstr_to_utf8(env, jtarget_vocab);
+        if (!read_jstr(env, jmodel, package.model) ||
+            !read_jstr(env, jvocab, package.vocabulary) ||
+            !read_jstr(env, jshortlist, package.shortlist) ||
+            !read_jstr(env, jtarget_vocab, package.target_vocabulary)) {
+            return 0;
+        }
         package.ssplit.clear();
 
         auto session = std::make_unique<Session>();
@@ -305,7 +349,23 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeDestroy(
         // UAF нет. Исключения деструкторов (std::system_error из join/
         // освобождения Model) иначе уходят через границу JNI — UB
         // (единственный экспорт без try/catch).
-        session->cancel.store(true);
+        //
+        // Ревью аудита: cancel и переход cookie в destroyed-состояние
+        // выполняются ПОД session->mu — дешёвая страховка на случай
+        // параллельного nativePoll с тем же handle (поток-контракт
+        // SlimtNative всё равно сериализует вызовы, мьютекс — не замена).
+        // delete — ВНЕ мьютекса: уничтожение залоченного mutex это UB, а
+        // join воркера в ~Async не должен удерживать mu. После присвоения
+        // destroyed-cookie экспорт с этим handle обычно получит
+        // IllegalStateException в checked_session, но чтение cookie после
+        // delete — UB без гарантии; reuse надёжно исключает зануление handle
+        // в Kotlin SlimtRuntime после успешного destroy (нулевая ветка
+        // проверки не разыменовывает память вовсе).
+        {
+            std::lock_guard<std::mutex> lock(session->mu);
+            session->cancel.store(true);
+            session->cookie = kSessionDestroyedCookie;
+        }
         delete session;  // NOLINT
     } catch (const std::exception &e) {
         throw_java(env, e.what());
@@ -321,10 +381,15 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeStart(
     if (session == nullptr) {
         return;
     }
-    // jstr_to_utf8 бросает при JNI-ошибке чтения строки — весь тело держим
-    // в try, чтобы ошибка всегда уходила в Java как IllegalStateException.
+    // Чтение текста: при неудаче read_jstr уже установил ровно одно
+    // Java-исключение (pending из GetStringUTFChars проброшено как есть) —
+    // немедленно выходим. Остальное тело в try, чтобы ошибка движка всегда
+    // уходила в Java как IllegalStateException.
     try {
-        std::string text = jstr_to_utf8(env, jtext);
+        std::string text;
+        if (!read_jstr(env, jtext, text)) {
+            return;
+        }
         std::lock_guard<std::mutex> lock(session->mu);
         if (session->pending) {
             throw_java(env, "slimt: translation already running");
@@ -350,6 +415,9 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeStart(
 }
 
 // 0 — ещё идёт, 1 — готово, 2 — ошибка, 3 — отменено.
+// Код 2 возвращается и для незапущенной/уже снятой сессии (!pending):
+// на это опирается дренаж SlimtRuntime (drainNativeWorkerUnlocked),
+// семантика кодов зафиксирована в KDoc SlimtNative.nativePoll.
 JNIEXPORT jint JNICALL
 Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativePoll(
     JNIEnv *env, jclass /*clazz*/, jlong handle) {
@@ -393,7 +461,11 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeTakeResult(
         return nullptr;
     }
     std::lock_guard<std::mutex> lock(session->mu);
-    return utf8_to_jstr(env, session->result);
+    // take ИЗЫМАЕТ строку (ревью аудита): после взятия поле очищается,
+    // повторный take до следующего nativeStart вернёт пустую строку,
+    // а не устаревший текст.
+    std::string result = std::exchange(session->result, {});
+    return utf8_to_jstr(env, result);
 }
 
 JNIEXPORT jstring JNICALL
@@ -406,8 +478,9 @@ Java_com_plox_llmtranslate_data_native_1engine_SlimtNative_nativeTakeError(
     std::lock_guard<std::mutex> lock(session->mu);
     // error может содержать не-ASCII (тексты slimt на языке модели):
     // NewStringUTF ждёт модифицированную UTF-8 — кодируем явно через
-    // общий utf8_to_jstr.
-    return utf8_to_jstr(env, session->error);
+    // общий utf8_to_jstr. take ИЗЫМАЕТ строку (см. nativeTakeResult).
+    std::string error = std::exchange(session->error, {});
+    return utf8_to_jstr(env, error);
 }
 
 JNIEXPORT void JNICALL

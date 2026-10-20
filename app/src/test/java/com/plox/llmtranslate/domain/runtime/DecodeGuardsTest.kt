@@ -88,6 +88,16 @@ class DecodeGuardsTest {
     }
 
     @Test
+    fun `accidental input repeat does not cancel degeneration at max length`() {
+        // Случайный «the the» во входе и легально скопированный в начало
+        // вывода: упор в лимит из-за хвостового цикла «wrong» — вырождение,
+        // входной повтор не снимает сигнал (ревью).
+        val input = "the the cat sat on the mat"
+        val output = "the the " + "wrong ".repeat(12).trim()
+        assertTrue(isDegenerateOutput(output, hitMaxLength = true, sourceText = input))
+    }
+
+    @Test
     fun `unique word ratio distinguishes better output`() {
         assertTrue(
             uniqueWordRatio("a b c d e f g h") > uniqueWordRatio("a a a a a a a a")

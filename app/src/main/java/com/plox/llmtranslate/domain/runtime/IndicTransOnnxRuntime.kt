@@ -184,11 +184,22 @@ class IndicTransOnnxRuntime @Inject constructor(
                     // (регресс-ревью #83): eldest выгружается заранее с
                     // оценкой веса графов той же estimateGraphBytes, что
                     // попадёт в weightBytes, — иначе пик ОЗУ = прежние
-                    // пучки + новый набор сессий одновременно.
+                    // пучки + новый набор сессий одновременно. В резерв
+                    // идёт верхняя оценка (ревью аудита, итерация 2):
+                    // арена/активации ORT (запас 1.4x) либо заявленный
+                    // ramRequiredMb, плюс токенизаторы (readText → DOM
+                    // с пиком 2-3x файла).
                     val graphBytes = estimateGraphBytes(
                         listOf(encoderFile, decoderFile, decoderPastFile)
                     )
-                    engineCache.reserveByteBudgetUnlocked(modelInfo.id, graphBytes)
+                    engineCache.reserveByteBudgetUnlocked(
+                        modelInfo.id,
+                        reserveIncomingBytes(
+                            graphBytes,
+                            modelInfo.ramRequiredMb,
+                            srcTokFile.length() + tgtTokFile.length()
+                        )
+                    )
 
                     val sessions = createEncoderDecoderSessions(
                         "IndicTrans", ortEnv, encoderFile, decoderFile, decoderPastFile
@@ -657,6 +668,13 @@ class IndicTransOnnxRuntime @Inject constructor(
         val unkId: Int
     )
 
+    /**
+     * Прочитать параметры генерации. Файл обязателен — его отсутствие
+     * отсекается проверкой файлов в `ensureLoaded` (ревью аудита: иначе
+     * битый декод маскировался); молчаливый фолбэк оставлен только для
+     * повреждённого JSON — константы 2/2 равны фактическим значениям
+     * IndicTrans2-экспортов каталога.
+     */
     private fun parseGenerationConfig(file: File): GenerationParams {
         return try {
             val root = Json.parseToJsonElement(file.readText()).jsonObject
@@ -671,8 +689,18 @@ class IndicTransOnnxRuntime @Inject constructor(
         }
     }
 
+    /**
+     * Размеры словарей из tokenizer_meta.json. Файл необязателен (в пучках
+     * каталога присутствует, у импортированных фрагментов может
+     * отсутствовать): без него clamp OOV выключен (Int.MAX_VALUE), и это
+     * безопасно для корректного пучка — src-id приходят из словаря самого
+     * tokenizer.json, а логиты декодера ограничены tgt_dict_size; meta —
+     * страховка от рассинхрона файлов пучка. Отсутствие помечаем в лог,
+     * чтобы выключенный clamp не оставался незамеченным (ревью аудита).
+     */
     private fun parseTokenizerMeta(file: File?): DictSizes {
         if (file == null) {
+            Timber.w("tokenizer_meta.json не найден — clamp OOV выключен (dictSize = MAX)")
             return DictSizes(srcDictSize = Int.MAX_VALUE, tgtDictSize = Int.MAX_VALUE, unkId = DEFAULT_UNK_ID)
         }
         return try {

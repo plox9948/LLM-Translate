@@ -275,15 +275,21 @@ sealed class InstallCheck {
 
 /**
  * Ошибки рантаймов (LLM/STT/TTS).
+ *
+ * [reason]/содержимое передаётся и в сообщение [Exception] (ревью): у прежних
+ * подклассов без параметра super `Throwable.message` был всегда null, и
+ * логирование `e.message` (извлечение причины в движках) теряло текст ошибки.
+ * Источник текста для показа в UI остаётся [userMessage], а не [message].
  */
-sealed class RuntimeError : Exception() {
-    data class LoadFailed(val runtime: String, val reason: String) : RuntimeError()
-    data class InferenceFailed(val runtime: String, val reason: String) : RuntimeError()
+sealed class RuntimeError(message: String? = null) : Exception(message) {
+    data class LoadFailed(val runtime: String, val reason: String) : RuntimeError(reason)
+    data class InferenceFailed(val runtime: String, val reason: String) : RuntimeError(reason)
 
     /** Язык не поддерживается движком озвучивания (TTS). */
-    data class LanguageNotSupported(val engine: String, val language: String) : RuntimeError()
-    object ModelNotSelected : RuntimeError()
-    object ModelNotReady : RuntimeError()
+    data class LanguageNotSupported(val engine: String, val language: String) :
+        RuntimeError("Движок озвучивания '$engine' не поддерживает язык '$language'")
+    object ModelNotSelected : RuntimeError("Модель не выбрана")
+    object ModelNotReady : RuntimeError("Модель не готова")
 
     /**
      * Ни один движок перевода не поддерживает [runtime] модели
@@ -291,7 +297,8 @@ sealed class RuntimeError : Exception() {
      * и ошибочный тип рантайма TRANSLATION-модели переводился чужим
      * движком вместо явной ошибки.
      */
-    data class UnsupportedRuntime(val runtime: String) : RuntimeError()
+    data class UnsupportedRuntime(val runtime: String) :
+        RuntimeError("Неподдерживаемый тип движка модели: $runtime")
 
     /**
      * Активный пучок движка перевода загружен для другой языковой пары, чем
@@ -299,7 +306,7 @@ sealed class RuntimeError : Exception() {
      * модели и translate не должна приводить к молчаливому переводу чужой
      * моделью.
      */
-    data class DirectionMismatch(val runtime: String, val reason: String) : RuntimeError()
+    data class DirectionMismatch(val runtime: String, val reason: String) : RuntimeError(reason)
 }
 
 /**

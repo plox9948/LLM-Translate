@@ -5,6 +5,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
@@ -168,6 +169,71 @@ class SlimtRuntimeTest {
         assertEquals(
             listOf("en-ru"),
             runtime.loadedModels.value.map { it.modelId }
+        )
+    }
+
+    /**
+     * Потолок detached-очереди (замечание аудита): при навсегда зависшем
+     * nativeDestroy (воркер «занят», [detachedWorkerActive]=true) очередь
+     * не должна расти до OOM — сверх лимита пучки теряются с пометкой
+     * недостижимого дренажа, а не накапливаются. Пучки с handle=0L не
+     * трогают JNI (нативная библиотека в unit-тесте не загружена).
+     */
+    @Test
+    fun `detached release queue is capped when nativeDestroy hangs`() {
+        val runtime = SlimtRuntime(FakeModelRetentionProvider(keep = true))
+
+        val activeField = SlimtRuntime::class.java.getDeclaredField("detachedWorkerActive")
+        activeField.isAccessible = true
+        (activeField.get(runtime) as java.util.concurrent.atomic.AtomicBoolean).set(true)
+
+        val schedule = SlimtRuntime::class.java.getDeclaredMethod(
+            "scheduleDetachedRelease", List::class.java
+        )
+        schedule.isAccessible = true
+        val queueField = SlimtRuntime::class.java.getDeclaredField("detachedQueue")
+        queueField.isAccessible = true
+        val stalledField = SlimtRuntime::class.java.getDeclaredField("detachedDrainStalled")
+        stalledField.isAccessible = true
+
+        val bundleClass = Class.forName(
+            "com.plox.llmtranslate.domain.runtime.SlimtRuntime\$ModelBundle"
+        )
+        val constructor = bundleClass.getDeclaredConstructor(
+            Long::class.javaPrimitiveType, LoadedModelInfo::class.java
+        )
+        constructor.isAccessible = true
+        fun bundle(id: String): Any = constructor.newInstance(
+            0L, LoadedModelInfo(id, "Pack $id", ModelCategory.TRANSLATION, 10)
+        )
+
+        repeat(10) { schedule.invoke(runtime, listOf(bundle("queue-$it"))) }
+
+        val capField = try {
+            SlimtRuntime::class.java.getDeclaredField("DETACHED_QUEUE_MAX")
+        } catch (e: NoSuchFieldException) {
+            Class.forName("com.plox.llmtranslate.domain.runtime.SlimtRuntime\$Companion")
+                .getDeclaredField("DETACHED_QUEUE_MAX")
+        }
+        capField.isAccessible = true
+        val cap = capField.getInt(null)
+        val sizeAfterFill = (queueField.get(runtime) as java.util.ArrayDeque<*>).size
+        assertTrue(
+            "Очередь не должна расти сверх потолка при зависшем дренаже: " +
+                "size=$sizeAfterFill, cap=$cap",
+            sizeAfterFill in 1..cap
+        )
+        assertTrue(
+            "Переполнение помечает дренаж недостижимым",
+            stalledField.get(runtime) as Boolean
+        )
+
+        // Пока дренаж недостижим, новые пучки не накапливаются вовсе.
+        repeat(10) { schedule.invoke(runtime, listOf(bundle("overflow-$it"))) }
+        assertEquals(
+            "Размер очереди стабилен после переполнения",
+            sizeAfterFill,
+            (queueField.get(runtime) as java.util.ArrayDeque<*>).size
         )
     }
 }

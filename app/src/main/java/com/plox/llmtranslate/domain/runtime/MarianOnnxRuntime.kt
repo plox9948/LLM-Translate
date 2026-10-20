@@ -186,11 +186,22 @@ class MarianOnnxRuntime @Inject constructor(
                     // (регресс-ревью #83): eldest выгружается заранее с
                     // оценкой веса графов той же estimateGraphBytes, что
                     // попадёт в weightBytes, — иначе пик ОЗУ = прежние
-                    // пучки + новый набор сессий одновременно.
+                    // пучки + новый набор сессий одновременно. В резерв
+                    // идёт верхняя оценка (ревью аудита, итерация 2):
+                    // арена/активации ORT (запас 1.4x) либо заявленный
+                    // ramRequiredMb, плюс tokenizer.json (readText → DOM
+                    // с пиком 2-3x файла).
                     val graphBytes = estimateGraphBytes(
                         listOf(encoderFile, decoderFile, decoderPastFile)
                     )
-                    engineCache.reserveByteBudgetUnlocked(modelInfo.id, graphBytes)
+                    engineCache.reserveByteBudgetUnlocked(
+                        modelInfo.id,
+                        reserveIncomingBytes(
+                            graphBytes,
+                            modelInfo.ramRequiredMb,
+                            tokenizerFile.length()
+                        )
+                    )
 
                     val sessions = createEncoderDecoderSessions(
                         "Marian", ortEnv, encoderFile, decoderFile, decoderPastFile
@@ -216,9 +227,20 @@ class MarianOnnxRuntime @Inject constructor(
                     }
 
                     // Парсинг generation config читает файл — граница отмены
-                    // после токенизатора.
+                    // после токенизатора. Отсутствие/битый config — явный
+                    // LoadFailed: без корректных decoder_start/eos прежние
+                    // молчаливые дефолты давали «Пустой перевод» вместо
+                    // ошибки загрузки (ревью аудита).
                     currentCoroutineContext().ensureActive()
                     val gen = parseGenerationConfig(dir.resolve("generation_config.json"))
+                    if (gen == null) {
+                        closePartiallyCreated("Marian", encoder, decoder, decoderPast)
+                        return@withContext RuntimeError.LoadFailed(
+                            "marian",
+                            "Отсутствует или повреждён generation_config.json " +
+                                "(нужны decoder_start_token_id и eos_token_id)"
+                        )
+                    }
 
                     engineCache.putBundleUnlocked(
                         modelInfo.id,
@@ -427,7 +449,7 @@ class MarianOnnxRuntime @Inject constructor(
     }
 
     /** Параметры генерации из generation_config.json (значения одного пучка). */
-    private data class GenerationParams(
+    internal data class GenerationParams(
         val decoderStartTokenId: Int,
         val eosTokenId: Int,
         val badTokenIds: Set<Int>
@@ -435,16 +457,30 @@ class MarianOnnxRuntime @Inject constructor(
 
     /**
      * Прочитать параметры генерации из generation_config.json модели.
+     *
+     * Файл объективно обязателен для корректного greedy-декода Marian
+     * (fallback-путь импортируемых Optimum-экспортов): отсутствие файла,
+     * битый JSON или отсутствующие поля `decoder_start_token_id` /
+     * `eos_token_id` возвращают null — [ensureLoaded] фиксирует явный
+     * [RuntimeError.LoadFailed]. Прежние молчаливые дефолты start=0/eos=0
+     * подменяли реальный `decoder_start_token_id` (у opus-mt он не 0) и
+     * давали «Пустой перевод» посреди инференса вместо ошибки загрузки
+     * (ревью аудита). `bad_words_ids` — по-прежнему необязательны.
+     * Внутренняя функция — покрыта unit-тестом.
      */
-    private fun parseGenerationConfig(file: File): GenerationParams {
+    internal fun parseGenerationConfig(file: File): GenerationParams? {
         if (!file.isFile) {
-            Timber.w("generation_config.json не найден, defaults: start=0, eos=0")
-            return GenerationParams(decoderStartTokenId = 0, eosTokenId = 0, badTokenIds = emptySet())
+            Timber.e("generation_config.json не найден — параметры генерации не определены")
+            return null
         }
         return try {
             val root = Json.parseToJsonElement(file.readText()).jsonObject
-            val start = (root["decoder_start_token_id"] as? JsonPrimitive)?.intOrNull ?: 0
-            val eos = (root["eos_token_id"] as? JsonPrimitive)?.intOrNull ?: 0
+            val start = (root["decoder_start_token_id"] as? JsonPrimitive)?.intOrNull
+            val eos = (root["eos_token_id"] as? JsonPrimitive)?.intOrNull
+            if (start == null || eos == null) {
+                Timber.e("generation_config.json без decoder_start_token_id/eos_token_id")
+                return null
+            }
             val bad = mutableSetOf<Int>()
             (root["bad_words_ids"] as? JsonArray)?.forEach { w ->
                 w.jsonArray.forEach { t ->
@@ -460,8 +496,8 @@ class MarianOnnxRuntime @Inject constructor(
                 badTokenIds = bad
             )
         } catch (e: Exception) {
-            Timber.w("Не удалось прочитать generation_config.json: ${e.message}")
-            GenerationParams(decoderStartTokenId = 0, eosTokenId = 0, badTokenIds = emptySet())
+            Timber.e(e, "Не удалось прочитать generation_config.json: ${e.message}")
+            null
         }
     }
 }

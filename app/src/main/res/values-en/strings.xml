@@ -58,6 +58,7 @@
     <string name="translate_stt_model_missing">No suitable recognition model. Download it on the \"Models\" screen.</string>
     <string name="translate_record_start_failed">Could not start recording from the microphone</string>
     <string name="translate_record_empty">Recording is empty or failed</string>
+    <string name="translate_download_start_failed">Could not start model download</string>
 
     <!-- Онбординг первого запуска -->
     <string name="onboarding_title">What are we translating?</string>
@@ -107,6 +108,8 @@
     <string name="models_required_for">Required for %1$s</string>
     <string name="models_export">Export</string>
     <string name="models_delete">Delete</string>
+    <string name="models_delete_confirm_title">Delete model?</string>
+    <string name="models_delete_confirm_text">Model “%1$s” and its files will be deleted permanently.</string>
     <string name="models_category_translation">Translation (LLM)</string>
     <string name="models_category_stt">Speech recognition (STT)</string>
     <string name="models_category_tts">Speech synthesis (TTS)</string>
@@ -119,8 +122,10 @@
     <string name="models_backup_export_failed">Backup export failed</string>
     <string name="models_backup_import_in_progress">Importing…</string>
     <string name="models_backup_import_error">Error: %1$s</string>
+    <string name="models_backup_import_failed">Backup restore failed</string>
     <string name="models_backup_import_done">Imported: %1$d, skipped: %2$d</string>
     <string name="models_backup_import_done_settings">Imported: %1$d, skipped: %2$d, settings restored</string>
+    <string name="models_backup_import_download_interrupted">Active downloads were interrupted by the import and not replaced — retry downloading later</string>
     <string name="models_status_error">Download error</string>
     <string name="models_status_busy">…</string>
     <string name="models_retry_download">Retry</string>

@@ -32,6 +32,12 @@ class RuntimeRouter @Inject constructor(
      * движки перевода (Marian, IndicTrans) + STT (Sherpa) + TTS (Piper).
      * Пуст, если всё разгружено; обновляется при каждой загрузке/разгрузке
      * движка.
+     *
+     * Контракт [releaseAll] (ревью R-N18/S-N21): при таймауте разгрузки
+     * зависшего движка его пучки остаются в кэше — список может показывать
+     * модель «загруженной в память» дольше releases; такой движок
+     * повторно освобождается следующей [releaseAll] (или остаётся до
+     * завершения процесса).
      */
     val loadedModels: Flow<List<LoadedModelInfo>> = LoadedModelsAggregator.merge(
         listOf(
@@ -150,7 +156,14 @@ class RuntimeRouter @Inject constructor(
             withContext(NonCancellable) {
                 val completed = withTimeoutOrNull(RELEASE_TIMEOUT_MS) { release() }
                 if (completed == null) {
-                    Timber.w("Разгрузка рантайма $label не завершилась за ${RELEASE_TIMEOUT_MS} мс — пропущена")
+                    // Явная пометка (ревью R-N18/S-N21): движок остаётся
+                    // кэшированным — UI «Загружено в память» честно вплоть
+                    // до следующего releaseAll/завершения процесса.
+                    Timber.w(
+                        "Разгрузка рантайма $label не завершилась за ${RELEASE_TIMEOUT_MS} мс — " +
+                            "пропущена; движок не разгружен и останется в памяти " +
+                            "до releaseAll/следующей попытки"
+                    )
                 }
             }
             null

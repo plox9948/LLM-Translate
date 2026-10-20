@@ -58,6 +58,7 @@
     <string name="translate_stt_model_missing">Нет подходящей модели распознавания. Скачайте её на экране «Модели».</string>
     <string name="translate_record_start_failed">Не удалось запустить запись с микрофона</string>
     <string name="translate_record_empty">Запись пуста или не удалась</string>
+    <string name="translate_download_start_failed">Не удалось запустить скачивание модели</string>
 
     <!-- Онбординг первого запуска -->
     <string name="onboarding_title">Что переводим?</string>
@@ -107,6 +108,8 @@
     <string name="models_required_for">Нужно для %1$s</string>
     <string name="models_export">Экспорт</string>
     <string name="models_delete">Удалить</string>
+    <string name="models_delete_confirm_title">Удалить модель?</string>
+    <string name="models_delete_confirm_text">Модель «%1$s» и её файлы будут удалены без возможности восстановления.</string>
     <string name="models_category_translation">Перевод (LLM)</string>
     <string name="models_category_stt">Распознавание речи (STT)</string>
     <string name="models_category_tts">Синтез речи (TTS)</string>
@@ -119,8 +122,10 @@
     <string name="models_backup_export_failed">Ошибка экспорта бэкапа</string>
     <string name="models_backup_import_in_progress">Импорт…</string>
     <string name="models_backup_import_error">Ошибка: %1$s</string>
+    <string name="models_backup_import_failed">Ошибка восстановления резервной копии</string>
     <string name="models_backup_import_done">Импортировано: %1$d, пропущено: %2$d</string>
     <string name="models_backup_import_done_settings">Импортировано: %1$d, пропущено: %2$d, настройки восстановлены</string>
+    <string name="models_backup_import_download_interrupted">Живые загрузки прерваны импортом и не заменены — повторите скачивание позже</string>
     <string name="models_status_error">Ошибка скачивания</string>
     <string name="models_status_busy">…</string>
     <string name="models_retry_download">Повторить</string>

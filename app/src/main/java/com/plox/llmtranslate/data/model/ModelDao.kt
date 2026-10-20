@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -29,6 +30,31 @@ interface ModelDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: ModelEntity)
+
+    /**
+     * Атомарный upsert с сохранением createdAt: read-modify-write
+     * (чтение прежней строки -> INSERT OR REPLACE) выполняется в одном
+     * [Transaction] (по образцу [TranslationHistoryDao.addEntry]) — раньше
+     * getById и upsert шли раздельно, и параллельные upsert одной id могли
+     * прочитать общий снимок и обнулить createdAt. [createdAtFallback] и
+     * [updatedAt] — времена, переданные вызывающим (см.
+     * [ModelRepository.upsert]); точные UPDATE-методы статуса
+     * ([updateStatusById] и др.) этой обёртки не требуют.
+     */
+    @Transaction
+    suspend fun upsertPreservingCreatedAt(
+        entity: ModelEntity,
+        createdAtFallback: Long,
+        updatedAt: Long
+    ) {
+        val existing = getById(entity.id)
+        upsert(
+            entity.copy(
+                createdAt = existing?.createdAt ?: createdAtFallback,
+                updatedAt = updatedAt
+            )
+        )
+    }
 
     /**
      * Синхронизация оценок ОЗУ существующей встроенной записи с актуальным
@@ -63,6 +89,10 @@ interface ModelDao {
      *
      * @return число обновлённых строк (0 — запись удалена/не найдена).
      */
+    @Deprecated(
+        "Продакшн-вызывающих не осталось: используйте гейтированные " +
+            "updateStatusWhileDownloadingById/finalizeDownloadById/markStaleDownloadingById (issue #83)"
+    )
     @Query("UPDATE models SET status = :status, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateStatusById(id: String, status: String, updatedAt: Long): Int
 
@@ -81,6 +111,45 @@ interface ModelDao {
             "WHERE id = :id AND status = 'DOWNLOADING'"
     )
     suspend fun markStaleDownloadingById(id: String, status: String, updatedAt: Long): Int
+
+    /**
+     * Точечный перевод битой READY-записи в ERROR (сверка с дисками при
+     * старте процесса). Гейт `AND status = 'READY'` — единая политика
+     * статусных переходов с [finalizeDownloadById] и
+     * [markStaleDownloadingById]: если между снимком READY-списка и этим
+     * UPDATE модель переустановили (READY→DOWNLOADING) или иначе вывели из
+     * READY, живая запись ERROR не затирается — в отличие от
+     * [updateStatusById] без гейта.
+     *
+     * @return число обновлённых строк (0 — запись удалена или уже не в
+     *         READY).
+     */
+    @Query(
+        "UPDATE models SET status = :status, updated_at = :updatedAt " +
+            "WHERE id = :id AND status = 'READY'"
+    )
+    suspend fun markBrokenReadyById(id: String, status: String, updatedAt: Long): Int
+
+    /**
+     * Финальная статусная запись терминальных веток воркера скачивания
+     * (permanent-отказ, исчерпание попыток, повтор): тот же гейт
+     * `AND status = 'DOWNLOADING'`, что у [finalizeDownloadById]
+     * (единая политика переходов). Импорт той же id, промоутнувший запись
+     * в READY в окне между фейлом установки и этим UPDATE, не затирается
+     * ERROR/DOWNLOADING; удалённая при отмене запись не воскресает.
+     *
+     * @return число обновлённых строк (0 — запись удалена или не в
+     *         DOWNLOADING).
+     */
+    @Query(
+        "UPDATE models SET status = :status, updated_at = :updatedAt " +
+            "WHERE id = :id AND status = 'DOWNLOADING'"
+    )
+    suspend fun updateStatusWhileDownloadingById(
+        id: String,
+        status: String,
+        updatedAt: Long
+    ): Int
 
     /**
      * Точечное обновление статуса и процента скачивания (без file_path/

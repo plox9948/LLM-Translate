@@ -70,6 +70,14 @@ class TokenizerJson {
     /**
      * Загрузить tokenizer.json из файла.
      * При неудаче [isLoaded] остаётся false — вызывающий обязан проверить статус.
+     *
+     * Разбор целиком читает файл строкой в DOM ([File.readText] +
+     * [Json.parseToJsonElement]): пик JVM ~2-3x размера файла (десятки МБ
+     * у IndicTrans2). Стримингового разбора в kotlinx-serialization 1.7.3
+     * (Json.parseToJsonElement принимает только String) нет, поэтому пик
+     * учтён в резерве байтового бюджета движков при загрузке пучка —
+     * [com.plox.llmtranslate.domain.runtime.reserveIncomingBytes]
+     * (ревью аудита, итерация 2).
      */
     fun load(tokenizerJsonPath: String) {
         if (isLoaded) return
@@ -90,6 +98,13 @@ class TokenizerJson {
 
     /**
      * Токенизировать текст в token-id.
+     *
+     * Известное ограничение (ревью): added-токены из `added_tokens`
+     * (спец-токены вида `</s>`, языковые коды IndicTrans) сопоставляются
+     * целым словом, поэтому такое же слово в пользовательском тексте
+     * кодируется спец-токеном, а не обычными субсловами. Экранирование в
+     * IndicTrans-пути сознательно не вводится (риск ухудшения качества
+     * реальных переводов); на пользовательском входе совпадения редки.
      */
     fun encode(text: String): List<Int> {
         if (!isLoaded) return emptyList()
@@ -200,8 +215,10 @@ class TokenizerJson {
 
     /**
      * Один нормализатор по JSON-объекту описания (NFC/NFD/Precompiled);
-     * null — тип не распознан или charsmap не разобран. Общая точка для
-     * верхнего уровня и элементов Sequence (разбор не дублируется).
+     * null — тип не распознан или charsmap не задан. Пустой/битый
+     * непустой charsmap — явное исключение (политика fail-fast, см.
+     * [parseCharsmap]). Общая точка для верхнего уровня и элементов
+     * Sequence (разбор не дублируется).
      */
     private fun normalizerFor(obj: JsonObject): TextNormalizer? =
         when ((obj["type"] as? JsonPrimitive)?.contentOrNull) {
@@ -212,13 +229,20 @@ class TokenizerJson {
             else -> null
         }
 
+    /**
+     * Разбор base64 precompiled_charsmap. Пустое значение — нормализатор
+     * отсутствует (null). Битое непустое — явная ошибка загрузки
+     * (ревью, политика fail-fast этого файла как у pre_tokenizer/decoder):
+     * тихое отключение NFKC молча расходило бы token-id с эталоном
+     * transformers; исключение перехватывает [load] — [isLoaded]
+     * остаётся false, движок отдаёт LoadFailed.
+     */
     private fun parseCharsmap(b64: String?): CharsmapNormalizer? {
         if (b64.isNullOrBlank()) return null
         return try {
             CharsmapNormalizer(Base64.getDecoder().decode(b64))
         } catch (e: Exception) {
-            Timber.w("Не удалось разобрать precompiled_charsmap")
-            null
+            throw IllegalStateException("Некорректный precompiled_charsmap в tokenizer.json", e)
         }
     }
 

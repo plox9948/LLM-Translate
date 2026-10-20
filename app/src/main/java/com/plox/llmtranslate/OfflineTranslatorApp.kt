@@ -20,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
@@ -97,11 +98,27 @@ class OfflineTranslatorApp : Application(), Configuration.Provider {
                 // удалённого каталога. Без удалённой настройки (URL пуст) и при
                 // неприменённой версии (appliedVersion == 0) каталожных моделей
                 // удалённого каталога в БД быть не может — очистка безопасна.
-                val appliedVersion = preferences.lastRemoteCatalogVersion.first()
-                val cleaningSafe =
+                // Ревью повт. аудита, п.3: lastRemoteCatalogVersion — обёртка в
+                // null-режиме, при холодном сбое DataStore first() не возвращается
+                // никогда; consumer-таймаут [VERSION_READ_TIMEOUT_MS] снимает
+                // зависание, неизвестная версия трактуется консервативно —
+                // старт-очистка пропускается с логом (как при прежнем исключении),
+                // READY-модели удалённого каталога не удаляются.
+                val appliedVersion = withTimeoutOrNull(VERSION_READ_TIMEOUT_MS) {
+                    preferences.lastRemoteCatalogVersion.first()
+                }
+                val cleaningSafe = when {
                     catalogProvider.remotePartApplied ||
-                        RemoteCatalogProvider.REMOTE_CATALOG_URL.isBlank() ||
-                        appliedVersion == 0
+                        RemoteCatalogProvider.REMOTE_CATALOG_URL.isBlank() -> true
+                    appliedVersion == null -> {
+                        Timber.w(
+                            "Применённая версия каталога не прочитана (таймаут/сбой " +
+                                "DataStore) — очистка отсутствующих моделей пропущена"
+                        )
+                        false
+                    }
+                    else -> appliedVersion == 0
+                }
                 if (cleaningSafe) {
                     obsoletePaths += modelRepository.cleanRemovedCatalogModels(catalogIds)
                 } else {
@@ -261,6 +278,14 @@ internal fun fileSnapshotOf(path: String): FileSnapshot? {
         else -> null
     }
 }
+
+/**
+ * Consumer-таймаут чтения применённой версии каталога при стартовой
+ * синхронизации БД (ревью повт. аудита, п.3): null-режим обёртки
+ * lastRemoteCatalogVersion при холодном сбое DataStore не даёт ни одной
+ * эмиссии, и first() зависал бы в app-scope навсегда.
+ */
+private const val VERSION_READ_TIMEOUT_MS = 5_000L
 
 /**
  * Суммарный бюджет блокирующих запросов WorkManager на одну сверку

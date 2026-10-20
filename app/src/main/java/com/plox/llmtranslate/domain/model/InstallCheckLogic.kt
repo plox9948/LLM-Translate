@@ -1,10 +1,12 @@
 package com.plox.llmtranslate.domain.model
 
-import com.plox.llmtranslate.data.download.DownloadLayout
 import java.util.Locale
 
 /**
  * Чистая логика проверки установки модели. Вынесена для unit-тестов.
+ * Domain-слой: не импортирует data (ревью аудита) — имена файлов по URL
+ * извлекаются тем же доменным хелпером [ModelFileNaming.sanitizedBasename],
+ * которому делегирует загрузочная раскладка DownloadLayout.
  */
 object InstallCheckLogic {
 
@@ -12,14 +14,14 @@ object InstallCheckLogic {
      * Единая классификация раскладки по списку URL скачивания
      * (пара isArchiveLayout to isGzipLayout): одиночный файл, архив
      * (unpack-пик 2x) или gz-артефакты slimt-пачки (gunzip-пик ≈1.5–1.7x).
-     * Имена извлекаются единой точкой [DownloadLayout.sanitizedBasename] —
-     * ей пользуются подсказка UI ([cardLayoutFlags]), гейт скачивания
-     * ModelDownloadWorker и гейт распаковки бэкапа, иначе классификация
-     * расходится на URL с query/спец-символами (ревью).
+     * Имена извлекаются единой точкой [ModelFileNaming.sanitizedBasename] —
+     * ей пользуются (через делегирование) подсказка UI ([cardLayoutFlags]),
+     * гейт скачивания ModelDownloadWorker и гейт распаковки бэкапа, иначе
+     * классификация расходится на URL с query/спец-символами (ревью).
      */
     fun urlLayoutFlags(urls: List<String>): Pair<Boolean, Boolean> {
         val names = urls.mapIndexed { index, url ->
-            DownloadLayout.sanitizedBasename(url, index)
+            ModelFileNaming.sanitizedBasename(url, index)
         }
         val isArchiveLayout = names.any { ArchiveFormats.isArchive(it) }
         val isGzipLayout = !isArchiveLayout &&

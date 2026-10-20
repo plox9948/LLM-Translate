@@ -20,7 +20,13 @@ sealed class DownloadOutcome {
     /** Файл скачан и прошёл проверки контрольных данных. */
     data class Success(val file: File) : DownloadOutcome()
 
-    /** Сетевая/HTTP ошибка — повтор имеет смысл, докачка продолжит с места обрыва. */
+    /**
+     * Сетевая/HTTP ошибка — повтор имеет смысл, докачка продолжит с места
+     * обрыва. Оговорка: возобновление реально только когда сервер подтверждает
+     * Range ответом 206 (и метаданные докачки достоверны); chunked-ответ без
+     * Content-Length обычно Range не поддерживает — сервер отвечает 200 и
+     * файл перекачивается целиком заново.
+     */
     data class NetworkError(val message: String) : DownloadOutcome()
 
     /**
@@ -154,7 +160,10 @@ abstract class BaseDownloader {
                             "Размер $fileName (${partFile.length()}) не совпал с " +
                                 "ожидаемым ($expected)"
                         )
-                        // Обрыв на уровне байтов — повтор продолжит докачку.
+                        // Обрыв на уровне байтов — повтор продолжит докачку
+                        // (при chunked-ответе без Content-Length Range обычно
+                        // не поддерживается — будет полная перекачка, см.
+                        // [DownloadOutcome.NetworkError]).
                         outcome = DownloadOutcome.NetworkError(
                             "Недокачано: $fileName ${partFile.length()}/$expected байт"
                         )
@@ -173,6 +182,13 @@ abstract class BaseDownloader {
                     // Финальный rename. Мета докачки удаляем только после
                     // успеха: при отказе rename .part+meta остаются валидными
                     // данными для ручного повтора.
+                    // Осознанный компромисс последовательности: ПРЕЖДАЯ версия
+                    // файла удаляется ДО rename — `renameTo` не гарантирует
+                    // перезаписи занятой цели, а «переименовать поверх» оставило
+                    // бы mixture при частичной цели. Убивание процесса между
+                    // delete и rename уничтожает старую установленную версию
+                    // (не откатывает её); восстанавливается повтором скачивания
+                    // из целого `.part` (он не удалялся).
                     if (doneFile.exists()) doneFile.delete()
                     if (partFile.renameTo(doneFile)) {
                         metaFile.delete()

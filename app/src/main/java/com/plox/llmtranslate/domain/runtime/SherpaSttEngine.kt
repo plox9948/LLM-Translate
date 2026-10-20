@@ -264,12 +264,18 @@ class SherpaSttEngine @Inject constructor(
                         bundle.recognizer = buildRecognizer(bundle.modelMeta, effectiveLanguage)
                         bundle.whisperLanguage = effectiveLanguage
                         Timber.d("Whisper переключён на язык: $effectiveLanguage")
-                    } catch (e: Exception) {
+                    } catch (t: Throwable) {
+                        // Ревью аудита (итерация 2): ловим Throwable, а не
+                        // Exception — OutOfMemoryError / UnsatisfiedLinkError
+                        // при нативной загрузке иначе оставляли бы в кэше
+                        // пучок с уже освобождённым распознавателем
+                        // (висящий native-указатель → use-after-free/SIGSEGV
+                        // на следующем decode).
                         // Старый распознаватель освобождён (или освобождение
                         // бросило), новый не создан — пучок неконсистентен:
                         // снимаем его с кэша и с активного id (пучки других
                         // моделей не затрагиваются).
-                        Timber.e(e, "Не удалось пересоздать whisper для языка $effectiveLanguage")
+                        Timber.e(t, "Не удалось пересоздать whisper для языка $effectiveLanguage")
                         // Если исключение бросил сам recognizer.release(), старый
                         // нативный распознаватель мог пережить снятие пучка —
                         // повторная попытка release() только по неосвобождённой
@@ -286,19 +292,25 @@ class SherpaSttEngine @Inject constructor(
                                 )
                             }
                         }
-                        val failedId = engineCache.activeId
-                        if (failedId != null) {
-                            // Снятие пучка с кэша БЕЗ releaseBundle: распознаватель
-                            // уже освобождён (или попытка бросила) выше —
-                            // повторный release был бы double-release.
-                            engineCache.cache.remove(failedId)
+                        // Снятие по id самого пучка, а не по engineCache.activeId
+                        // (ревью аудита, итерация 2): activeId мог указывать на
+                        // другой пучок (параллельная загрузка/смена модели) —
+                        // иначе выгружался чужой; флаг активного сбрасывается
+                        // только при совпадении. Снятие БЕЗ releaseBundle:
+                        // распознаватель уже освобождён (или попытка бросила)
+                        // выше — повторный release был бы double-release.
+                        engineCache.cache.remove(bundle.info.modelId)
+                        if (engineCache.activeId == bundle.info.modelId) {
                             engineCache.activeId = null
                         }
                         engineCache.publishLoadedUnlocked()
+                        // Отмена — не ошибка: неконсистентный пучок снят с кэша,
+                        // всплываем выше без конвертации в LoadFailed.
+                        if (t is CancellationException) throw t
                         return@withContext Result.failure(
                             RuntimeError.LoadFailed(
                                 "sherpa",
-                                "Не удалось переключить язык: ${e.message ?: "Неизвестная ошибка"}"
+                                "Не удалось переключить язык: ${t.message ?: "Неизвестная ошибка"}"
                             )
                         )
                     }

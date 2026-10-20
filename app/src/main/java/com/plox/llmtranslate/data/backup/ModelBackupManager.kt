@@ -23,6 +23,7 @@ import com.plox.llmtranslate.domain.runtime.RuntimeRouter
 import com.plox.llmtranslate.util.isFileInsideDir
 import com.plox.llmtranslate.util.sha256Hex
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.withLock
@@ -31,6 +32,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import timber.log.Timber
 import java.io.File
+import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
@@ -101,6 +103,28 @@ private fun bundleShaOk(entry: BackupModelEntry, dir: File): Boolean {
         if (actual == null || !actual.equals(expected, ignoreCase = true)) return false
     }
     return true
+}
+
+/**
+ * Проверка манифеста бэкапа на дубликаты записей: повторяющийся id или
+ * повторяющийся relativePath. Дубль id — два upsert одной записи, где
+ * поздний READY затирает ранний; дубль relativePath — две записи указывают
+ * на один файл на диске, поздняя подмена (moveToTarget) тихо ломает пучок
+ * ранней. Первая находка — описание дубликата, null — манифест чистый.
+ * internal — покрыто unit-тестом без Android.
+ */
+internal fun findManifestDuplicate(models: List<BackupModelEntry>): String? {
+    val seenIds = mutableSetOf<String>()
+    val seenPaths = mutableSetOf<String>()
+    for (entry in models) {
+        if (!seenIds.add(entry.id)) {
+            return "дубликат id модели «${entry.id}» в манифесте"
+        }
+        if (!seenPaths.add(entry.relativePath)) {
+            return "дубликат пути модели «${entry.relativePath}» в манифесте (id ${entry.id})"
+        }
+    }
+    return null
 }
 
 /**
@@ -225,6 +249,86 @@ internal fun postCancelImportSettled(observation: ImportWorkObservation): Boolea
     observation != ImportWorkObservation.LIVE
 
 /**
+ * Лимит чтения служебных записей архива (manifest.json/settings.json), байт
+ * (ревью аудита, п.4): заборстопленный архив с сотни-мегабайтным
+ * распакованным манифестом вызывал OOM на readBytes() ДО любых гейтов места.
+ * Манифест/настройки по своей природе килобайты — превышение лимита =
+ * «битый архив». internal — лимит и ошибка покрыты unit-тестом.
+ */
+internal const val MANIFEST_ENTRY_READ_LIMIT_BYTES = 2L * 1024 * 1024
+
+/**
+ * Бюджет распаковки во втором проходе импорта, когда обе оценки размеров
+ * недоступны: манифест с sizeBytes = 0 (легитимен для старых архивов) И
+ * ZIP-записи без объявленных распакованных размеров (size = -1 — раскладка
+ * local header с data descriptor, которой пишет и наш ZipOutputStream),
+ * байт (ревью повт. аудита, п.2: прежний фиксированный floor 64 МБ
+ * отклонял легитимные старые архивы с пучками в сотни МБ). Потолок завышен
+ * столь сильно, чтобы пропускал штатные бэкапы в гигабайты, и служит
+ * страховкой только от совсем уж безразмерных zip-bomb'ов.
+ */
+internal const val BACKUP_EXTRACT_UNKNOWN_BUDGET_BYTES = 6L * 1024 * 1024 * 1024
+
+/**
+ * Жёсткий лимит СУММАРНОГО объёма распаковки записей models/ (ревью аудита,
+ * п.4 + ревью повт. аудита, п.2): StatFs-гейт считается по манифесту, а
+ * второй проход раньше извлекал ВСЕ записи models/ вне зависимости от
+ * манифеста — завышенный контент при маленьком манифесте писался до упора
+ * диска без явной ошибки. Бюджет — МАКСИМУМ двух оценок с запасом 50 %:
+ * оценки гейта места [backupInstallRequiredBytes] (уже включает раздувание
+ * archive/gz-раскладок) и суммы ОБЪЯВЛЕННЫХ распакованных размеров записей
+ * models/ из заголовков ZIP ([ZipEntry.getSize]; -1 — размер не объявлен,
+ * в сумму не входит). Вторая оценка спасает легитимные старые архивы с
+ * sizeBytes = 0 и пучками в сотни МБ. При недоступности обеих оценок —
+ * фолбэк [BACKUP_EXTRACT_UNKNOWN_BUDGET_BYTES]. Выход за лимит — ошибка
+ * импорта без касания существующих файлов моделей. internal — unit-тест.
+ */
+internal fun backupExtractLimitBytes(neededBytes: Long, declaredZipBytes: Long): Long =
+    when {
+        neededBytes > 0 && declaredZipBytes > 0 -> {
+            val base = if (neededBytes >= declaredZipBytes) neededBytes else declaredZipBytes
+            base + base / 2
+        }
+        neededBytes > 0 -> neededBytes + neededBytes / 2
+        declaredZipBytes > 0 -> declaredZipBytes + declaredZipBytes / 2
+        else -> BACKUP_EXTRACT_UNKNOWN_BUDGET_BYTES
+    }
+
+/**
+ * Скопировать запись ZIP в [out] в пределах ОСТАТКА бюджета распаковки
+ * [budgetRemaining], ОБЩЕГО для всех записей второго прохода
+ * (zip-bomb моделей; ревью повт. аудита, п.1: счётчик больше не локален
+ * на запись — иначе N записей суммарно писали N×лимит). [totalLimit] —
+ * полный бюджет прохода, только для текста ошибки. Превышение —
+ * [IllegalStateException] с текстом для UI: импорт прерывается до
+ * регистрации моделей, temp-каталог чистится finally, существующие файлы
+ * моделей не тронуты.
+ * @return остаток бюджета для последующих записей прохода.
+ */
+internal fun copyEntryCapped(
+    zip: ZipInputStream,
+    out: OutputStream,
+    budgetRemaining: Long,
+    totalLimit: Long
+): Long {
+    val buffer = ByteArray(8192)
+    var used = 0L
+    while (true) {
+        val n = zip.read(buffer)
+        if (n < 0) break
+        used += n
+        if (used > budgetRemaining) {
+            throw IllegalStateException(
+                "Архив повреждён или слишком большой: суммарный объём распаковки " +
+                    "моделей превысил расчётный лимит $totalLimit байт"
+            )
+        }
+        out.write(buffer, 0, n)
+    }
+    return budgetRemaining - used
+}
+
+/**
  * Тестовая страховка (ревью #83, итерация 3, п.7 — замечание 6 пред.
  * раунда): «mkdirs temp-каталога ДО StatFs-гейта места» вынесено в
  * предикт [preparedTempDirBeforeSpaceGate], порядок вызовов фиксирует
@@ -237,6 +341,20 @@ internal const val TEMP_MUST_EXIST_BEFORE_SPACE_GATE =
 /** true, если temp-каталог распаковки доступен (см. [TEMP_MUST_EXIST_BEFORE_SPACE_GATE]). */
 internal fun preparedTempDirBeforeSpaceGate(tempDir: File): Boolean =
     tempDir.mkdirs() || tempDir.isDirectory
+
+/**
+ * Решение каркаса [decideImportWorkSwap] о подмене файлов модели при
+ * импорте бэкапа (ревью повт. аудита, п.7). Кроме самого запрета
+ * различает, БЫЛ ЛИ ОТПРАВЛЕН cancel живой загрузки: в случае
+ * [DENIED_AFTER_CANCEL] работа пользователя уже прервана, но запись
+ * архива так и не восстановлена — факт фиксируется в [ImportResult] и
+ * доводится до UI, чтобы тихая потеря загрузки была различима.
+ */
+internal enum class ImportSwapDecision {
+    SWAP_ALLOWED,
+    DENIED_WITHOUT_CANCEL,
+    DENIED_AFTER_CANCEL
+}
 
 /**
  * Инъектируемый каркас решения [ModelBackupManager.cancelLiveDownloadForImport]
@@ -254,7 +372,7 @@ internal suspend fun decideImportWorkSwap(
     nowMs: () -> Long,
     pollIntervalMs: Long,
     terminalTimeoutMs: Long
-): Boolean {
+): ImportSwapDecision {
     // Решение ДО cancel — за importSwapAllowed: NOT_LIVE — живой работы не
     // было; QUERY_FAILED — состояние не подтверждено, cancel НЕ отправлен,
     // подмену запрещаем.
@@ -264,9 +382,9 @@ internal suspend fun decideImportWorkSwap(
                 "Подмена файлов $modelId пропущена: состояние живой загрузки " +
                     "подтвердить не удалось — работа считается живой"
             )
-            return false
+            return ImportSwapDecision.DENIED_WITHOUT_CANCEL
         }
-        return true
+        return ImportSwapDecision.SWAP_ALLOWED
     }
     cancelLive()
     val deadline = nowMs() + terminalTimeoutMs
@@ -277,11 +395,18 @@ internal suspend fun decideImportWorkSwap(
     var observation = query()
     while (observation == ImportWorkObservation.LIVE) {
         if (nowMs() >= deadline) {
+            // Аудит: подтверждённый LIVE по истечении дедлайна — живой воркер
+            // всё ещё работает, подмену НЕ разрешаем (KDoc importSwapAllowed:
+            // только подтверждённое отсутствие живой работы). Запись
+            // пропускается с логом; повторный импорт позже увидит уже
+            // завершённую (отменённую) работу. Cancel при этом УЖЕ отправлен —
+            // загрузка пользователя потеряна, фиксируется отдельно
+            // (ревью повт. аудита, п.7).
             Timber.w(
                 "Воркер загрузки $modelId не достиг терминального статуса " +
-                    "через $terminalTimeoutMs мс после отмены"
+                    "через $terminalTimeoutMs мс после отмены — подмена запрещена"
             )
-            return true
+            return ImportSwapDecision.DENIED_AFTER_CANCEL
         }
         delay(pollIntervalMs)
         observation = query()
@@ -296,7 +421,11 @@ internal suspend fun decideImportWorkSwap(
         )
     }
     Timber.d("Живая загрузка $modelId отменена перед импортом бэкапа")
-    return postCancelImportSettled(observation)
+    return if (postCancelImportSettled(observation)) {
+        ImportSwapDecision.SWAP_ALLOWED
+    } else {
+        ImportSwapDecision.DENIED_AFTER_CANCEL
+    }
 }
 
 /**
@@ -333,12 +462,21 @@ class ModelBackupManager @Inject constructor(
 
     /**
      * Результат импорта.
+     *
+     * [downloadsInterrupted] (ревью повт. аудита, п.7): число живых загрузок
+     * пользователя, которые импорт отменил ([cancelLiveDownloadForImport]),
+     * но так и не заменил извлечённой моделью (воркер не достиг терминального
+     * статуса к дедлайну, или подмена файлов не удалась уже после отмены) —
+     * иначе пользователь тихо теряет и загрузку, и импорт. При успешной
+     * подмене отмена не считается потерей: содержимое модели пришло из
+     * архива.
      */
     data class ImportResult(
         val importedCount: Int,
         val skippedCount: Int,
         val settingsRestored: Boolean,
-        val error: String? = null
+        val error: String? = null,
+        val downloadsInterrupted: Int = 0
     )
 
     /**
@@ -364,6 +502,37 @@ class ModelBackupManager @Inject constructor(
      * предупреждением. При обрыве уже начатого копирования недописанный
      * документ удаляется ПОСЛЕ попытки удаления с логом результата
      * ([deleteFailedDocument]) — не молча.
+     *
+     * Ревью аудита, п.1 (уточнение ревью повт. аудита, п.8а): штатная отмена
+     * корутины ([CancellationException]) не глотается — пробрасывается
+     * наверх. При отмене недописанный SAF-документ не удаляется (в отличие
+     * от ошибочного обрыва копирования), но он и НЕ целый: семантика
+     * [android.content.ContentResolver.openOutputStream] усекает документ
+     * ещё при открытии потока, поэтому после отмены пользователь видит
+     * УСЕЧЁННЫЙ (пустой/недописанный) документ — прежний архив уже потерян,
+     * «отмена ничего не портит» здесь неверно.
+     *
+     * Ревью аудита, п.2: обход файлов и упаковка моделей во временный ZIP
+     * выполняются под общим [ModelImportLock] — иначе живой импорт/удаление/
+     * отмена скачивания rename-ит файлы во время обхода, и в архив попадает
+     * смесь старой/новой установки при sha256 манифеста из прежнего снимка
+     * БД (при восстановлении [backupShaOk] молча скипает такую модель).
+     * Лок берётся через [kotlinx.coroutines.sync.Mutex.tryLock] без
+     * ожидания: долгий импорт бэкапа не блокирует экспорт — при занятом
+     * локе экспорт отказывает с логом, пользователь повторяет позже.
+     * Снимается сразу после упаковки temp-архива (SAF-копирование файлов
+     * моделей не касается), а при исключении/отмене в критическом участке —
+     * во finally по флагу, лок не остаётся захваченным.
+     *
+     * Осознанный долг (ревью повт. аудита, п.8б/в): упаковка всего набора
+     * READY-пучков под [ModelImportLock] длится минуты — в это время
+     * удаление моделей, отмена скачивания и импорт той же id ждут тот же
+     * лок и в UI выглядят «зависшими» без объяснения причины. Снятие
+     * упаковки из-под лока требует согласованного файлового снимка (иначе
+     * в архив вернётся смесь установок) — отложено. Отказ tryLock также
+     * неразличим в UI: экспорт возвращает тот же false, что и прочие сбои
+     * («Ошибка экспорта бэкапа» без подсказки «повторите позже»), причина
+     * видна только в логе.
      * @return true при успехе.
      */
     suspend fun exportToUri(targetUri: Uri): Boolean = withContext(Dispatchers.IO) {
@@ -375,8 +544,35 @@ class ModelBackupManager @Inject constructor(
         val tempZip = File(tempRoot, BACKUP_EXPORT_TEMP_PREFIX + UUID.randomUUID() + ".zip")
         // Копирование в Uri уже началось — по исключению документ обрезан.
         var outputOpened = false
+        // Лок моделей снят штатно сразу после упаковки архива; флаг нужен,
+        // чтобы при исключении/отмене в критическом участке он освобождался
+        // в finally.
+        var modelsLocked = false
         try {
-            val models = repository.observeAll().first().filter { it.isReady }
+            if (!ModelImportLock.mutex.tryLock()) {
+                Timber.w(
+                    "Экспорт бэкапа отклонён: выполняется подмена файлов моделей " +
+                        "(импорт/удаление/отмена скачивания) — повторите позже"
+                )
+                return@withContext false
+            }
+            modelsLocked = true
+
+            val readyModels = repository.observeAll().first().filter { it.isReady }
+            // Инвариант READY⇒filePath (ревью аудита, п.5): READY-запись без
+            // filePath экспортировалась с пустым relativePath, а импорт
+            // резолвил "" в сам корень моделей (moveToTarget переносил
+            // temp-каталог поверх корня) — такую запись пропускаем с логом.
+            val models = readyModels.filter { model ->
+                if (model.filePath.isNullOrBlank()) {
+                    Timber.w(
+                        "Модель ${model.id} пропущена экспортом: READY-запись без filePath"
+                    )
+                    false
+                } else {
+                    true
+                }
+            }
             if (models.isEmpty()) {
                 Timber.w("Нет моделей для экспорта")
                 return@withContext false
@@ -429,6 +625,10 @@ class ModelBackupManager @Inject constructor(
                     }
                 }
             }
+            // Снимак файлов упакован — лок моделей больше не нужен
+            // (остальная часть метода работает только с temp-файлом и Uri).
+            ModelImportLock.mutex.unlock()
+            modelsLocked = false
 
             // Гейт целевого volume ДО открытия выходного потока (issue #83,
             // п.4): openOutputStream усечёт существующий SAF-документ — если
@@ -456,6 +656,12 @@ class ModelBackupManager @Inject constructor(
                 output.use { out ->
                     tempZip.inputStream().use { it.copyTo(out) }
                 }
+            } catch (e: CancellationException) {
+                // Ревью аудита, п.1: отмена копирования — не «обрыв с
+                // недописанным мусором»: документ и так усечён семантикой
+                // SAF, но удалять его отменённой операцией нельзя —
+                // просто пробрасываем отмену.
+                throw e
             } catch (e: Exception) {
                 // Обрыв copyTo: в Uri остался усечённый документ — удаляем его
                 // с логом (не молча), иначе пользователь получит «битый архив»
@@ -468,10 +674,15 @@ class ModelBackupManager @Inject constructor(
 
             Timber.d("Экспортировано ${models.size} моделей")
             true
+        } catch (e: CancellationException) {
+            // Ревью аудита, п.1: штатная отмена корутины (scope) — не
+            // «ошибка экспорта»; temp и лок освобождаются в finally.
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "Ошибка экспорта бэкапа")
             false
         } finally {
+            if (modelsLocked) ModelImportLock.mutex.unlock()
             tempZip.delete()
         }
     }
@@ -568,6 +779,19 @@ class ModelBackupManager @Inject constructor(
      * той же формулой, что гейт скачивания (ревью раунда 3),
      * [backupInstallRequiredBytes]. Осиротевшие от убитого процесса
      * temp-каталоги чистит стартовый GC [cleanupOrphanBackupTemp].
+     *
+     * Ревью аудита, п.4: чтение manifest.json/settings.json ограничено
+     * [MANIFEST_ENTRY_READ_LIMIT_BYTES] (заборстопленный архив с огромным
+     * манифестом = «битый архив» до любых гейтов), а второй проход
+     * извлекает models/ в пределах СУММАРНОГО бюджета
+     * [backupExtractLimitBytes] (максимум оценок манифеста и заголовков
+     * ZIP; остаток перетекает между записями прохода, ревью повт. аудита
+     * п.1/п.2) — выход за лимит прерывает импорт ошибкой, существующие
+     * файлы моделей не тронуты.
+     *
+     * Ревью аудита, п.1: штатная отмена корутины ([CancellationException])
+     * пробрасывается наверх, а не превращается в «частичный импорт» с
+     * текстом ошибки; temp-каталог чистится в finally.
      */
     suspend fun importFromUri(sourceUri: Uri): ImportResult =
         ModelImportLock.mutex.withLock {
@@ -579,6 +803,9 @@ class ModelBackupManager @Inject constructor(
         var imported = 0
         var skipped = 0
         var settingsRestored = false
+        // Ревью повт. аудита, п.7: отменённые импортом и не заменённые
+        // загрузки пользователя — факт доводится до UI ([ImportResult]).
+        var downloadsInterrupted = 0
         // Уникальный суффикс temp-каталога: два параллельных импорта бэкапа
         // не должны делить один каталог (каждый чистит в finally свой).
         // Temp — сосед каталога моделей (тот же volume), а не cacheDir:
@@ -590,20 +817,29 @@ class ModelBackupManager @Inject constructor(
 
         try {
             // --- Проход 1: только метаданные (manifest + settings), файлов
-            // models/ не касаемся (issue #83, п.5). ---
+            // models/ не касаемся (issue #83, п.5). Заодно накапливаем
+            // объявленные распакованные размеры записей models/ из заголовков
+            // ZIP — вторая оценка бюджета второго прохода (ревью повт.
+            // аудита, п.2); записи без объявления размера (size = -1) не
+            // учитываются, фолбэк — по манифесту/потолку. ---
             var manifest: BackupManifest? = null
             var settings: BackupSettings? = null
+            var declaredZipModelBytes = 0L
             if (!forEachZipEntry(sourceUri) { zip, entry ->
                     when {
                         entry.isDirectory -> Unit
                         entry.name == MANIFEST_NAME ->
                             manifest = json.decodeFromString(
-                                BackupManifest.serializer(), readEntry(zip)
+                                BackupManifest.serializer(),
+                                readEntryCapped(zip, MANIFEST_NAME)
                             )
                         entry.name == SETTINGS_NAME ->
                             settings = json.decodeFromString(
-                                BackupSettings.serializer(), readEntry(zip)
+                                BackupSettings.serializer(),
+                                readEntryCapped(zip, SETTINGS_NAME)
                             )
+                        entry.name.startsWith(MODELS_PREFIX) && entry.size >= 0 ->
+                            declaredZipModelBytes += entry.size
                     }
                 }) {
                 return ImportResult(0, 0, false, "Не удалось открыть архив")
@@ -611,6 +847,14 @@ class ModelBackupManager @Inject constructor(
 
             val manifestData = manifest
                 ?: return ImportResult(0, 0, false, "Нет манифеста в архиве")
+
+            // Дубликаты id/relativePath в манифесте — архив отклоняется ЯВНО
+            // до любых записей: иначе поздняя запись той же id/path тихо
+            // затирает раннюю (READY-подмена одного файла двумя записями).
+            findManifestDuplicate(manifestData.models)?.let { duplicate ->
+                Timber.e("Архив бэкапа отклонён: $duplicate")
+                return ImportResult(0, 0, false, "Архив повреждён: $duplicate")
+            }
 
             // tempDir создаётся ДО гейта места (регресс-ревью issue #83;
             // порядок зафиксирован предиктом [preparedTempDirBeforeSpaceGate]
@@ -655,6 +899,16 @@ class ModelBackupManager @Inject constructor(
 
             // --- Проход 2: только файлы моделей (повторное открытие Uri —
             // SAF это разрешает). ---
+            // Ревью аудита, п.4 + ревью повт. аудита, п.1: второй проход
+            // извлекает ВСЕ records models/ вне зависимости от манифеста,
+            // а гейт места считается по манифесту — СУММАРНЫЙ объём
+            // распаковки ограничен бюджетом [backupExtractLimitBytes]
+            // (максимум оценки манифеста и объявленных размеров ZIP + 50 %);
+            // остаток бюджета ТЕЧЁТ между записями прохода (не на запись!),
+            // выход за лимит = ошибка импорта (существующие файлы моделей
+            // ещё не тронуты, temp чистится finally).
+            val extractLimitBytes = backupExtractLimitBytes(neededBytes, declaredZipModelBytes)
+            var extractBudgetRemaining = extractLimitBytes
             if (!forEachZipEntry(sourceUri) { zip, entry ->
                     val name = entry.name
                     if (!entry.isDirectory && name.startsWith(MODELS_PREFIX)) {
@@ -666,7 +920,10 @@ class ModelBackupManager @Inject constructor(
                             Timber.w("ZIP-запись вне каталога, пропущена: $name")
                         } else {
                             outFile.parentFile?.mkdirs()
-                            outFile.outputStream().use { zip.copyTo(it) }
+                            outFile.outputStream().use { out ->
+                                extractBudgetRemaining =
+                                    copyEntryCapped(zip, out, extractBudgetRemaining, extractLimitBytes)
+                            }
                         }
                     }
                 }) {
@@ -676,6 +933,28 @@ class ModelBackupManager @Inject constructor(
             // Создаём записи моделей.
             val restoredIds = mutableSetOf<String>()
             manifestData.models.forEach { entry ->
+                // Контрольный аудит: id из манифеста — внешние данные, он
+                // попадает в путь каталога записи (DownloadLayout.modelDir)
+                // и в очистки с deleteRecursively — небезопасный id с «/»,
+                // «..» удалял/подменял файлы вне каталога рантайма.
+                // Такая запись отклоняется явно, без тихой санитизации.
+                if (!DownloadLayout.isSafeModelId(entry.id)) {
+                    Timber.w(
+                        "Модель из архива пропущена: id «${entry.id}» " +
+                            "содержит недопустимые файловые символы"
+                    )
+                    skipped++
+                    return@forEach
+                }
+                // Ревью аудита, п.5: пустой relativePath ( READY-запись без
+                // filePath в источнике старого архива) резолвился бы в сам
+                // корень моделей, а findExtractedEntry(tempDir, "") — во весь
+                // temp-каталог, и moveToTarget перенёс бы его поверх корня.
+                if (entry.relativePath.isBlank()) {
+                    Timber.w("Модель из архива пропущена: пустой relativePath в манифесте (id ${entry.id})")
+                    skipped++
+                    return@forEach
+                }
                 // Путь из манифеста может выйти за пределы каталога моделей.
                 val targetPath = resolveTargetPath(entry)
                 if (targetPath == null) {
@@ -749,9 +1028,18 @@ class ModelBackupManager @Inject constructor(
                 // (таймаут/сбой запроса WorkManager), воркер считается живым и
                 // подмена этой id пропускается — иначе cleanupCancelledModel
                 // воркера позже удаляет уже восстановленный бандл.
-                if (!cancelLiveDownloadForImport(entry.id)) {
-                    skipped++
-                    return@forEach
+                // Ревью повт. аудита, п.7: если cancel УЖЕ отправлен, но
+                // терминального статуса не дождались — загрузка пользователя
+                // прервана без замещения; факт считаем в [downloadsInterrupted].
+                when (val swapDecision = cancelLiveDownloadForImport(entry.id)) {
+                    ImportSwapDecision.SWAP_ALLOWED -> Unit
+                    else -> {
+                        if (swapDecision == ImportSwapDecision.DENIED_AFTER_CANCEL) {
+                            downloadsInterrupted++
+                        }
+                        skipped++
+                        return@forEach
+                    }
                 }
 
                 // Issue #70: импорт подменяет файлы модели той же id — eviction
@@ -778,10 +1066,18 @@ class ModelBackupManager @Inject constructor(
                 settingsRestored = true
             }
 
-            return ImportResult(imported, skipped, settingsRestored)
+            return ImportResult(imported, skipped, settingsRestored, downloadsInterrupted = downloadsInterrupted)
+        } catch (e: CancellationException) {
+            // Ревью аудита, п.1: отмена scope — не «частичный импорт с
+            // e.message»; пробрасываем отмену (temp удалится в finally).
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "Ошибка импорта бэкапа")
-            return ImportResult(imported, skipped, settingsRestored, e.message ?: "Ошибка импорта")
+            return ImportResult(
+                imported, skipped, settingsRestored,
+                e.message ?: "Ошибка импорта",
+                downloadsInterrupted
+            )
         } finally {
             // Временный каталог удаляется в любом случае; осиротевшие от
             // убитого процесса каталоги чистит стартовый GC (issue #83, п.6).
@@ -812,13 +1108,25 @@ class ModelBackupManager @Inject constructor(
      * паузой [CANCEL_POLL_INTERVAL_MS]. Решение вынесено в
      * [decideImportWorkSwap] (тестируется без WorkManager).
      *
-     * @return true, если подмену файлов выполнять можно (живой работы не
-     *         было; либо она отменена и достигла терминального статуса или
-     *         состояние после отмены не подтвердилось; либо отменённый
-     *         воркер не дождался терминала за [CANCEL_TERMINAL_TIMEOUT_MS] —
-     *         прежний путь).
+     * Ревью аудита, п.3: подтверждённый LIVE по истечении
+     * [CANCEL_TERMINAL_TIMEOUT_MS] — подмену НЕ разрешаем (fail-closed,
+     * живой воркер ещё работает); ранее этот путь молча возвращал true,
+     * противореча KDoc [importSwapAllowed]. Ревью повт. аудита, п.7: этот
+     * случай отличается от отказа ДО cancel —cancel уже отправлен и живая
+     * загрузка пользователя потеряна, поэтому решение различает
+     * [ImportSwapDecision.DENIED_AFTER_CANCEL] (факт попадает в число
+     * [ImportResult.downloadsInterrupted] и сообщение UI).
+     *
+     * @return [ImportSwapDecision.SWAP_ALLOWED], если подмену файлов
+     *         выполнять можно (живой работы не было; либо она отменена и
+     *         достигла терминального статуса или состояние после отмены не
+     *         подтвердилось); [ImportSwapDecision.DENIED_WITHOUT_CANCEL] —
+     *         состояние неподтверждено ДО cancel (cancel не отправлялся);
+     *         [ImportSwapDecision.DENIED_AFTER_CANCEL] — cancel отправлен,
+     *         терминальный статус не дождён. internal — покрыто
+     *         unit-тестом каркаса [decideImportWorkSwap].
      */
-    private suspend fun cancelLiveDownloadForImport(modelId: String): Boolean =
+    internal suspend fun cancelLiveDownloadForImport(modelId: String): ImportSwapDecision =
         decideImportWorkSwap(
             modelId = modelId,
             firstObservation = queryImportWorkObservation(modelId),
@@ -834,11 +1142,17 @@ class ModelBackupManager @Inject constructor(
      * BLOCKED — LIVE; см. ModelManagerImpl.isWorkLive). Таймаут/сбой запроса
      * к инициализированному WorkManager — QUERY_FAILED: состояние не
      * подтверждено, решение о подмене принимает [importSwapAllowed]
-     * (регресс-ревью #83, п.4). Неинициализированный в этом процессе
-     * WorkManager (IllegalStateException — unit-test JVM) — NOT_LIVE:
-     * живая работа без WorkManager в этом процессе невозможна.
+     * (регресс-ревью #83, п.4).
+     *
+     * Ревью аудита, п.3: неинициализированный WorkManager
+     * (IllegalStateException) — тоже QUERY_FAILED, а не NOT_LIVE:
+     * unique-работы переживают перезапуск процесса и состояние живой
+     * загрузки такой сборкой не подтверждается — fail-closed, подмена
+     * этой id пропускается (повтор импорта позже увидит инициализированный
+     * WorkManager и реальное состояние).
+     * internal — покрытие unit-тестом с явным моком WorkManager.
      */
-    private fun queryImportWorkObservation(modelId: String): ImportWorkObservation = try {
+    internal fun queryImportWorkObservation(modelId: String): ImportWorkObservation = try {
         val infos = WorkManager.getInstance(context)
             .getWorkInfosForUniqueWork(ModelDownloadWorker.workName(modelId))
             .get(WORK_QUERY_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -853,8 +1167,11 @@ class ModelBackupManager @Inject constructor(
             ImportWorkObservation.NOT_LIVE
         }
     } catch (e: IllegalStateException) {
-        Timber.d("WorkManager не инициализирован — живой загрузки $modelId в этом процессе нет")
-        ImportWorkObservation.NOT_LIVE
+        Timber.w(
+            "WorkManager не инициализирован — состояние живой загрузки $modelId " +
+                "не подтверждено, подмену пропускаем (fail-closed)"
+        )
+        ImportWorkObservation.QUERY_FAILED
     } catch (e: Exception) {
         Timber.w(e, "WorkManager недоступен при проверке живой загрузки $modelId")
         ImportWorkObservation.QUERY_FAILED
@@ -946,11 +1263,15 @@ class ModelBackupManager @Inject constructor(
      * Восстановить настройки. Presence-семантика (ревью #53, уточнение
      * ревью #5): ключ секции в JSON = применять по языкам самой секции;
      * отсутствие ключа (null из старого архива) = не трогать; язык,
-     * отсутствующий в секции частично-языкового бэкапа, остаётся как есть.
-     * Модельные id (активные модели и поязыковые назначения) применяются
-     * только для моделей, реально восстановленных в этом импорте
-     * ([restoredIds]): иначе настройка осталась бы висячей на отсутствующую
-     * модель (кроме сентинеля системного TTS — он не требует модели).
+     * отсутствующий в секции частично-языкового бэкапа, остаётся как есть;
+     * null-значение элемента карты = снять назначение этого языка.
+     * Скалярные ttsEngine/uiLanguage/theme — та же Presence-семантика
+     * (null из старого архива без секции НЕ затирает реальные настройки
+     * дефолтами). Модельные id (активные модели и поязыковые назначения)
+     * применяются только для моделей, реально восстановленных в этом
+     * импорте ([restoredIds]): иначе настройка осталась бы висячей на
+     * отсутствующую модель (кроме сентинеля системного TTS — он не требует
+     * модели).
      *
      * Все применения — через `edit`-сеттеры [ModelPreferences] (без
      * recover-обёрток): сбой записи DataStore бросает исключение и
@@ -961,9 +1282,11 @@ class ModelBackupManager @Inject constructor(
         restoreActiveIfRestored(ModelCategory.TRANSLATION, settings.activeTranslation, restoredIds)
         restoreActiveIfRestored(ModelCategory.STT, settings.activeStt, restoredIds)
         restoreActiveIfRestored(ModelCategory.TTS, settings.activeTts, restoredIds)
-        preferences.setTtsEngine(settings.ttsEngine)
-        preferences.setUiLanguage(settings.uiLanguage)
-        preferences.setTheme(settings.theme)
+        // Скалярные настройки — Presence-семантика: null (старый архив без
+        // поля) не затирает текущее значение дефолтом.
+        settings.ttsEngine?.let { preferences.setTtsEngine(it) }
+        settings.uiLanguage?.let { preferences.setUiLanguage(it) }
+        settings.theme?.let { preferences.setTheme(it) }
         // Поязыковые назначения: только языки из секции назначений архива
         // (ревью #5: язык, отсутствующий в частичном бэкапе, не снимается).
         // Id не восстановленных в этом импорте моделей пропускаем
@@ -1187,8 +1510,26 @@ class ModelBackupManager @Inject constructor(
     }
 
     /**
-     * Прочитать содержимое записи ZIP целиком (UTF-8).
+     * Прочитать содержимое служебной записи ZIP ([name]) целиком с жёстким
+     * лимитом [MANIFEST_ENTRY_READ_LIMIT_BYTES] (ревью аудита, п.4):
+     * безлимитное readBytes() на заборстопленном архиве = OOM на
+     * манифесте/настройках до всех гейтов места. Превышение —
+     * [IllegalStateException] с понятным текстом для UI («битый архив»).
      */
-    private fun readEntry(zip: ZipInputStream): String =
-        String(zip.readBytes(), Charsets.UTF_8)
+    private fun readEntryCapped(zip: ZipInputStream, name: String): String {
+        val buffer = ByteArray((MANIFEST_ENTRY_READ_LIMIT_BYTES + 1).toInt())
+        var total = 0
+        while (total < buffer.size) {
+            val read = zip.read(buffer, total, buffer.size - total)
+            if (read < 0) break
+            total += read
+        }
+        if (total > MANIFEST_ENTRY_READ_LIMIT_BYTES) {
+            throw IllegalStateException(
+                "Архив повреждён: размер записи $name в архиве превышает лимит " +
+                    "$MANIFEST_ENTRY_READ_LIMIT_BYTES байт"
+            )
+        }
+        return String(buffer, 0, total, Charsets.UTF_8)
+    }
 }

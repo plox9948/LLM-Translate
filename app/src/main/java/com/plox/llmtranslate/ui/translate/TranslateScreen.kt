@@ -62,6 +62,7 @@ import com.plox.llmtranslate.ui.ErrorDialog
 import com.plox.llmtranslate.ui.FavoriteStarIcon
 import com.plox.llmtranslate.ui.formatBytes
 import java.util.Locale
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Экран «Перевод»: текст или аудио → перевод → озвучивание.
@@ -248,7 +249,7 @@ fun TranslateScreen(
         // рекомпозиция по тикам elapsed не затрагивает весь экран; сам elapsed
         // — отдельный поток ViewModel (ревью), в общий UiState не попадает.
         if (state.isRecording) {
-            RecordingIndicator(viewModel)
+            RecordingIndicator(viewModel.recordingElapsed)
         }
 
         // Ошибка.
@@ -272,10 +273,11 @@ fun TranslateScreen(
  * длительности приводили к рекомпозиции только этой строки.
  */
 @Composable
-private fun RecordingIndicator(viewModel: TranslateViewModel) {
+private fun RecordingIndicator(elapsed: StateFlow<Long>) {
     // Точечная подписка на таймер (ревью): секундные тики рекомпозируют
-    // только эту строку, не весь экран.
-    val elapsedMs by viewModel.recordingElapsed.collectAsStateWithLifecycle()
+    // только эту строку, не весь экран; параметр — сам поток таймера,
+    // а не ViewModel (тестируемость composable).
+    val elapsedMs by elapsed.collectAsStateWithLifecycle()
     val totalSec = (elapsedMs / 1000L).toInt()
     Text(
         text = stringResource(

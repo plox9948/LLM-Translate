@@ -112,17 +112,19 @@ class PiperTtsRuntime @Inject constructor(
      */
     private val stopGate = PiperStopGate()
 
-    /** Активный AudioTrack для остановки озвучивания из [stop]; volatile — доступ из разных потоков. */
-    @Volatile
-    private var activeTrack: AudioTrack? = null
-
     /**
-     * Поколение фразы, которой принадлежит активный трек (0 — трека нет):
-     * гейт остановки трека на пути отмены (регрессия #83) — отменённая старая
-     * фраза не гасит трек, уже принадлежащий новой.
+     * Неизменяемый холдер «поколение фразы + её AudioTrack» (регрессия #83,
+     * аудит): прежняя пара @Volatile-полей писалась и читалась несогласованно —
+     * [stop] мог прочитать старое поколение до назначения нового трека и не
+     * остановить его, а безусловное обнуление пары — снять уже трек новой
+     * фразы. Холдер назначается ОДНОЙ записью ([playPcm]); остановка и снятие
+     * — только со сверкой поколения с [stopGate] (stopThrough-семантика).
      */
+    private class TrackHandle(val generation: Int, val track: AudioTrack)
+
+    /** Текущий трек с поколением владельца (null — трека нет); volatile — доступ из разных потоков. */
     @Volatile
-    private var activeTrackGeneration: Int = 0
+    private var activeHandle: TrackHandle? = null
 
     /**
      * Загрузить Piper-модель из каталога [modelDir]. Повторная загрузка того же
@@ -135,7 +137,7 @@ class PiperTtsRuntime @Inject constructor(
     suspend fun load(modelDir: File, model: InstalledModel? = null): RuntimeError? =
         withContext(Dispatchers.IO) {
             // playPcm выполняется под [engineMutex] всю фазу воспроизведения
-            // (перенос вне мьютекса рискован для stop-семантики с activeTrack,
+            // (перенос вне мьютекса рискован для stop-семантики с activeHandle,
             // ревью). Чтобы смена каталога не ждала конца озвучки, гасим её
             // заранее: циклы playPcm проверяют снятие поколения [stopGate] на
             // каждом чанке/дренаже и освобождают мьютекс досрочно (тот же
@@ -259,8 +261,11 @@ class PiperTtsRuntime @Inject constructor(
             // озвучку (регрессия #83). Глобальное снятие остаётся за явным
             // пользовательским stop()/release().
             stopGate.stopThrough(myGeneration)
-            if (activeTrackGeneration == myGeneration) {
-                stopActiveTrack()
+            // Трек гасится только если он принадлежит этой фразе (сверка
+            // по холдеру — пара «поколение+трек» согласована): трек новой
+            // фразы отменённая старая не задевает (регрессия #83).
+            activeHandle?.takeIf { it.generation == myGeneration }?.let { handle ->
+                stopTrack(handle.track)
             }
             throw e
         }
@@ -278,18 +283,26 @@ class PiperTtsRuntime @Inject constructor(
         // Явная остановка (пользователь/разгрузка/смена модели): снимает все
         // поколения вплоть до последнего зарезервированного (ревью #83).
         stopGate.stopAll()
-        activeTrackGeneration = 0
-        stopActiveTrack()
+        // Регрессия #83 (аудит): трек снимается/останавливается только через
+        // сверку поколения с гейтом (stopThrough-семантика), а не безусловным
+        // обнулением пары — поздний stop() не гасит трек фразы, зарезервированной
+        // уже после этого stop() (её поколение stopAll-снимком не снято).
+        // Холдер читается атомарно, поэтому «старое поколение + новый трек»
+        // несогласованной парой не наблюдается.
+        val handle = activeHandle ?: return
+        if (!stopGate.isStopped(handle.generation)) return
+        if (activeHandle === handle) {
+            activeHandle = null
+        }
+        stopTrack(handle.track)
     }
 
-    /** Остановить активный AudioTrack (ошибки — только в лог). */
-    private fun stopActiveTrack() {
-        activeTrack?.let { track ->
-            try {
-                track.stop()
-            } catch (e: Exception) {
-                Timber.w(e, "Ошибка остановки AudioTrack")
-            }
+    /** Остановить конкретный AudioTrack (ошибки — только в лог). */
+    private fun stopTrack(track: AudioTrack) {
+        try {
+            track.stop()
+        } catch (e: Exception) {
+            Timber.w(e, "Ошибка остановки AudioTrack")
         }
     }
 
@@ -422,8 +435,8 @@ class PiperTtsRuntime @Inject constructor(
             Timber.e(e, "Не удалось создать AudioTrack для Piper TTS")
             return
         }
-        activeTrackGeneration = myGeneration
-        activeTrack = track
+        // Одна запись согласованной пары «поколение+трек» (регрессия #83).
+        activeHandle = TrackHandle(myGeneration, track)
         try {
             track.play()
             var offset = 0
@@ -483,7 +496,11 @@ class PiperTtsRuntime @Inject constructor(
                 }
             }
         } finally {
-            activeTrack = null
+            // Снятие холдера — только пока в нём трек этой же фразы
+            // (поколенческий гейт, регрессия #83).
+            if (activeHandle?.generation == myGeneration) {
+                activeHandle = null
+            }
             try {
                 track.stop()
             } catch (e: Exception) {

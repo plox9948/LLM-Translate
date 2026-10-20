@@ -506,6 +506,38 @@ class ModelCatalogParserTest {
         parser.parse("{ invalid json")
     }
 
+    // ------------------------------------------------------------------
+    // Ревью: isLenient убран — собственный формат каталога строгий
+    // (lenient допускал нецитированные значения вроде category: TRANSLATION).
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `strict parser rejects unquoted values`() {
+        val json = """
+            {
+              "version": 1,
+              "models": [
+                {
+                  "id": "x",
+                  "category": TRANSLATION,
+                  "displayName": "X",
+                  "runtime": "SHERPA",
+                  "sizeBytes": 10
+                }
+              ]
+            }
+        """.trimIndent()
+        // parseVersion глотает ошибку и отдаёт 0 (штатный фолбэк версии).
+        assertEquals(0, parser.parseVersion(json))
+        var thrown = false
+        try {
+            parser.parse(json)
+        } catch (e: Exception) {
+            thrown = true
+        }
+        assertTrue("строгий парсер обязан отклонить нецитированное значение", thrown)
+    }
+
     @Test
     fun `parses catalog version`() {
         val json = """
@@ -544,5 +576,55 @@ class ModelCatalogParserTest {
         assertEquals("dup", cards[0].id)
         assertEquals("A1", cards[0].displayName)
         assertEquals("uniq", cards[1].id)
+    }
+
+    // ------------------------------------------------------------------
+    // Ревью: битый каталог (конфликт default_for_language, рассогласование
+    // sha256s/urls) должен фиксироваться в логе; поведение разбора фиксируется
+    // тестом, сам лог Timber в unit-тестах — no-op.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `default_for_language conflict on one model keeps alphabetically last language`() {
+        val json = """
+            {
+              "version": 1,
+              "default_for_language": { "en": "m1", "ru": "m1" },
+              "models": [
+                {"id":"m1","displayName":"M1","category":"TTS","runtime":"PIPER_ONNX","sizeBytes":1}
+              ]
+            }
+        """.trimIndent()
+        // Конфликт логируется; закреплённая семантика — алфавитно последний язык.
+        assertEquals("ru", parser.parse(json).single().defaultForLanguage)
+    }
+
+    @Test
+    fun `mismatched sha256s length is kept as-is beside urls`() {
+        val json = """
+            {
+              "version": 1,
+              "models": [
+                {
+                  "id": "nllb",
+                  "category": "TRANSLATION",
+                  "displayName": "NLLB",
+                  "runtime": "MARIAN_ONNX",
+                  "sizeBytes": 100,
+                  "urls": [
+                    "https://example.com/encoder.onnx",
+                    "https://example.com/decoder.onnx"
+                  ],
+                  "sha256s": ["aa"]
+                }
+              ]
+            }
+        """.trimIndent()
+        // Битый каталог (ревью) фиксируется Timber.w; карточка парсится,
+        // список сумм остаётся как есть — недостающая проверка пропустится
+        // уже на этапе скачивания (perUrlSha256s).
+        val card = parser.parse(json).single()
+        assertEquals(2, card.downloadUrls().size)
+        assertEquals(listOf("aa"), card.sha256s)
     }
 }

@@ -56,6 +56,36 @@ class TranslationModelSelectorTest {
     }
 
     @Test
+    fun `direction null when several distinct arrows in text`() {
+        // Ревью аудита: импорт с описанием «ru→en, en→ru» — при нескольких
+        // РАЗЛИЧНЫХ arrow-направлениях прежнее первое совпадение выбирало
+        // направление произвольно; теперь — неопределённость (null).
+        val ambiguous = model("imported_pair", "Marian pack", listOf("ru", "en"))
+            .copy(description = "переводчик ru→en, en→ru")
+        assertNull(TranslationModelSelector.directionOf(ambiguous))
+        val nameArrowDescArrow = model("imported_other", "Модель ru→en", listOf("ru", "en"))
+            .copy(description = "обратная en→ru тоже описана")
+        assertNull(TranslationModelSelector.directionOf(nameArrowDescArrow))
+    }
+
+    @Test
+    fun `repeated identical arrow still resolves direction`() {
+        // Одно и то же направление, повторённое в имени и описании, —
+        // неоднозначности нет, направление определёно.
+        val repeated = model("imported_ruen", "Pack ru→en", listOf("ru", "en"))
+            .copy(description = "ru → en")
+        assertEquals("ru" to "en", TranslationModelSelector.directionOf(repeated))
+    }
+
+    @Test
+    fun `ambiguous arrows do not fall back to id adjacency`() {
+        // При неоднозначных стрелках направление не определяется молчаливым
+        // фолбэком на пары кодов в id: итог — та же неопределённость.
+        val ambiguousId = model("firefox-bergamot-ru-en", "Pack ru→en / en→ru", listOf("ru", "en"))
+        assertNull(TranslationModelSelector.directionOf(ambiguousId))
+    }
+
+    @Test
     fun `direct chain for supported direction`() {
         assertEquals(listOf(ruEn), TranslationModelSelector.selectChain(all, "ru", "en"))
         assertEquals(listOf(enRu), TranslationModelSelector.selectChain(all, "en", "ru"))
