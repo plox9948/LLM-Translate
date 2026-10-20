@@ -214,11 +214,14 @@ class SherpaSttLayoutDetectionTest {
     }
 
     @Test
-    fun `bundle without decoder role is ambiguous not whisper (issue 83)`() {
-        // Набор без канонической роли decoder (decoder_model.onnx — имя в
-        // стиле IndicTrans, инфикс обязан начинаться с точки) и с joint.onnx:
-        // ни одна ветка не подходит — явная ошибка с перечислением файлов.
-        val dir = tempDir("encoder.onnx", "decoder_model.onnx", "joint.onnx")
+    fun `misnamed transducer bundle is ambiguous not whisper (issue 83)`() {
+        // Регресс #83 (итерация 3, п.1): misnamed-transducer набор
+        // encoder.onnx + decoder.onnx + joint.onnx. Голые encoder/decoder
+        // совпадают с ролевыми шаблонами, но неролевой joint.onnx отсекает
+        // строгая проверка состава whisper-пучка — ни одна ветка не подходит,
+        // явная ошибка с перечислением файлов (в ветку 1 не пускает absence
+        // joiner-роли, в nemo — отсутствие префикса model).
+        val dir = tempDir("encoder.onnx", "decoder.onnx", "joint.onnx")
         try {
             val d = engine.detectModel(dir)
             assertTrue(d is SherpaSttEngine.SttLayoutDetection.Unknown)
@@ -226,8 +229,29 @@ class SherpaSttLayoutDetectionTest {
             assertFalse(unknown.missingTokens)
             assertTrue(
                 unknown.onnxFiles.containsAll(
-                    listOf("encoder.onnx", "decoder_model.onnx", "joint.onnx")
+                    listOf("encoder.onnx", "decoder.onnx", "joint.onnx")
                 )
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    // ── ревью #83 (итерация 3, п.2): дефис как разделитель префикса роли ──
+
+    @Test
+    fun `hyphen separated int8 role names are whisper`() {
+        // whisper-tiny-encoder.int8.onnx: префикс отделяется дефисом,
+        // инфикс квантизации — точкой.
+        val dir = tempDir(
+            "whisper-tiny-encoder.int8.onnx", "whisper-tiny-decoder.int8.onnx"
+        )
+        try {
+            val d = engine.detectModel(dir)
+            assertTrue(d is SherpaSttEngine.SttLayoutDetection.Layout)
+            assertEquals(
+                "whisper",
+                (d as SherpaSttEngine.SttLayoutDetection.Layout).info.type
             )
         } finally {
             dir.deleteRecursively()
@@ -237,7 +261,9 @@ class SherpaSttLayoutDetectionTest {
     @Test
     fun `indictrans-style role-underscore names are not whisper roles`() {
         // encoder_model.onnx/decoder_model.onnx (Optimum-экспорт IndicTrans2)
-        // ролевыми sherpa-шаблонами не считаются — Uknown вместо угадывания.
+        // ролевыми sherpa-шаблонами не считаются: подчёркивание разделителем
+        // префикса роли НЕ является (итерация 3, п.2) — Unknown вместо
+        // угадывания.
         val dir = tempDir("encoder_model.onnx", "decoder_model.onnx")
         try {
             val d = engine.detectModel(dir)
@@ -282,13 +308,13 @@ class SherpaSttLayoutDetectionTest {
         // Сквозная проверка текста LoadFailed: детект не доходит до нативного
         // sherpa-слоя (на JVM он всё равно недоступен — UnsatisfiedLinkError
         // дал бы другой текст).
-        val dir = tempDir("encoder.onnx", "decoder_model.onnx", "joint.onnx")
+        val dir = tempDir("encoder.onnx", "decoder.onnx", "joint.onnx")
         try {
             val error = engine.ensureLoaded(sttModel(dir))
             assertTrue(error is RuntimeError.LoadFailed)
             val reason = (error as RuntimeError.LoadFailed).reason
             assertTrue(reason, reason.contains("joint.onnx"))
-            assertTrue(reason, reason.contains("decoder_model.onnx"))
+            assertTrue(reason, reason.contains("decoder.onnx"))
         } finally {
             dir.deleteRecursively()
         }

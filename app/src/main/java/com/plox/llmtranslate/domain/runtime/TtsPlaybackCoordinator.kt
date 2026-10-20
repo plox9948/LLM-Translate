@@ -408,20 +408,44 @@ class TtsPlaybackCoordinator @Inject constructor(
             return
         }
         val retry = PendingRetry(text, language)
-        pendingRetry = retry
-        watchedDownloadId = cardId
-        val watchGen = watchGeneration.incrementAndGet()
-        // Наблюдение ставится до асинхронного upsert-а записи (startDownload
-        // ниже): окно grace ([WATCH_GRACE_MS] от текущего момента)
-        // терпит отсутствие строки, за окном — сброс watch-статуса.
-        watchGraceUntil = clock.nowMs() + WATCH_GRACE_MS
-        showWatchStatus(cardId, TtsDownloadStatus.DOWNLOADING, progress = installed?.progress ?: 0)
-        when (installed?.status) {
-            // Уже качается — только наблюдаем; null/ERROR — ставим на скачивание
-            // (startDownload идемпотентен для отсутствующей записи и повторной
-            // установки ERROR-модели).
-            null, ModelStatus.ERROR -> modelManager.startDownload(card)
-            else -> Unit
+        // Ревью #83 (итерация 3, п.3): ВСЯ установка watch-сцены — под тем же
+        // watchLock, чем сериализован [handleWatchedDownload]: без атомарности
+        // коллектор Room Flow или grace-таймер успевали увидеть половину сцены
+        // (watchedDownloadId уже выставлена, watchGraceUntil — ещё нет) либо
+        // вклиниться между показом статуса и startDownload. Замок листовой
+        // (тело неблокирующее) — дедлок исключён.
+        val watchGen = synchronized(watchLock) {
+            pendingRetry = retry
+            watchedDownloadId = cardId
+            val gen = watchGeneration.incrementAndGet()
+            // Наблюдение ставится до асинхронного upsert-а записи (startDownload
+            // ниже): окно grace ([WATCH_GRACE_MS] от текущего момента)
+            // терпит отсутствие строки, за окном — сброс watch-статуса.
+            watchGraceUntil = clock.nowMs() + WATCH_GRACE_MS
+            // Поздние мутации (показ watch-статуса и побочка startDownload) —
+            // только после повторной сверки токена: stop()/новая фраза могли
+            // вклиниться после гейта в начале метода.
+            if (token != utteranceToken.get()) {
+                // Снимаем только что выставленную СВОЮ сцену (поколение ещё
+                // наше, чужие watch не трогались под замком): статус не
+                // показывали, download не ставили.
+                if (watchGeneration.get() == gen) {
+                    if (pendingRetry === retry) pendingRetry = null
+                    if (watchedDownloadId == cardId) watchedDownloadId = null
+                    watchGeneration.incrementAndGet()
+                }
+                Timber.d("Фолбэк Piper пропущен: фраза устарела под watchLock")
+                return
+            }
+            showWatchStatus(cardId, TtsDownloadStatus.DOWNLOADING, progress = installed?.progress ?: 0)
+            when (installed?.status) {
+                // Уже качается — только наблюдаем; null/ERROR — ставим на скачивание
+                // (startDownload идемпотентен для отсутствующей записи и повторной
+                // установки ERROR-модели).
+                null, ModelStatus.ERROR -> modelManager.startDownload(card)
+                else -> Unit
+            }
+            gen
         }
         // Ревью раунд 5 (info): если после отмены/удаления записи Room Flow больше
         // не эмиттирует, grace-дедлайн проверит одноразовый таймер по актуальному
@@ -434,9 +458,10 @@ class TtsPlaybackCoordinator @Inject constructor(
                 handleWatchedDownload(piperModels)
             }
         }
-        // Ревью #83 (check-then-act): stop()/новая фраза могли вклиниться между
-        // проверкой токена в начале и присваиваниями watch/pendingRetry — та
-        // проверка их не покрыла. Повторно сверяем токен и снимаем ТОЛЬКО
+        // Ревью #83 (check-then-act, итерация 3): присваивания, статус и
+        // startDownload уже под watchLock, но stop() меняет токен без замка —
+        // гонка осталась между выпуском блока и этой сверкой (и до него).
+        // Повторно сверяем токен и снимаем ТОЛЬКО
         // свою сцену: pendingRetry по идентичности экземпляра (чужой новой
         // сцены не трогаем), watch — по cardId, статус — по совпадению id;
         // grace-таймер гасится инкрементом поколения.

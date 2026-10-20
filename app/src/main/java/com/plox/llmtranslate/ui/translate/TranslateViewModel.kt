@@ -464,7 +464,13 @@ class TranslateViewModel @Inject constructor(
                                 if (!stopRecordingInProgress && !audioRecorder.isRecording) {
                                     val lateWav = audioRecorder.stopRecording()
                                     if (lateWav != null) {
-                                        autoWavSelfClosedTaken = true
+                                        // Ревью #83 (итерация 3, п.6): флаг
+                                        // самозакрытия ставится только в ветке
+                                        // самозакрытия по потолку — этот
+                                        // поздний путь отдаёт путь и при
+                                        // гонке с обычной остановкой, его
+                                        // одноразовость обеспечивается самим
+                                        // getAndSet в рекордере.
                                         transcribeAudio(lateWav)
                                     }
                                 }

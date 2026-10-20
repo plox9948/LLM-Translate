@@ -93,13 +93,21 @@ class SherpaSttEngine @Inject constructor(
          * `decoder.int8.onnx` у stt-whisper-small-multilingual); строгие
          * суффиксы `.encoder.onnx` такие пучки не распознавали
          * (регрессия #83 — LoadFailed на уже установленных моделях).
+         *
+         * Ревью #83 (итерация 3, п.2): префикс роли может отделяться точкой
+         * ИЛИ дефисом (`whisper-tiny-encoder.int8.onnx`); подчёркивание
+         * разделителем НЕ является — `encoder_model.onnx`/
+         * `decoder_model.onnx` (IndicTrans-экспорт) ролевыми не считаются.
+         * Голые `encoder.onnx`/`decoder.onnx` шаблоном признаются, а
+         * ошибочный состав такого набора отсекает строгая проверка состава
+         * пучка в whisper-ветке [detectModel] (п.1 итерации 3).
          */
         private val PATTERN_ENCODER =
-            Regex("""(?:.+\.)?encoder(\.[A-Za-z0-9]+)?\.onnx$""", RegexOption.IGNORE_CASE)
+            Regex("""(?:.+[.-])?encoder(\.[A-Za-z0-9]+)?\.onnx$""", RegexOption.IGNORE_CASE)
         private val PATTERN_DECODER =
-            Regex("""(?:.+\.)?decoder(\.[A-Za-z0-9]+)?\.onnx$""", RegexOption.IGNORE_CASE)
+            Regex("""(?:.+[.-])?decoder(\.[A-Za-z0-9]+)?\.onnx$""", RegexOption.IGNORE_CASE)
         private val PATTERN_JOINER =
-            Regex("""(?:.+\.)?joiner(\.[A-Za-z0-9]+)?\.onnx$""", RegexOption.IGNORE_CASE)
+            Regex("""(?:.+[.-])?joiner(\.[A-Za-z0-9]+)?\.onnx$""", RegexOption.IGNORE_CASE)
     }
 
     /**
@@ -414,8 +422,10 @@ class SherpaSttEngine @Inject constructor(
      *   канонические sherpa-шаблоны ролей при этом исключены; выбор
      *   детерминированный (замечание 6): точный `model.onnx`/
      *   `model.int8.onnx`, иначе лексикографический порядок имён;
-     * - whisper — только каноническая пара `encoder[<инфикс>].onnx` +
-     *   `decoder[<инфикс>].onnx`;
+     * - whisper — каноническая пара `encoder[<инфикс>].onnx` +
+     *   `decoder[<инфикс>].onnx` и СТРОГИЙ состав пучка: каждый ONNX-файл
+     *   каталога совпадает с ролевым шаблоном (лишний неролевой файл —
+     *   Unknown, ревью #83 итерация 3);
      * - иное — [SttLayoutDetection.Unknown] с перечислением файлов.
      *
      * Состав файлов пучков каталога зафиксирован манифестом
@@ -483,9 +493,13 @@ class SherpaSttEngine @Inject constructor(
             )
         }
 
-        // 3) Whisper — только каноническая пара (joiner-файл при наличии уже
-        //    попал бы в ветку 1 или в nemo/Unknown).
-        if (encoder != null && decoder != null) {
+        // 3) Whisper — каноническая пара ролей + строгий состав пучка
+        //    (ревью #83, итерация 3, п.1): ВСЕ onnx-файлы каталога должны
+        //    совпадать с ролевыми шаблонами. Без этого misnamed-transducer
+        //    набор encoder.onnx + decoder.onnx + joint.onnx уходил сюда же
+        //    (голые encoder/decoder — роль, а неролевой joint.onnx
+        //    молча игнорировался) вместо Unknown с перечислением файлов.
+        if (encoder != null && decoder != null && onnxFiles.all { canonical(it.name) }) {
             return SttLayoutDetection.Layout(
                 ModelInfo(
                     type = TYPE_WHISPER,

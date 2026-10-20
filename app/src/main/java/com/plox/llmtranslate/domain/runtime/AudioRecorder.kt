@@ -717,7 +717,16 @@ class AudioRecorder @Inject constructor(
             _recordingElapsedMs.value = 0L
             val sink = scene.sink
             if (sink != null && sink.pcmSize > 0L && sink.closeAndPatch()) {
-                limitFinishedWavPath.set(sink.file.absolutePath)
+                // Ревью #83 (итерация 3, п.5): getAndSet вместо set — прежний
+                // невостребованный путь (прошлое самозакрытие по потолку, WAV
+                // которого никто не забрал) не осиротевает до orphan-очистки,
+                // а удаляется сразу.
+                val previousWav = limitFinishedWavPath.getAndSet(sink.file.absolutePath)
+                if (previousWav != null && previousWav != sink.file.absolutePath) {
+                    if (!File(previousWav).delete()) {
+                        Timber.w("Не удалось удалить прежний невостребованный WAV: $previousWav")
+                    }
+                }
                 Timber.w("Запись закрыта по потолку длительности: WAV сохранён, AudioRecord освобождён")
             } else {
                 sink?.discard()

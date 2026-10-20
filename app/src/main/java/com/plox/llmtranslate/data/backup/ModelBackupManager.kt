@@ -214,6 +214,92 @@ internal fun importSwapAllowed(observation: ImportWorkObservation): Boolean =
     observation == ImportWorkObservation.NOT_LIVE
 
 /**
+ * Пост-cancel-политика опроса (ревью #83, итерация 3, п.4): когда отмена
+ * УЖЕ отправлена, QUERY_FAILED при опросе не может «считать работу живой» —
+ * заказанный cancel в любом случае доведёт воркер до его
+ * cleanupCancelledModel, и подмену разрешаем. Запрет «не подтверждено =
+ * живо» ([importSwapAllowed]) относится только к наблюдениям ДО cancel.
+ * internal — покрыто unit-тестом без Android.
+ */
+internal fun postCancelImportSettled(observation: ImportWorkObservation): Boolean =
+    observation != ImportWorkObservation.LIVE
+
+/**
+ * Тестовая страховка (ревью #83, итерация 3, п.7 — замечание 6 пред.
+ * раунда): «mkdirs temp-каталога ДО StatFs-гейта места» вынесено в
+ * предикт [preparedTempDirBeforeSpaceGate], порядок вызовов фиксирует
+ * константа-комментарий ниже (предикт вызывается строго до [hasFreeSpaceFor]).
+ */
+internal const val TEMP_MUST_EXIST_BEFORE_SPACE_GATE =
+    "Temp-каталог распаковки обязан существовать ДО StatFs-гейта: на несуществующем пути " +
+        "StatFs бросает исключение, и гейт места всегда «пропускался» (регресс issue #83)."
+
+/** true, если temp-каталог распаковки доступен (см. [TEMP_MUST_EXIST_BEFORE_SPACE_GATE]). */
+internal fun preparedTempDirBeforeSpaceGate(tempDir: File): Boolean =
+    tempDir.mkdirs() || tempDir.isDirectory
+
+/**
+ * Инъектируемый каркас решения [ModelBackupManager.cancelLiveDownloadForImport]
+ * (ревью #83, итерация 3, п.4 и п.7): наблюдения, отмена, часы и интервалы
+ * подаются параметрами — порядок «решение ДО cancel по [importSwapAllowed] →
+ * cancel → первый ре-чек с паузой → опрос до терминала/дедлайна» покрыт
+ * unit-тестом без WorkManager (в тестовом classpath его нет). Логика
+ * идентична вызову из метода.
+ */
+internal suspend fun decideImportWorkSwap(
+    modelId: String,
+    firstObservation: ImportWorkObservation,
+    query: () -> ImportWorkObservation,
+    cancelLive: () -> Unit,
+    nowMs: () -> Long,
+    pollIntervalMs: Long,
+    terminalTimeoutMs: Long
+): Boolean {
+    // Решение ДО cancel — за importSwapAllowed: NOT_LIVE — живой работы не
+    // было; QUERY_FAILED — состояние не подтверждено, cancel НЕ отправлен,
+    // подмену запрещаем.
+    if (firstObservation != ImportWorkObservation.LIVE) {
+        if (!importSwapAllowed(firstObservation)) {
+            Timber.w(
+                "Подмена файлов $modelId пропущена: состояние живой загрузки " +
+                    "подтвердить не удалось — работа считается живой"
+            )
+            return false
+        }
+        return true
+    }
+    cancelLive()
+    val deadline = nowMs() + terminalTimeoutMs
+    // Первый ре-чек после cancel — с паузой (итерация 3, п.4): немедленный
+    // опрос почти наверняка ещё видит RUNNING — воркер не успевает
+    // отреагировать на stop-request.
+    delay(pollIntervalMs)
+    var observation = query()
+    while (observation == ImportWorkObservation.LIVE) {
+        if (nowMs() >= deadline) {
+            Timber.w(
+                "Воркер загрузки $modelId не достиг терминального статуса " +
+                    "через $terminalTimeoutMs мс после отмены"
+            )
+            return true
+        }
+        delay(pollIntervalMs)
+        observation = query()
+    }
+    // Наблюдение != LIVE — терминальное (итерация 3, п.4), в т.ч.
+    // QUERY_FAILED: отмена уже отправлена, поздняя очистка частей докачки
+    // восстановленному бандлу не мешает.
+    if (observation == ImportWorkObservation.QUERY_FAILED) {
+        Timber.w(
+            "Терминальный статус воркера $modelId после отмены не подтверждён — " +
+                "подмену разрешаем: cancel уже отправлен"
+        )
+    }
+    Timber.d("Живая загрузка $modelId отменена перед импортом бэкапа")
+    return postCancelImportSettled(observation)
+}
+
+/**
  * Менеджер резервного копирования моделей и настроек.
  *
  * Формат архива:
@@ -533,12 +619,14 @@ class ModelBackupManager @Inject constructor(
             val manifestData = manifest
                 ?: return ImportResult(0, 0, false, "Нет манифеста в архиве")
 
-            // tempDir создаётся ДО гейта места (регресс-ревью issue #83):
-            // StatFs на ещё не существующем пути бросает исключение, и гейт
-            // формально «пропускался» всегда. mkdirs() сам файлов моделей не
-            // пишет — гарантию двухпроходности (гейт ДО появления записей
-            // models/ в temp) это не нарушает.
-            if (!tempDir.mkdirs() && !tempDir.isDirectory) {
+            // tempDir создаётся ДО гейта места (регресс-ревью issue #83;
+            // порядок зафиксирован предиктом [preparedTempDirBeforeSpaceGate]
+            // и константой [TEMP_MUST_EXIST_BEFORE_SPACE_GATE]): StatFs на
+            // ещё не существующем пути бросает исключение, и гейт формально
+            // «пропускался» всегда. mkdirs() сам файлов моделей не пишет —
+            // гарантию двухпроходности (гейт ДО появления записей models/ в
+            // temp) это не нарушает.
+            if (!preparedTempDirBeforeSpaceGate(tempDir)) {
                 Timber.e(
                     "Не удалось создать временный каталог распаковки: ${tempDir.absolutePath}"
                 )
@@ -724,47 +812,35 @@ class ModelBackupManager @Inject constructor(
      * дописывает файлы уже после moveToTarget. Части докачки (.part/.part.meta)
      * чистит сам воркер в cleanupCancelledModel при отмене.
      *
-     * Регресс-ревью #83, п.4: если состояние работы подтвердить нельзя
-     * (таймаут/сбой запроса WorkManager при живой работе), воркер считается
-     * ЖИВЫМ и подмена файлов этой id пропускается ([importSwapAllowed]) —
-     * вслепую восстановленный бандл был уничтожен поздним
-     * cleanupCancelledModel отменённого воркера.
+     * Регресс-ревью #83, п.4: если состояние работы подтвердить нельзя ДО
+     * отмены (таймаут/сбой запроса WorkManager), воркер считается ЖИВЫМ и
+     * подмена файлов этой id пропускается ([importSwapAllowed]) — вслепую
+     * восстановленный бандл был уничтожен поздним cleanupCancelledModel
+     * отменённого воркера.
+     *
+     * Ревью #83 (итерация 3, п.4): после ОТПРАВЛЕННОГО cancel QUERY_FAILED
+     * при опросе трактуется как терминальный исход ([postCancelImportSettled],
+     * подмену разрешаем) — запрет «не подтверждено = живо» действует только
+     * для наблюдения до cancel; первый ре-чек после cancel выполняется с
+     * паузой [CANCEL_POLL_INTERVAL_MS]. Решение вынесено в
+     * [decideImportWorkSwap] (тестируется без WorkManager).
      *
      * @return true, если подмену файлов выполнять можно (живой работы не
-     *         было, либо она отменена и достигла терминального статуса,
-     *         либо отменённый воркер не дождался терминала — прежний путь).
+     *         было; либо она отменена и достигла терминального статуса или
+     *         состояние после отмены не подтвердилось; либо отменённый
+     *         воркер не дождался терминала за [CANCEL_TERMINAL_TIMEOUT_MS] —
+     *         прежний путь).
      */
-    private suspend fun cancelLiveDownloadForImport(modelId: String): Boolean {
-        var observation = queryImportWorkObservation(modelId)
-        val wasLive = observation == ImportWorkObservation.LIVE
-        if (wasLive) {
-            ModelDownloadWorker.cancel(context, modelId)
-            val deadline = System.currentTimeMillis() + CANCEL_TERMINAL_TIMEOUT_MS
-            observation = queryImportWorkObservation(modelId)
-            while (observation == ImportWorkObservation.LIVE) {
-                if (System.currentTimeMillis() >= deadline) {
-                    Timber.w(
-                        "Воркер загрузки $modelId не достиг терминального статуса " +
-                            "через $CANCEL_TERMINAL_TIMEOUT_MS мс после отмены"
-                    )
-                    return true
-                }
-                delay(CANCEL_POLL_INTERVAL_MS)
-                observation = queryImportWorkObservation(modelId)
-            }
-        }
-        if (!importSwapAllowed(observation)) {
-            Timber.w(
-                "Подмена файлов $modelId пропущена: состояние живой загрузки " +
-                    "подтвердить не удалось — работа считается живой"
-            )
-            return false
-        }
-        if (wasLive) {
-            Timber.d("Живая загрузка $modelId отменена перед импортом бэкапа")
-        }
-        return true
-    }
+    private suspend fun cancelLiveDownloadForImport(modelId: String): Boolean =
+        decideImportWorkSwap(
+            modelId = modelId,
+            firstObservation = queryImportWorkObservation(modelId),
+            query = { queryImportWorkObservation(modelId) },
+            cancelLive = { ModelDownloadWorker.cancel(context, modelId) },
+            nowMs = System::currentTimeMillis,
+            pollIntervalMs = CANCEL_POLL_INTERVAL_MS,
+            terminalTimeoutMs = CANCEL_TERMINAL_TIMEOUT_MS
+        )
 
     /**
      * Наблюдение unique-работы [ModelDownloadWorker] модели (ENQUEUED/RUNNING/
