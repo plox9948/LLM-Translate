@@ -54,10 +54,15 @@ offline.
 - "Download" — fetch a model from the catalog; while downloading, a "Cancel"
   button is available. After canceling, you can press "Download" again right
   away — the download restarts, the card never gets stuck in a downloading
-  state.
+  state. Double-tapping "Download"/"Retry" won't start the download twice —
+  the button is disabled while the download is being submitted.
 - If a download fails, the card gets a "Download error" label and the
   "Download" button turns into "Retry": it re-downloads the model without
   deleting it first; while the model is in error it cannot translate.
+- If the app crashed or was killed mid-download and a card stays "downloading"
+  for a long time, the next app launch repairs that state: the card no longer
+  sticks, and the model can be fetched again with "Retry". Legit downloads
+  that are still resuming are not affected.
 - "Export" / "Delete" — on the card of an installed model.
 - "Import" — on the card of a not-yet-downloaded model: unpack a model from a
   ZIP file received from another phone, without downloading. A ZIP export made
@@ -149,9 +154,10 @@ models) together with an estimated memory consumption.
 - The microphone in the input field ("Record audio"): one tap starts recording
   ("● Recording… Tap the microphone to stop" — an elapsed-time counter ticks
   next to it), the second tap stops it and recognizes the speech into text.
-  Recording stops automatically after 3 minutes: everything captured before
-  that is recognized as usual. Allow microphone access when asked the first
-  time.
+  Recording stops automatically after 3 minutes — even if you have already
+  left the "Translate" tab: the recording is closed properly, and everything
+  captured before that is kept and recognized as usual. Allow microphone
+  access when asked the first time.
 
 ## "History" and "Favorites"
 
@@ -199,6 +205,11 @@ models) together with an estimated memory consumption.
   missing, the "Translate" screen shows it in the "Translation models
   required" reminder under the "Speech recognition" section with a "Download"
   button.
+  The app strictly checks the contents of a recognition model's folder
+  (its files and names) when loading it into memory: if a model was imported
+  by hand and its files have non-standard names, recognition will not guess
+  the configuration — it reports a clear error instead. Catalog models always
+  fit; this never affects them.
 - Read aloud. By default every language is read by the phone's voice engine
   ("Android system TTS"). Per language you can switch it to a local Piper TTS
   model (Russian, English, Nepali) with the "Speech synthesis language:" chips
@@ -221,7 +232,9 @@ models) together with an estimated memory consumption.
   immediately: no "ghost" of the old voice stays in the "Loaded into memory"
   list, and after a re-download the voice reads from the new files. A
   cancelled read-aloud no longer comes back as a late repeat of a stale
-  phrase. Engines never overlap: a new phrase replaces the previous one, and
+  phrase. A quick "stop → Read aloud" no longer loses a phrase: a just-stopped
+  read-aloud cannot mute the next one — the new phrase plays to the end.
+  Engines never overlap: a new phrase replaces the previous one, and
   when the app automatically switches to a Piper voice the system read-aloud
   is stopped — two voices never speak at the same time.
 
@@ -237,7 +250,10 @@ archive: damaged files are skipped (such a model can be re-downloaded or
 imported separately), everything else is restored. File replacement is safe: a
 new file overwrites the old model file only after it has been copied
 successfully — if the copy is interrupted, the previously installed model stays
-intact. If a restore or import replaces an already installed model, it will not
+intact. A restore never conflicts with work on the same phone: replacing files
+from the archive waits its turn behind an in-progress download or import of the
+same model, and temporary files of an unfinished import are removed
+automatically. If a restore or import replaces an already installed model, it will not
 keep translating the old way: the app reloads it from the new files right away,
 without a restart, and the files of the previous version are no longer left
 behind on the phone as junk.
@@ -321,12 +337,16 @@ history/favorites operation, backup, or loading settings on a screen. Usually
 repeating the action is enough: if the failure concerned the History/Favorites
 lists or the settings, they reload and resubscribe automatically, and the app
 keeps working — a temporary database or settings-storage failure never closes
-it.
+it. A failure while saving a setting or a speech recognition / read-aloud
+language assignment (the chips on the "Models" screen) likewise does not close
+the app: the reason stays on screen as a warning banner, and everything else
+keeps working.
 
 **Is there a limit on microphone recording length?** Yes: recording stops
-automatically after 3 minutes so that you cannot forget to turn it off. The
-recording indicator shows how long it has been running; everything captured
-before the stop is recognized as usual.
+automatically after 3 minutes so that you cannot forget to turn it off — even
+if you have already left the "Translate" tab. The recording indicator shows
+how long it has been running; everything captured before the stop is kept and
+recognized as usual.
 
 **Why is there an "Import" button on a model card?** It lets you bring a model
 over from another phone (a ZIP export made by this same app) or from a
@@ -336,9 +356,11 @@ files — the previous version stops being used at once, its files are deleted
 and never mix with the files of the new version.
 
 **Can I delete and import a model several times in a row, quickly?** Yes.
-Operations on one model always run strictly one after another, so quick actions
-(deleting right after or right before an import, two imports of the same ZIP)
-cannot damage it: the result is always consistent — the model is either fully
+Operations on one model — import, deletion, download canceling, and backup
+restore — always run strictly one after another, so quick actions (deleting
+right after or right before an import, two imports of the same ZIP, restoring
+an archive while the same model is downloading) cannot damage it: the result
+is always consistent — the model is either fully
 installed or fully deleted. A failed import (for example, "Model import failed"
 when there is not enough free space) does not destroy an already installed
 model either: it keeps working, and you only need to retry the import after
