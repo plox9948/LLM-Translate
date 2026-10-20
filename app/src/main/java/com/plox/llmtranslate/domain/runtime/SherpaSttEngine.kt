@@ -27,14 +27,18 @@ import javax.inject.Singleton
  * Рантайм STT на sherpa-onnx: загрузка модели и распознавание WAV.
  *
  * Тип модели определяется по файлам каталога ([detectModel], ревью #83 —
- * жёсткий детект по каноническим sherpa-суффиксам, не по подстрокам):
- * - каноническая тройка `*.encoder.onnx`/`*.decoder.onnx`/`*.joiner.onnx`
- *   → transducer;
+ * жёсткий детект по каноническим sherpa-шаблонам имён, не по подстрокам;
+ * между ролью и расширением допустим инфикс квантизации — фактические
+ * пучки манифеста используют int8-имена `encoder.int8.onnx`/
+ * `decoder.int8.onnx`, регрессия #83):
+ * - каноническая тройка `.encoder[<инфикс>].onnx`/`.decoder[<инфикс>].onnx`/
+ *   `.joiner[<инфикс>].onnx` → transducer;
  * - одиночный `model*.onnx` (NeMo CTC / piper-подобная раскладка), если
  *   канонической тройки нет → nemo_ctc — проверяется ДО whisper-ветки:
  *   имена вроде `model_decoder.onnx` содержат подстроку «decoder», но
- *   канонический суффикс `.decoder.onnx` у них отсутствует;
- * - только каноническая пара `*.encoder.onnx` + `*.decoder.onnx` → whisper;
+ *   каноническим шаблоном роли у них не являются;
+ * - только каноническая пара `.encoder[<инфикс>].onnx` +
+ *   `.decoder[<инфикс>].onnx` → whisper;
  * - любое иное сочетание — [RuntimeError.LoadFailed] с перечислением
  *   найденных ONNX-файлов вместо угадывания типа.
  *
@@ -82,12 +86,20 @@ class SherpaSttEngine @Inject constructor(
         private const val STT_NUM_THREADS = 2
 
         /**
-         * Канонические суффиксы sherpa-файлов (ревью #83): transducer/whisper
-         * распознаются только по окончаниям имён (без учёта регистра).
+         * Канонические sherpa-шаблоны имён ролей (ревью #83): transducer/
+         * whisper распознаются по окончаниям имён (без учёта регистра),
+         * между ролью и `.onnx` допустим инфикс квантизации — фактические
+         * пучки манифеста используют int8-имена (`encoder.int8.onnx`/
+         * `decoder.int8.onnx` у stt-whisper-small-multilingual); строгие
+         * суффиксы `.encoder.onnx` такие пучки не распознавали
+         * (регрессия #83 — LoadFailed на уже установленных моделях).
          */
-        private const val SUFFIX_ENCODER = ".encoder.onnx"
-        private const val SUFFIX_DECODER = ".decoder.onnx"
-        private const val SUFFIX_JOINER = ".joiner.onnx"
+        private val PATTERN_ENCODER =
+            Regex("""(?:.+\.)?encoder(\.[A-Za-z0-9]+)?\.onnx$""", RegexOption.IGNORE_CASE)
+        private val PATTERN_DECODER =
+            Regex("""(?:.+\.)?decoder(\.[A-Za-z0-9]+)?\.onnx$""", RegexOption.IGNORE_CASE)
+        private val PATTERN_JOINER =
+            Regex("""(?:.+\.)?joiner(\.[A-Za-z0-9]+)?\.onnx$""", RegexOption.IGNORE_CASE)
     }
 
     /**
@@ -388,17 +400,22 @@ class SherpaSttEngine @Inject constructor(
     /**
      * Определить тип модели по файлам каталога (полные правила — в KDoc класса).
      *
-     * Ревью #83 — жёсткий детект по каноническим окончаниям имён вместо
-     * произвольных подстрок: прежняя эвристика `contains("encoder"/"decoder"/
-     * "joiner")` ошибочно относила к whisper пакеты NeMo CTC
+     * Ревью #83 — жёсткий детект по каноническим шаблонам окончаний имён
+     * вместо произвольных подстрок: прежняя эвристика `contains("encoder"/
+     * "decoder"/"joiner")` ошибочно относила к whisper пакеты NeMo CTC
      * (`model_decoder.onnx` содержит «decoder») и transducer-наборы с
-     * `joint.onnx`. Теперь:
-     * - transducer — только полная каноническая тройка `.encoder.onnx`/
-     *   `.decoder.onnx`/`.joiner.onnx` (endsWith, без учёта регистра);
+     * `joint.onnx`. Теперь шаблоны допускают инфикс квантизации между
+     * ролью и расширением (`encoder.int8.onnx` из пучков манифеста):
+     * - transducer — только полная каноническая тройка ролей
+     *   `encoder[<инфикс>].onnx`/`decoder[<инфикс>].onnx`/
+     *   `joiner[<инфикс>].onnx` (без учёта регистра);
      * - одиночный NeMo/piper-подобный `model*.onnx` (по образцу
      *   [PiperTtsRuntime.discoverLayout]) — приоритет перед whisper-веткой,
-     *   канонические sherpa-суффиксы при этом исключены;
-     * - whisper — только каноническая пара `.encoder.onnx` + `.decoder.onnx`;
+     *   канонические sherpa-шаблоны ролей при этом исключены; выбор
+     *   детерминированный (замечание 6): точный `model.onnx`/
+     *   `model.int8.onnx`, иначе лексикографический порядок имён;
+     * - whisper — только каноническая пара `encoder[<инфикс>].onnx` +
+     *   `decoder[<инфикс>].onnx`;
      * - иное — [SttLayoutDetection.Unknown] с перечислением файлов.
      *
      * Состав файлов пучков каталога зафиксирован манифестом
@@ -412,17 +429,17 @@ class SherpaSttEngine @Inject constructor(
         val tokens = files.firstOrNull { it.isFile && it.name == "tokens.txt" }
             ?: return SttLayoutDetection.Unknown(onnxNames, missingTokens = true)
 
-        fun bySuffix(suffix: String): File? =
-            onnxFiles.firstOrNull { it.name.endsWith(suffix, ignoreCase = true) }
+        fun byRole(pattern: Regex): File? =
+            onnxFiles.firstOrNull { pattern.matches(it.name) }
 
-        val encoder = bySuffix(SUFFIX_ENCODER)
-        val decoder = bySuffix(SUFFIX_DECODER)
-        val joiner = bySuffix(SUFFIX_JOINER)
+        val encoder = byRole(PATTERN_ENCODER)
+        val decoder = byRole(PATTERN_DECODER)
+        val joiner = byRole(PATTERN_JOINER)
 
         fun canonical(name: String): Boolean =
-            name.endsWith(SUFFIX_ENCODER, ignoreCase = true) ||
-                name.endsWith(SUFFIX_DECODER, ignoreCase = true) ||
-                name.endsWith(SUFFIX_JOINER, ignoreCase = true)
+            PATTERN_ENCODER.matches(name) ||
+                PATTERN_DECODER.matches(name) ||
+                PATTERN_JOINER.matches(name)
 
         // 1) Трансдьюсер — только полная каноническая тройка sherpa.
         if (encoder != null && decoder != null && joiner != null) {
@@ -440,10 +457,19 @@ class SherpaSttEngine @Inject constructor(
 
         // 2) NeMo CTC / piper-подобный одиночный пучок model*.onnx — ДО
         //    whisper-ветки (ревью #83): подстроки «encoder»/«decoder» в таких
-        //    именах каноническим суффиксом не являются.
-        val nemo = onnxFiles.firstOrNull {
+        //    именах каноническим шаблоном роли не являются. Детерминированный
+        //    выбор (замечание 6 ревью #83): сначала точные канонические
+        //    имена model.onnx/model.int8.onnx, иначе лексикографический
+        //    порядок имён — firstOrNull от listFiles() недетерминирован.
+        val nemoCandidates = onnxFiles.filter {
             it.name.startsWith("model", ignoreCase = true) && !canonical(it.name)
         }
+        val nemo = nemoCandidates.firstOrNull {
+            it.name.equals("model.onnx", ignoreCase = true) ||
+                it.name.equals("model.int8.onnx", ignoreCase = true)
+        } ?: nemoCandidates.sortedWith(
+            compareBy({ it.name.lowercase() }, { it.name })
+        ).firstOrNull()
         if (nemo != null) {
             return SttLayoutDetection.Layout(
                 ModelInfo(

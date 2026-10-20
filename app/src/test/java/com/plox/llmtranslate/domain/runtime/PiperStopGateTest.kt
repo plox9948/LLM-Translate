@@ -9,6 +9,8 @@ import org.junit.Test
  * снятие прежней фразы не должно останавливать новую, резервированную ПОСЛЕ
  * stop-вызова (прежний boolean-флаг в этой гонке «успешно» глушил новую
  * фразу), а stop() обязан гасить поколение, активное на момент вызова.
+ * stopThrough (замечание 2 ревью #83) — путь отмены: снимает своё поколение
+ * и ранние, не задевая резервации новых фраз.
  */
 class PiperStopGateTest {
 
@@ -59,5 +61,50 @@ class PiperStopGateTest {
         assertTrue(gate.isStopped(b))
         val c = gate.reserve()
         assertFalse(gate.isStopped(c))
+    }
+
+    // ── замечание 2 ревью #83: поgeneration-остановка на пути отмены ──
+
+    @Test
+    fun `stopThrough does not silence generation reserved after old cancel`() {
+        // Штатный сценарий координатора: новая фраза резервируется, затем
+        // speakJob.cancel() старой фразы приводит к stopThrough(eё поколение)
+        // в catch. Прежний stopAll() снимал и поколение новой фразы —
+        // озвучка выходила тихой.
+        val gate = PiperStopGate()
+        val old = gate.reserve()
+        val fresh = gate.reserve()
+        gate.stopThrough(old)
+        assertTrue(gate.isStopped(old))
+        assertFalse(gate.isStopped(fresh))
+    }
+
+    @Test
+    fun `stopThrough removes own and earlier generations only`() {
+        val gate = PiperStopGate()
+        val a = gate.reserve()
+        val b = gate.reserve()
+        val c = gate.reserve()
+        gate.stopThrough(b)
+        assertTrue(gate.isStopped(a))
+        assertTrue(gate.isStopped(b))
+        assertFalse(gate.isStopped(c))
+        // Повторное снятие более раннего поколения не откатывает границу.
+        gate.stopThrough(a)
+        assertTrue(gate.isStopped(a))
+        assertTrue(gate.isStopped(b))
+        assertFalse(gate.isStopped(c))
+    }
+
+    @Test
+    fun `stopAll after stopThrough also removes later reservations`() {
+        // stopThrough не мешает явному пользовательскому stopAll погасить всё.
+        val gate = PiperStopGate()
+        val old = gate.reserve()
+        gate.stopThrough(old)
+        val fresh = gate.reserve()
+        gate.stopAll()
+        assertTrue(gate.isStopped(old))
+        assertTrue(gate.isStopped(fresh))
     }
 }

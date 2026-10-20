@@ -218,4 +218,37 @@ class WavReaderTest {
         assertEquals(pcm.size, loc.second)
         assertEquals(body.size + 8 - pcm.size, loc.first)
     }
+
+    @Test
+    fun `MAX_SAMPLES mirrors recorder ceiling as own constant`() {
+        // Замечание 7 ревью #83: константа самостоятельная (util не импортирует
+        // domain), значение сохранено — потолок рекордера 180 с × 16 кГц.
+        assertEquals(180L * 16000L, WavReader.MAX_SAMPLES.toLong())
+    }
+
+    @Test
+    fun `salvage of broken data chunk limited to RIFF container end`() {
+        // Замечание 8 ревью #83: data с заявленным размером 0, а после
+        // объявленного RIFF-контейнера лежат попутные не-PCM байты — salvage
+        // читает до границы контейнера, мусор за ним не декодируется как PCM.
+        val bytes = wavWithDeclaredDataSize(pcm, 0) + byteArrayOf(0x00, 0x40, 0x00, 0x40)
+        val samples = WavReader.readPcmAsFloat(write(bytes))
+        assertEquals(2, samples.size)
+        assertEquals(0.5f, samples[0], 1e-6f)
+        assertEquals(-0.5f, samples[1], 1e-6f)
+    }
+
+    @Test
+    fun `salvage keeps file remainder when riff container size is garbage`() {
+        // Нулевой размер RIFF-контейнера: согласованной границы нет — salvage
+        // читает фактический остаток файла (прежнее поведение, в т.ч. мусор).
+        val bytes = wavWithDeclaredDataSize(pcm, 0) + byteArrayOf(0x00, 0x40, 0x00, 0x40)
+        bytes[4] = 0
+        bytes[5] = 0
+        bytes[6] = 0
+        bytes[7] = 0
+        val samples = WavReader.readPcmAsFloat(write(bytes))
+        assertEquals(4, samples.size)
+        assertEquals(0.5f, samples[2], 1e-6f)
+    }
 }

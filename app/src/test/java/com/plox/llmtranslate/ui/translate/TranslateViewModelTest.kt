@@ -22,6 +22,7 @@ import com.plox.llmtranslate.domain.runtime.TtsDownloadStatus
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackCoordinator
 import com.plox.llmtranslate.domain.runtime.TtsPlaybackStatus
 import com.plox.llmtranslate.domain.runtime.TtsRuntime
+import com.plox.llmtranslate.domain.runtime.SttEngine
 import com.plox.llmtranslate.domain.runtime.TranslationEngine
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -36,6 +37,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -511,6 +513,48 @@ class TranslateViewModelTest {
         // эмит false: индикатор гаснет, не залипая.
         recording.value = false
         assertFalse(viewModel.uiState.value.isRecording)
+    }
+
+    @Test
+    fun `taken auto-wav suppresses record-empty error on later stop tap`() {
+        // Замечание 5 ревью #83: цикл чтения сам закрыл сцену по потолку,
+        // flow-коллектор забрал авто-WAV и запустил транскрайб. Последующий
+        // тап «стоп» получает null из опустошённого рекордера — ложная
+        // «Запись пуста или не удалась» при идущей транскрипции не показана,
+        // транскрайб не дублируется.
+        every { favoritesRepository.observeAll() } returns flowOf(emptyList())
+        every { modelManager.installedModels(ModelCategory.TRANSLATION) } returns
+            flowOf(listOf(readyTranslationRuEn()))
+        every { modelManager.installedModels(ModelCategory.STT) } returns
+            flowOf(listOf(readyStt("stt-ru-gigaam", listOf("ru"))))
+        every { modelManager.catalog } returns flowOf(sttCatalog())
+        every { modelManager.sttByLanguage } returns flowOf(emptyMap())
+        every { appContext.getString(R.string.translate_record_empty) } returns "RECORD_EMPTY"
+
+        val engine = mockk<SttEngine>(relaxed = true)
+        coEvery { engine.ensureLoaded(any()) } returns null
+        coEvery { engine.transcribe(any(), any()) } returns Result.success("privet")
+        every { runtimeRouter.sttEngine() } returns engine
+
+        val recording = kotlinx.coroutines.flow.MutableStateFlow(false)
+        every { audioRecorder.recordingFlow } returns recording
+        // Отдача пути одноразовая: коллектор получает WAV, тап «стоп» — null.
+        coEvery { audioRecorder.stopRecording() } returnsMany listOf("auto.wav", null)
+
+        createViewModel()
+
+        recording.value = true
+        assertTrue(viewModel.uiState.value.isRecording)
+        // Самозакрытие цикла чтения по потолку — эмит false.
+        recording.value = false
+
+        // Коллектор забрал WAV и выполнен ровно один транскрайб.
+        coVerify(exactly = 1) { engine.transcribe("auto.wav", "ru") }
+
+        // Тап «стоп» при идущей транскрипции: ошибки пустой записи нет.
+        viewModel.stopRecordingAndTranscribe()
+        assertNotEquals("RECORD_EMPTY", viewModel.uiState.value.error)
+        coVerify(exactly = 1) { engine.transcribe(any(), any()) }
     }
 
     // ── Таймер записи: поздние эмиссии elapsed не затирают сброс (ревью #83) ──

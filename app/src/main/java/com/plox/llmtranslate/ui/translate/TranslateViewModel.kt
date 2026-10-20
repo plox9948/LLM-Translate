@@ -454,12 +454,19 @@ class TranslateViewModel @Inject constructor(
                         if (!stopRecordingInProgress) {
                             val autoWav = audioRecorder.stopRecording()
                             if (autoWav != null) {
+                                // Замечание 5 ревью #83: WAV забрал коллектор и
+                                // транскрайб пошёл — последующий тап «стоп» не
+                                // должен показывать ложную «Запись пуста».
+                                autoWavSelfClosedTaken = true
                                 transcribeAudio(autoWav)
                             } else if (!audioRecorder.isRecording) {
                                 delay(AUTO_WAV_RETRY_MS)
                                 if (!stopRecordingInProgress && !audioRecorder.isRecording) {
                                     val lateWav = audioRecorder.stopRecording()
-                                    if (lateWav != null) transcribeAudio(lateWav)
+                                    if (lateWav != null) {
+                                        autoWavSelfClosedTaken = true
+                                        transcribeAudio(lateWav)
+                                    }
                                 }
                             }
                         }
@@ -1002,6 +1009,9 @@ class TranslateViewModel @Inject constructor(
         }
         update { it.copy(isRecording = true, error = null) }
         _recordingElapsed.value = 0L
+        // Новая сцена: самозакрытие прошлой записи (с его авто-WAV) больше не
+        // учитывается (замечание 5 ревью #83).
+        autoWavSelfClosedTaken = false
         // Потолок записи ставится коллектором recordingFlow (ревью #9) —
         // он же восстанавливает таймер при пересоздании ViewModel на живой
         // записи (уход на другой таб не оставляет микрофон без потолка).
@@ -1016,6 +1026,17 @@ class TranslateViewModel @Inject constructor(
      * только из viewModelScope (главный поток), атомарности не требуется.
      */
     private var stopRecordingInProgress = false
+
+    /**
+     * Признак самозакрытия записи циклом чтения по потолку длительности с
+     * уже забранным авто-WAV (замечание 5 ревью #83): flow-коллектор получил
+     * путь и запустил транскрайб; последующий тап «стоп» в
+     * [stopRecordingAndTranscribe] получит null из опустошённого рекордера —
+     * ошибочная «Запись пуста или не удалась» при идущей транскрипции не
+     * показывается. Снимается стартом новой записи и обработкой тапа.
+     * Трогается только из viewModelScope (главный поток).
+     */
+    private var autoWavSelfClosedTaken = false
 
     /**
      * Таймер авто-остановки записи по потолку [AudioRecorder.MAX_RECORDING_MS]
@@ -1055,7 +1076,18 @@ class TranslateViewModel @Inject constructor(
                 update { it.copy(isRecording = false) }
                 _recordingElapsed.value = 0L
                 if (wavPath == null) {
-                    update { it.copy(error = appContext.getString(R.string.translate_record_empty)) }
+                    if (autoWavSelfClosedTaken) {
+                        // Замечание 5 ревью #83: WAV уже забран коллектором при
+                        // самозакрытии и транскрипция идёт — тихий выход без
+                        // ложной ошибки.
+                        Timber.d(
+                            "Запись самозакрыта по потолку: WAV обработан коллектором, " +
+                                "ошибка пустой записи подавлена"
+                        )
+                        autoWavSelfClosedTaken = false
+                    } else {
+                        update { it.copy(error = appContext.getString(R.string.translate_record_empty)) }
+                    }
                     return@launch
                 }
                 transcribeAudio(wavPath)

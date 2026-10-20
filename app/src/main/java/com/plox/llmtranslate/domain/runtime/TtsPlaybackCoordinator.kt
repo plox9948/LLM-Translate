@@ -442,22 +442,32 @@ class TtsPlaybackCoordinator @Inject constructor(
         // grace-таймер гасится инкрементом поколения.
         if (token != utteranceToken.get()) {
             synchronized(watchLock) {
-                if (pendingRetry === retry) pendingRetry = null
-                if (watchedDownloadId == cardId) watchedDownloadId = null
-            }
-            watchGeneration.incrementAndGet()
-            _status.update {
-                if (it.downloadModelId == cardId) {
-                    it.copy(
-                        downloadModelId = null,
-                        downloadStatus = TtsDownloadStatus.NONE,
-                        downloadProgress = 0
+                // Регрессия #83 (замечание 3): новая watch-сцена успела
+                // установить наблюдение за той же cardId, пока устанавливалась
+                // наша (watchGeneration уже другой) — снятие по cardId снесло
+                // бы её watch/статус, а инкремент поколения погасил бы её
+                // grace-таймер. Снимаем только пока наша сцена остаётся
+                // активной watch; весь контроль и инкремент — под watchLock.
+                if (watchGeneration.get() == watchGen) {
+                    if (pendingRetry === retry) pendingRetry = null
+                    if (watchedDownloadId == cardId) watchedDownloadId = null
+                    watchGeneration.incrementAndGet()
+                    _status.update {
+                        if (it.downloadModelId == cardId) {
+                            it.copy(
+                                downloadModelId = null,
+                                downloadStatus = TtsDownloadStatus.NONE,
+                                downloadProgress = 0
+                            )
+                        } else {
+                            it
+                        }
+                    }
+                    Timber.d(
+                        "Watch-сцена фолбэка снята: фраза устарела во время установки наблюдения"
                     )
-                } else {
-                    it
                 }
             }
-            Timber.d("Watch-сцена фолбэка снята: фраза устарела во время установки наблюдения")
         }
     }
 

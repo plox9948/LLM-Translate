@@ -15,11 +15,13 @@ import kotlin.io.path.createTempDirectory
 
 /**
  * Unit-тесты жёсткого детекта раскладок STT-каталога (ревью #83):
- * transducer/whisper распознаются только по каноническим sherpa-суффиксам,
- * NeMo/piper-подобные `model*.onnx` имеют приоритет над whisper-веткой,
- * при неоднозначности — явная ошибка с перечислением файлов (и на уровне
- * [SherpaSttEngine.detectModel], и сквозной проверкой в [SherpaSttEngine.ensureLoaded]
- * без выхода в нативный слой).
+ * transducer/whisper распознаются только по каноническим sherpa-шаблонам
+ * имён ролей с возможным инфиксом квантизации (фактические int8-имена
+ * манифеста models/manifest.json), NeMo/piper-подобные `model*.onnx` имеют
+ * приоритет над whisper-веткой и выбираются детерминированно, при
+ * неоднозначности — явная ошибка с перечислением файлов (и на уровне
+ * [SherpaSttEngine.detectModel], и сквозной проверкой в
+ * [SherpaSttEngine.ensureLoaded] без выхода в нативный слой).
  */
 class SherpaSttLayoutDetectionTest {
 
@@ -89,6 +91,96 @@ class SherpaSttLayoutDetectionTest {
         }
     }
 
+    // ── регрессия #83 (замечание 1): int8-имена фактических пучков манифеста ──
+
+    @Test
+    fun `manifest whisper int8 pair is whisper`() {
+        // Файлы stt-whisper-small-multilingual из models/manifest.json:
+        // строгие суффиксы .encoder.onnx/.decoder.onnx их не распознавали —
+        // LoadFailed на уже установленных моделях.
+        val dir = tempDir("encoder.int8.onnx", "decoder.int8.onnx")
+        try {
+            val d = engine.detectModel(dir)
+            assertTrue(d is SherpaSttEngine.SttLayoutDetection.Layout)
+            val layout = d as SherpaSttEngine.SttLayoutDetection.Layout
+            assertEquals("whisper", layout.info.type)
+            assertTrue(layout.info.encoderPath!!.endsWith("encoder.int8.onnx"))
+            assertTrue(layout.info.decoderPath!!.endsWith("decoder.int8.onnx"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `manifest nemo int8 single bundle is nemo_ctc`() {
+        // Файл stt-ne-indicconformer из манифеста: model.int8.onnx.
+        val dir = tempDir("model.int8.onnx")
+        try {
+            val d = engine.detectModel(dir)
+            assertTrue(d is SherpaSttEngine.SttLayoutDetection.Layout)
+            val layout = d as SherpaSttEngine.SttLayoutDetection.Layout
+            assertEquals("nemo_ctc", layout.info.type)
+            assertTrue(layout.info.nemoModelPath!!.endsWith("model.int8.onnx"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `int8 transducer triple is transducer`() {
+        val dir = tempDir(
+            "zipformer.encoder.int8.onnx",
+            "zipformer.decoder.int8.onnx",
+            "zipformer.joiner.int8.onnx"
+        )
+        try {
+            val d = engine.detectModel(dir)
+            assertTrue(d is SherpaSttEngine.SttLayoutDetection.Layout)
+            assertEquals(
+                "transducer",
+                (d as SherpaSttEngine.SttLayoutDetection.Layout).info.type
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    // ── замечание 6: детерминированный выбор NeMo-пучка ──
+
+    @Test
+    fun `nemo selection prefers exact canonical model names`() {
+        val dir = tempDir("model_b.onnx", "model_a.onnx", "model.onnx")
+        try {
+            val d = engine.detectModel(dir)
+            assertTrue(d is SherpaSttEngine.SttLayoutDetection.Layout)
+            val layout = d as SherpaSttEngine.SttLayoutDetection.Layout
+            assertEquals("nemo_ctc", layout.info.type)
+            assertEquals(
+                File(dir, "model.onnx").absolutePath,
+                layout.info.nemoModelPath
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `nemo fallback selection is sorted by name`() {
+        val dir = tempDir("modelzz.onnx", "modelaa.onnx")
+        try {
+            val d = engine.detectModel(dir)
+            assertTrue(d is SherpaSttEngine.SttLayoutDetection.Layout)
+            val layout = d as SherpaSttEngine.SttLayoutDetection.Layout
+            assertEquals("nemo_ctc", layout.info.type)
+            assertEquals(
+                File(dir, "modelaa.onnx").absolutePath,
+                layout.info.nemoModelPath
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
     @Test
     fun `nemo single model bundle is nemo_ctc`() {
         val dir = tempDir("model.onnx")
@@ -122,16 +214,34 @@ class SherpaSttLayoutDetectionTest {
     }
 
     @Test
-    fun `transducer with joint onnx is ambiguous not whisper (issue 83)`() {
-        // Регрессия: набор encoder.onnx/decoder.onnx/joint.onnx раньше
-        // классифицировался как whisper (подстроки encoder/decoder).
-        val dir = tempDir("encoder.onnx", "decoder.onnx", "joint.onnx")
+    fun `bundle without decoder role is ambiguous not whisper (issue 83)`() {
+        // Набор без канонической роли decoder (decoder_model.onnx — имя в
+        // стиле IndicTrans, инфикс обязан начинаться с точки) и с joint.onnx:
+        // ни одна ветка не подходит — явная ошибка с перечислением файлов.
+        val dir = tempDir("encoder.onnx", "decoder_model.onnx", "joint.onnx")
         try {
             val d = engine.detectModel(dir)
             assertTrue(d is SherpaSttEngine.SttLayoutDetection.Unknown)
             val unknown = d as SherpaSttEngine.SttLayoutDetection.Unknown
             assertFalse(unknown.missingTokens)
-            assertTrue(unknown.onnxFiles.containsAll(listOf("encoder.onnx", "decoder.onnx", "joint.onnx")))
+            assertTrue(
+                unknown.onnxFiles.containsAll(
+                    listOf("encoder.onnx", "decoder_model.onnx", "joint.onnx")
+                )
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `indictrans-style role-underscore names are not whisper roles`() {
+        // encoder_model.onnx/decoder_model.onnx (Optimum-экспорт IndicTrans2)
+        // ролевыми sherpa-шаблонами не считаются — Uknown вместо угадывания.
+        val dir = tempDir("encoder_model.onnx", "decoder_model.onnx")
+        try {
+            val d = engine.detectModel(dir)
+            assertTrue(d is SherpaSttEngine.SttLayoutDetection.Unknown)
         } finally {
             dir.deleteRecursively()
         }
@@ -172,13 +282,13 @@ class SherpaSttLayoutDetectionTest {
         // Сквозная проверка текста LoadFailed: детект не доходит до нативного
         // sherpa-слоя (на JVM он всё равно недоступен — UnsatisfiedLinkError
         // дал бы другой текст).
-        val dir = tempDir("encoder.onnx", "decoder.onnx", "joint.onnx")
+        val dir = tempDir("encoder.onnx", "decoder_model.onnx", "joint.onnx")
         try {
             val error = engine.ensureLoaded(sttModel(dir))
             assertTrue(error is RuntimeError.LoadFailed)
             val reason = (error as RuntimeError.LoadFailed).reason
             assertTrue(reason, reason.contains("joint.onnx"))
-            assertTrue(reason, reason.contains("encoder.onnx"))
+            assertTrue(reason, reason.contains("decoder_model.onnx"))
         } finally {
             dir.deleteRecursively()
         }

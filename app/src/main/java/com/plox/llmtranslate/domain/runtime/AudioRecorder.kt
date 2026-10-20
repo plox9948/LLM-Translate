@@ -24,6 +24,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -378,10 +379,13 @@ class AudioRecorder @Inject constructor(
      * цикл чтения уже снял сцену, поэтому обычный [stopRecording] вернул бы
      * null — первый вызов [stopRecording] отдаёт этот путь, распознавание
      * ViewModel выполняется как обычно. Снимается стартом новой сцены и в
-     * [cancel] (файл при этом удаляется).
+     * [cancel] (файл при этом удаляется). Отдача/снятие — атомарным
+     * getAndSet (замечание 4 ревью #83): прежний check-then-act по
+     * @Volatile-полю конкурировал между cancel() и stopRecording() — оба
+     * вызова могли забрать один и тот же путь (одновременные удаление
+     * файла и транскрайб) либо потерять его.
      */
-    @Volatile
-    private var limitFinishedWavPath: String? = null
+    private val limitFinishedWavPath = AtomicReference<String?>(null)
 
     /**
      * Начать запись с микрофона.
@@ -465,7 +469,7 @@ class AudioRecorder @Inject constructor(
             // Новая запись инвалидирует WAV, дозакрытый по потолку старой
             // сцены (issue #83): его больше никто не отдаст, удаляет orphan-
             // очистка кэша.
-            limitFinishedWavPath = null
+            limitFinishedWavPath.set(null)
             // Поколение этой записи: цикл чтения ниже замыкает локальную ссылку
             // и выходит, когда stop()/cancel() снимают именно это поколение,
             // даже если к тому моменту уже стартовала новая запись.
@@ -713,7 +717,7 @@ class AudioRecorder @Inject constructor(
             _recordingElapsedMs.value = 0L
             val sink = scene.sink
             if (sink != null && sink.pcmSize > 0L && sink.closeAndPatch()) {
-                limitFinishedWavPath = sink.file.absolutePath
+                limitFinishedWavPath.set(sink.file.absolutePath)
                 Timber.w("Запись закрыта по потолку длительности: WAV сохранён, AudioRecord освобождён")
             } else {
                 sink?.discard()
@@ -734,8 +738,9 @@ class AudioRecorder @Inject constructor(
         val scene = captureStopScene()
         // WAV, дозакрытый по потолку (issue #83), при выгрузке тоже не нужен —
         // удаляем вместе со сценой.
-        val staleWav = limitFinishedWavPath
-        limitFinishedWavPath = null
+        // getAndSet: путь отдаётся ровно одному участнику гонки с
+        // stopRecording() (замечание 4 ревью #83).
+        val staleWav = limitFinishedWavPath.getAndSet(null)
         if (scene == null && staleWav == null) return
         scope.launch {
             // Сцена освобождения целиком под NonCancellable+IO (ревью повт.
@@ -774,9 +779,10 @@ class AudioRecorder @Inject constructor(
         // путь WAV был дозакрыт и сохранён; отдаём его первому вызову
         // (обычный captureStopScene на снятой сцене вернул бы null и
         // распознавание сорвалось бы при живой ViewModel).
-        val autoPath = limitFinishedWavPath
+        // getAndSet — гонка с конкурентным cancel() снимает путь атомарно
+        // (замечание 4 ревью #83).
+        val autoPath = limitFinishedWavPath.getAndSet(null)
         if (autoPath != null) {
-            limitFinishedWavPath = null
             return if (File(autoPath).exists()) autoPath else null
         }
         val scene = captureStopScene() ?: return null

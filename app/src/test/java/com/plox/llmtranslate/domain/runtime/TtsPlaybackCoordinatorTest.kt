@@ -699,6 +699,44 @@ class TtsPlaybackCoordinatorTest {
     }
 
     @Test
+    fun `stale fallback teardown does not clear newer watch on same card`() {
+        // Замечание 3 ревью #83: между установкой watch устаревшей сцены и её
+        // повторной сверкой токена стартует НОВАЯ watch-сцена с той же cardId
+        // (stop + новый speak в окне по часам). Снятие устаревшей сцены обязано
+        // пройти по совпадению watchGeneration: иначе оно снесло бы watch/
+        // статус новой сцены и погасило бы её grace-таймер.
+        stubLanguageNotSupported("ru")
+        catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))
+
+        var injected = false
+        clockHook = {
+            if (!injected) {
+                injected = true
+                // Устаревшая фраза снята, и тут же стартует новая — её
+                // fallback устанавливает watch на ту же карточку.
+                coordinator.stop()
+                coordinator.speak("новая фраза", "ru")
+            }
+        }
+        try {
+            coordinator.speak("текст", "ru")
+        } finally {
+            clockHook = null
+        }
+
+        assertTrue(injected)
+        // Watch НОВОЙ сцены цел: статус наблюдения не снят устаревшей сценой.
+        assertEquals(TtsDownloadStatus.DOWNLOADING, coordinator.status.value.downloadStatus)
+        assertEquals("tts-ru-piper-ruslan", coordinator.status.value.downloadModelId)
+
+        // Дошедшая READY-модель отрабатывает по НОВОЙ сцене: автоназначение и
+        // ровно одно повторное озвучивание новой фразы.
+        installedFlow.value = listOf(readyPiper("tts-ru-piper-ruslan"))
+        coVerify(exactly = 1) { modelManager.setTtsForLanguage("ru", "tts-ru-piper-ruslan") }
+        coVerify(exactly = 1) { piperRuntime.speak("новая фраза", any(), any(), any()) }
+    }
+
+    @Test
     fun `download failure stage stamped with non-zero download error id`() {
         stubLanguageNotSupported("ru")
         catalogFlow.value = listOf(piperCard("tts-ru-piper-ruslan"))

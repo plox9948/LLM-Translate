@@ -1,6 +1,5 @@
 package com.plox.llmtranslate.util
 
-import com.plox.llmtranslate.domain.runtime.AudioRecorder
 import timber.log.Timber
 import java.io.File
 
@@ -17,16 +16,6 @@ object WavReader {
      * в логе вместо риска OOM (ревью #79).
      */
     const val MAX_WAV_BYTES: Long = 50L * 1024 * 1024
-
-    /**
-     * Потолок числа PCM-отсчётов (ревью #83): FloatArray аллоцировался по
-     * заявленному data-чанку вплоть до [MAX_WAV_BYTES] — пик памяти ~150 МБ
-     * (байты файла + 4 байта на сэмпл). Штатные consumers — записи рекордера,
-     * чей PCM не превышает [AudioRecorder.MAX_PCM_BYTES] байт (16-битные
-     * сэмплы — вдвое меньше отсчётов); заявленный чанок больше читается до
-     * потолка с предупреждением.
-     */
-    val MAX_SAMPLES: Int = (AudioRecorder.MAX_PCM_BYTES / 2).toInt()
 
     /**
      * Прочитать PCM из WAV-файла как FloatArray (16-bit → float /32768).
@@ -50,11 +39,16 @@ object WavReader {
             // раньше молча давали пустое либо обрезанное чтение (ревью #83).
             // Фолбэк — PCM по фактический остаток файла: частично
             // распознаваемый звук лучше тишины, лог предупреждает о битости.
+            // Остаток ограничивается концом RIFF-контейнера, когда заголовок
+            // задаёт согласованную границу (замечание 8 ревью #83): иначе
+            // не-PCM чанки и мусор, лежащие после объявленного контейнера,
+            // декодировались бы как сэмплы. При несогласованном заголовке —
+            // прежний фактический остаток файла (семантика salvage).
             Timber.w(
                 "WAV: размер data-чанка $declaredSize в позиции $start не согласован " +
                     "с файлом (${bytes.size} байт) — читаем фактический остаток: ${file.name}"
             )
-            size = bytes.size - start
+            size = salvageEnd(bytes, start) - start
         }
         val end = minOf(start.toLong() + size, bytes.size.toLong()).toInt()
         if (end <= start) return FloatArray(0)
@@ -237,8 +231,44 @@ object WavReader {
     private fun readUInt16LE(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xFF) or ((bytes[offset + 1].toInt() and 0xFF) shl 8)
 
+    /**
+     * Граница salvage-чтения битого data-чанка (замечание 8 ревью #83):
+     * если RIFF-контейнер (размер в байтах заголовка 4..7, поле «размер
+     * после RIFF») даёт границу строго внутри файла и после начала PCM —
+     * salvage ограничен концом контейнера; иначе (заголовок битый/нулевой
+     * или контейнер покрывает весь файл) — фактический конец файла.
+     */
+    // internal — покрыто unit-тестом (чистая логика, без Android).
+    internal fun salvageEnd(bytes: ByteArray, start: Int): Int {
+        if (bytes.size < 8) return bytes.size
+        val containerEnd = 8L + (readIntLE(bytes, 4).toLong() and 0xFFFFFFFFL)
+        return if (containerEnd in (start + 1L) until bytes.size.toLong()) {
+            containerEnd.toInt()
+        } else {
+            bytes.size
+        }
+    }
+
     private const val EXPECTED_PCM_FORMAT = 1
     private const val EXPECTED_CHANNELS = 1
     private const val EXPECTED_SAMPLE_RATE = 16000
     private const val EXPECTED_BITS_PER_SAMPLE = 16
+
+    /**
+     * Длительность штатной STT-записи, с (зеркало AudioRecorder.MAX_RECORDING_MS;
+     * самостоятельная константа — util не импортирует domain, замечание 7
+     * ревью #83).
+     */
+    private const val MAX_RECORDING_SECONDS = 180
+
+    /**
+     * Потолок числа PCM-отсчётов (ревью #83): FloatArray аллоцировался по
+     * заявленному data-чанку вплоть до [MAX_WAV_BYTES] — пик памяти ~150 МБ
+     * (байты файла + 4 байта на сэмпл). Штатные consumers — записи рекордера:
+     * потолок длительности × частота отсчёта = 180 с × 16 кГц; заявленный
+     * чанок больше читается до потолка с предупреждением. Значение совпадает
+     * с прежним AudioRecorder.MAX_PCM_BYTES/2, связь с рекордером — только
+     * смысловая, обратный слой util→domain убран (замечание 7 ревью #83).
+     */
+    const val MAX_SAMPLES: Int = MAX_RECORDING_SECONDS * EXPECTED_SAMPLE_RATE
 }
