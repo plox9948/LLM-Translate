@@ -75,6 +75,7 @@ class TranslateViewModelTest {
             kotlinx.coroutines.flow.MutableStateFlow(false)
         every { audioRecorder.recordingElapsedMs } returns
             kotlinx.coroutines.flow.MutableStateFlow(0L)
+        every { modelManager.translationByDirection } returns kotlinx.coroutines.flow.flowOf(emptyMap())
     }
 
     /** Создать ViewModel (коллекторы init стартуют здесь — стабы должны быть готовы). */

@@ -70,4 +70,24 @@ class LanguageMapRepairTest {
         // Битое значение чинится снятием ключа (старые висячие данные не сохраняются).
         assertEquals(LanguageMapEdit.RemoveKey, languageMapStripEdit(json, "stt_by_language", "{broken", "m1"))
     }
+
+    @Test
+    fun `translation direction keys round-trip through the same map helpers`() {
+        // Issue #96: карта «направление → id» хранится теми же хелперами,
+        // ключ — формат TranslationModelSelector.directionKey ("ru>en").
+        val updated = languageMapSetRaw(
+            json, "translation_by_direction", null, "ru>en", "slimt-ru-en"
+        )
+        assertEquals(
+            mapOf("ru>en" to "slimt-ru-en"),
+            json.decodeFromString(serializer, checkNotNull(updated))
+        )
+
+        // Снятие назначения и удаление удалённой моделью — те же транзакции.
+        assertNull(languageMapSetRaw(json, "translation_by_direction", """{"ru>en":"m1"}""", "ru>en", null))
+        assertEquals(
+            LanguageMapEdit.RemoveKey,
+            languageMapStripEdit(json, "translation_by_direction", """{"ru>en":"m1"}""", "m1")
+        )
+    }
 }

@@ -58,6 +58,7 @@ class ModelsWriteGuardTest {
         every { modelManager.loadedModels } returns flowOf(emptyList())
         every { modelManager.sttByLanguage } returns flowOf(emptyMap())
         every { modelManager.ttsByLanguage } returns flowOf(emptyMap())
+        every { modelManager.translationByDirection } returns flowOf(emptyMap())
         coEvery { modelManager.deviceInfo() } returns mockk(relaxed = true)
         every { preferences.lastSourceLang } returns flowOf(null)
         every { preferences.lastTargetLang } returns flowOf(null)
@@ -152,6 +153,7 @@ class ModelsWriteGuardTest {
     fun `language assignment failures report banner for stt and tts toggles`() {
         coEvery { modelManager.setSttForLanguage(any(), any()) } throws IOException("room down")
         coEvery { modelManager.setTtsForLanguage(any(), any()) } throws IOException("room down")
+        coEvery { modelManager.setTranslationForDirection(any(), any(), any()) } throws IOException("room down")
         val vm = newViewModel()
 
         vm.onSttLanguageToggle(sttCard("stt-x"), "ru")
@@ -162,6 +164,26 @@ class ModelsWriteGuardTest {
 
         vm.onTtsLanguageToggle(sttCard("piper-ru"), "ru")
         assertEquals(R.string.models_assignment_failed, vm.observeErrorRes.value)
+
+        vm.clearObserveError()
+        vm.onTranslationDirectionToggle(sttCard("trans-x"), "ru", "en")
+        assertEquals(R.string.models_assignment_failed, vm.observeErrorRes.value)
+    }
+
+    @Test
+    fun `translation direction toggle assigns card and re-tap clears it`() {
+        // Issue #96: тап по чипу направления назначает модель; после
+        // подтверждения назначения потоком настроек повторный тап снимает.
+        val assignments = kotlinx.coroutines.flow.MutableStateFlow<Map<String, String>>(emptyMap())
+        every { modelManager.translationByDirection } returns assignments
+        val vm = newViewModel()
+
+        vm.onTranslationDirectionToggle(sttCard("trans-ru-en"), "ru", "en")
+        coVerify { modelManager.setTranslationForDirection("ru", "en", "trans-ru-en") }
+
+        assignments.value = mapOf("ru>en" to "trans-ru-en")
+        vm.onTranslationDirectionToggle(sttCard("trans-ru-en"), "ru", "en")
+        coVerify { modelManager.setTranslationForDirection("ru", "en", null) }
     }
 
     @Test

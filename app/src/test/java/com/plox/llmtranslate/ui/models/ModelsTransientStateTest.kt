@@ -58,6 +58,7 @@ class ModelsTransientStateTest {
         every { modelManager.loadedModels } returns flowOf(emptyList())
         every { modelManager.sttByLanguage } returns flowOf(emptyMap())
         every { modelManager.ttsByLanguage } returns flowOf(emptyMap())
+        every { modelManager.translationByDirection } returns flowOf(emptyMap())
         coEvery { modelManager.deviceInfo() } returns mockk(relaxed = true)
         // Relaxed-мок String? возвращает "" (не null) — ветка импорта ушла бы
         // в «успех»; фиксируем явный провал импорта.

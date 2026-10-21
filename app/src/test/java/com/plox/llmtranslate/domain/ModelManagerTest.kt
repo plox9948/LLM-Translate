@@ -193,6 +193,47 @@ class ModelManagerTest {
         coVerify { preferences.setTtsForLanguage("ru", "tts-ru-piper-ruslan") }
     }
 
+    // --- issue #96: гейты назначения модели перевода на направление ---
+
+    @Test
+    fun `setTranslationForDirection accepts ready translation model`() = runTest {
+        coEvery { repository.getById("m1") } returns readyModel("m1", ModelCategory.TRANSLATION)
+        manager.setTranslationForDirection("ru", "en", "m1")
+        coVerify { preferences.setTranslationForDirection("ru", "en", "m1") }
+    }
+
+    @Test
+    fun `setTranslationForDirection rejects unknown model id`() = runTest {
+        coEvery { repository.getById("garbage") } returns null
+        manager.setTranslationForDirection("ru", "en", "garbage")
+        coVerify(exactly = 0) { preferences.setTranslationForDirection(any(), any(), any()) }
+    }
+
+    @Test
+    fun `setTranslationForDirection rejects model of another category`() = runTest {
+        coEvery { repository.getById("stt-1") } returns readyModel("stt-1", ModelCategory.STT)
+        manager.setTranslationForDirection("ru", "en", "stt-1")
+        coVerify(exactly = 0) { preferences.setTranslationForDirection(any(), any(), any()) }
+    }
+
+    @Test
+    fun `setTranslationForDirection rejects not ready model`() = runTest {
+        val downloading = readyModel("m1", ModelCategory.TRANSLATION).copy(
+            status = ModelStatus.DOWNLOADING,
+            filePath = null
+        )
+        coEvery { repository.getById("m1") } returns downloading
+        manager.setTranslationForDirection("ru", "en", "m1")
+        coVerify(exactly = 0) { preferences.setTranslationForDirection(any(), any(), any()) }
+    }
+
+    @Test
+    fun `setTranslationForDirection null removes entry without model lookup`() = runTest {
+        manager.setTranslationForDirection("ru", "en", null)
+        coVerify(exactly = 0) { repository.getById(any()) }
+        coVerify { preferences.setTranslationForDirection("ru", "en", null) }
+    }
+
     @Test
     fun `delete switches to first ready model when deleting active model`() = runTest {
         val deleted = readyModel("m1", ModelCategory.STT)

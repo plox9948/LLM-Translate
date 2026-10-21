@@ -21,6 +21,7 @@ import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelFileNaming
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.TranslationModelSelector
 import com.plox.llmtranslate.domain.model.TtsEngines
 import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.model.ttsEngineId
@@ -169,6 +170,13 @@ class ModelsViewModel @Inject constructor(
     private val _ttsByLanguage = MutableStateFlow<Map<String, String>>(emptyMap())
     val ttsByLanguage: StateFlow<Map<String, String>> = _ttsByLanguage
 
+    /**
+     * Назначения «направление → id модели перевода» (issue #96): реактивно из
+     * DataStore, используется чипами направлений на TRANSLATION-карточках.
+     */
+    private val _translationByDirection = MutableStateFlow<Map<String, String>>(emptyMap())
+    val translationByDirection: StateFlow<Map<String, String>> = _translationByDirection
+
     // Глобальной активной STT-модели больше нет (issue #29): выбор по языкам,
     // в activeIds только TRANSLATION (подсветка карточки) и TTS (движок).
     private val activeIdsFlow: Flow<Map<ModelCategory, String?>> =
@@ -296,6 +304,13 @@ class ModelsViewModel @Inject constructor(
             errors = observeErrors,
             marker = "tts_by_language"
         ) { value -> _ttsByLanguage.value = value }
+        observeResilient(
+            scope = viewModelScope,
+            source = { modelManager.translationByDirection },
+            messageRes = R.string.models_observe_failed,
+            errors = observeErrors,
+            marker = "translation_by_direction"
+        ) { value -> _translationByDirection.value = value }
     }
 
     /**
@@ -557,6 +572,28 @@ class ModelsViewModel @Inject constructor(
             logMessage = "Не удалось обновить TTS-назначение языка $language",
             marker = "set_tts_language"
         ) { modelManager.setTtsForLanguage(language, next) }
+    }
+
+    /**
+     * Тап по чипу направления на TRANSLATION-карточке (issue #96): назначить
+     * модель перевода направлению source→target, повторный тап по чипу с
+     * ЯВНЫМ назначением этой модели — снять назначение (направление
+     * возвращается на автоподбор по направлению). Если направление уже
+     * назначено другой модели — переназначение (одна модель на направление).
+     * Установку, категорию и готовность модели проверяет
+     * [ModelManager.setTranslationForDirection].
+     */
+    fun onTranslationDirectionToggle(card: ModelCard, source: String, target: String) {
+        val key = TranslationModelSelector.directionKey(source, target)
+        val current = _translationByDirection.value[key]
+        val next = if (current == card.id) null else card.id
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.models_assignment_failed,
+            errors = observeErrors,
+            logMessage = "Не удалось обновить переводное назначение $source→$target",
+            marker = "set_translation_direction"
+        ) { modelManager.setTranslationForDirection(source, target, next) }
     }
 
     /**

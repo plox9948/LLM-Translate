@@ -248,6 +248,9 @@ class TranslateViewModel @Inject constructor(
     // Установленные модели перевода для автовыбора по направлению.
     private var translationModels: List<InstalledModel> = emptyList()
 
+    // Явные назначения «направление → модель перевода» (issue #96).
+    private var translationAssignments: Map<String, String> = emptyMap()
+
     // Каталог моделей для подбора недостающих звеньев цепочки (issue #33).
     private var catalogCards: List<ModelCard> = emptyList()
 
@@ -347,6 +350,17 @@ class TranslateViewModel @Inject constructor(
                 hasSttModel = models.any { it.isReady }
             )
             // Пересчёт STT-подсказки памятки при установке/скачивании (issue #56).
+            refreshTranslationAvailability()
+        }
+        observeResilient(
+            scope = viewModelScope,
+            source = { modelManager.translationByDirection },
+            messageRes = R.string.models_observe_failed,
+            errors = observeErrors,
+            marker = "translation_by_direction",
+        ) { assignments ->
+            translationAssignments = assignments
+            // Явные назначения направлений влияют на доступность цепочки (issue #96).
             refreshTranslationAvailability()
         }
         observeResilient(
@@ -774,8 +788,11 @@ class TranslateViewModel @Inject constructor(
                 // Автовыбор цепочки моделей для направления — только готовые
                 // модели (симметрично refreshTranslationAvailability): скачиваемая
                 // модель дала бы цепочку с заведомо нерабочим файлом.
+                // Явные назначения «направление → модель» (issue #96) учитываются
+                // подбором наравне с автовыбором.
                 val chain = TranslationModelSelector.selectChain(
-                    translationModels.filter { it.isReady }, sourceLang.code, state.targetLang.code
+                    translationModels.filter { it.isReady }, sourceLang.code, state.targetLang.code,
+                    translationAssignments
                 )
                 if (chain.isNullOrEmpty()) {
                     endTranslationJobWithError(
@@ -1294,7 +1311,7 @@ class TranslateViewModel @Inject constructor(
             ready.isNotEmpty()
         } else {
             sources.any { source ->
-                TranslationModelSelector.selectChain(ready, source, target) != null
+                TranslationModelSelector.selectChain(ready, source, target, translationAssignments) != null
             }
         }
         val missing = if (hasChain || sources.isEmpty()) {

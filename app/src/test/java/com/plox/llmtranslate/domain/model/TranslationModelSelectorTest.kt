@@ -114,6 +114,52 @@ class TranslationModelSelectorTest {
         assertNull(TranslationModelSelector.selectChain(onlyRuEn, "ne", "ru"))
     }
 
+    // --- issue #96: явные назначения «направление → модель» ---
+
+    @Test
+    fun `direction key format`() {
+        assertEquals("ru>en", TranslationModelSelector.directionKey("ru", "en"))
+        assertEquals("en>ne", TranslationModelSelector.directionKey("en", "ne"))
+    }
+
+    @Test
+    fun `empty assignments keep auto selection`() {
+        assertEquals(listOf(ruEn), TranslationModelSelector.selectChain(all, "ru", "en", emptyMap()))
+        assertEquals(listOf(neEn, enRu), TranslationModelSelector.selectChain(all, "ne", "ru", emptyMap()))
+    }
+
+    @Test
+    fun `explicit assignment wins over auto direct model`() {
+        // Назначение на модель, отличную от автоподбора, перекрывает его.
+        val assignments = mapOf("ru>en" to enRu.id)
+        assertEquals(listOf(enRu), TranslationModelSelector.selectChain(all, "ru", "en", assignments))
+    }
+
+    @Test
+    fun `assignment to uninstalled model falls back to auto`() {
+        // Назначение учитывается только если модель в списке готовых.
+        val assignments = mapOf("ru>en" to "gone-model")
+        assertEquals(listOf(ruEn), TranslationModelSelector.selectChain(all, "ru", "en", assignments))
+    }
+
+    @Test
+    fun `assigned hub segment overrides auto segment in chain`() {
+        // ne→ru через хаб: сегмент en→ru явно назначен другой модели —
+        // назначение имеет приоритет и на звеньях цепочки.
+        val assignments = mapOf("en>ru" to ruEn.id)
+        assertEquals(listOf(neEn, ruEn), TranslationModelSelector.selectChain(all, "ne", "ru", assignments))
+    }
+
+    @Test
+    fun `assignment supplies hub segment missing in auto selection`() {
+        // Без назначения цепочка ru→ne не строится (нет en→ne модели);
+        // назначение сегмента en→ne на готовую модель достраивает её.
+        val subset = listOf(neEn, ruEn)
+        assertNull(TranslationModelSelector.selectChain(subset, "ru", "ne"))
+        val assignments = mapOf("en>ne" to neEn.id)
+        assertEquals(listOf(ruEn, neEn), TranslationModelSelector.selectChain(subset, "ru", "ne", assignments))
+    }
+
     // --- issue #33: подбор недостающих звеньев цепочки из каталога ---
 
     private val catalogAll = listOf(

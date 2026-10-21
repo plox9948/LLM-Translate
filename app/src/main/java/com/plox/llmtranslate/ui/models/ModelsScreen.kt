@@ -62,12 +62,15 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.plox.llmtranslate.R
+import com.plox.llmtranslate.domain.model.CatalogPriority
 import com.plox.llmtranslate.domain.model.InstallCheck
 import com.plox.llmtranslate.domain.model.InstalledModel
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.ModelStatus
 import com.plox.llmtranslate.domain.model.RuntimeType
+import com.plox.llmtranslate.domain.model.SttModelSelector
+import com.plox.llmtranslate.domain.model.TranslationModelSelector
 import com.plox.llmtranslate.domain.model.TtsModelSelector
 import com.plox.llmtranslate.domain.model.ttsEngineId
 import com.plox.llmtranslate.domain.runtime.LoadedModelInfo
@@ -99,6 +102,7 @@ fun ModelsScreen(
     val ttsEngine by viewModel.ttsEngine.collectAsStateWithLifecycle()
     val sttByLanguage by viewModel.sttByLanguage.collectAsStateWithLifecycle()
     val ttsByLanguage by viewModel.ttsByLanguage.collectAsStateWithLifecycle()
+    val translationByDirection by viewModel.translationByDirection.collectAsStateWithLifecycle()
     val pendingDeleteId by viewModel.pendingDeleteModelId.collectAsStateWithLifecycle()
 
     // Диалог подтверждения удаления установленного пучка (решение пользователя:
@@ -380,8 +384,28 @@ fun ModelsScreen(
                 } else {
                     emptyList()
                 }
-                val sttAssignedLanguages =
-                    sttChips.filter { sttByLanguage[it] == card.id }.toSet()
+                // Подсветка чипа — по фактическому выбору рантайма (issue #96):
+                // язык подсвечен и у автоматически подобранной модели, если
+                // явно никому не назначен; явное назначение переводит
+                // подсветку на назначенную модель. Готовые STT-модели секции
+                // (`installed` уже отфильтрован по категории) берутся как есть.
+                val sttAssignedLanguages = sttAssignedChipLanguages(
+                    cardId = card.id,
+                    chips = sttChips,
+                    sttByLanguage = sttByLanguage,
+                    readySttModels = installed.filter { it.isReady }
+                )
+                // Чипы «Направление перевода» на TRANSLATION-карточках (issue #96):
+                // направление карточки и обратное; подсветка — по фактическому
+                // выбору рантайма (назначение направления → автоподбор), тап
+                // назначает/снимает явное назначение. Вся логика — в чистой
+                // функции [translationCardState].
+                val translation = translationCardState(
+                    card = card,
+                    installedReady = installedModel?.isReady == true,
+                    readyTranslationModels = installed.filter { it.isReady },
+                    assignments = translationByDirection
+                )
                 // Чипы «Нужно для RU→EN»: карточка не хватает для последнего
                 // направления перевода (issue #33).
                 val requiredChipLabel = uiState.requiredChips[card.id]?.let { direction ->
@@ -408,6 +432,8 @@ fun ModelsScreen(
                     ttsAssignedLanguages = tts.assignedLanguages,
                     ttsChipsEnabled = tts.chipsEnabled,
                     ttsEngineSelected = tts.engineSelected,
+                    translationChips = translation.chips,
+                    translationActiveDirections = translation.activeDirections,
                     requiredChipLabel = requiredChipLabel,
                     actionsLocked = actionsLocked,
                     downloadPending = downloadPending,
@@ -424,7 +450,10 @@ fun ModelsScreen(
                     onCancel = { installedModel?.let { viewModel.onCancelDownload(it) } },
                     onExport = { installedModel?.let { viewModel.onExportClick(it) } },
                     onSttLanguageToggle = { lang -> viewModel.onSttLanguageToggle(card, lang) },
-                    onTtsLanguageToggle = { lang -> viewModel.onTtsLanguageToggle(card, lang) }
+                    onTtsLanguageToggle = { lang -> viewModel.onTtsLanguageToggle(card, lang) },
+                    onTranslationDirectionToggle = { (source, target) ->
+                        viewModel.onTranslationDirectionToggle(card, source, target)
+                    }
                 )
             }
         }
@@ -642,6 +671,8 @@ private fun ModelCardItem(
     ttsAssignedLanguages: Set<String>,
     ttsChipsEnabled: Boolean,
     ttsEngineSelected: Boolean,
+    translationChips: List<Pair<String, String>>,
+    translationActiveDirections: Set<Pair<String, String>>,
     requiredChipLabel: String?,
     actionsLocked: Boolean,
     downloadPending: Boolean,
@@ -652,7 +683,8 @@ private fun ModelCardItem(
     onCancel: () -> Unit,
     onExport: () -> Unit,
     onSttLanguageToggle: (String) -> Unit,
-    onTtsLanguageToggle: (String) -> Unit
+    onTtsLanguageToggle: (String) -> Unit,
+    onTranslationDirectionToggle: (Pair<String, String>) -> Unit
 ) {
     // TTS-карточки — встроенные движки: индикатор кликабелен без установки
     // и выбирает движок (запись в настройку ttsEngine).
@@ -940,6 +972,18 @@ private fun ModelCardItem(
                     onToggle = onSttLanguageToggle
                 )
             }
+
+            // Чипы «Направление перевода»: явное назначение модели переводу на
+            // направление пары языков карточки (issue #96); чипы есть только у
+            // готовых установленных карточек с определённым направлением.
+            if (translationChips.isNotEmpty()) {
+                DirectionChipRow(
+                    labelRes = R.string.models_translation_lang_label,
+                    directions = translationChips,
+                    activeDirections = translationActiveDirections,
+                    onToggle = onTranslationDirectionToggle
+                )
+            }
         }
     }
 }
@@ -1027,6 +1071,40 @@ private fun LanguageChipRow(
     }
 }
 
+/**
+ * Строка чипов «направление перевода» (каркас по образцу [LanguageChipRow]):
+ * подпись, FilterChip на каждое направление [directions] (подпись —
+ * [CatalogPriority.chipLabel], «RU→EN»), активный — входящее в
+ * [activeDirections]; тап — [onToggle] с парой (исходный, целевой).
+ */
+@Composable
+private fun DirectionChipRow(
+    @StringRes labelRes: Int,
+    directions: List<Pair<String, String>>,
+    activeDirections: Set<Pair<String, String>>,
+    onToggle: (Pair<String, String>) -> Unit
+) {
+    Spacer(modifier = Modifier.height(6.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = stringResource(labelRes),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        directions.forEachIndexed { index, direction ->
+            if (index > 0) {
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            FilterChip(
+                selected = direction in activeDirections,
+                onClick = { onToggle(direction) },
+                label = { Text(CatalogPriority.chipLabel(direction.first, direction.second)) }
+            )
+        }
+    }
+}
+
 @Composable
 private fun Stars(count: Int) {
     Row {
@@ -1070,6 +1148,28 @@ private fun ttsChipLanguages(card: ModelCard): List<String> =
     } else {
         emptyList()
     }
+
+/**
+ * Языки чипов «язык распознавания», которые подсветить на STT-карточке
+ * (issue #96): язык подсвечен, если рантайм реально выберет эту карточку —
+ * через [SttModelSelector.select] (явное назначение → дефолт IndicConformer
+ * для «ne» → первая готовая поддерживающая модель), а не только по явной
+ * записи в `stt_by_language`. Чистая функция — логика выбора не дублируется.
+ *
+ * @param cardId id карточки, для которой считается подсветка.
+ * @param chips языки чипов карточки (пустой список — пустой результат).
+ * @param sttByLanguage карта «язык → id» из настроек.
+ * @param readySttModels установленные готовые STT-модели (список в порядке
+ *        каталога — важен для шага «первая поддерживающая модель»).
+ */
+internal fun sttAssignedChipLanguages(
+    cardId: String,
+    chips: List<String>,
+    sttByLanguage: Map<String, String>,
+    readySttModels: List<InstalledModel>
+): Set<String> = chips.filter { language ->
+    SttModelSelector.select(language, sttByLanguage, readySttModels)?.id == cardId
+}.toSet()
 
 /**
  * Состояние TTS-карточки (issues #50, #53): подсветка «выбрана», чипы языков
@@ -1122,4 +1222,58 @@ internal fun ttsCardState(
             chips.filter { modelReady && ttsByLanguage[it] == card.id }.toSet()
         }
     )
+}
+
+/**
+ * Состояние чипов направления на TRANSLATION-карточке (issue #96).
+ * Чистая логика — вынесена из цикла карточек для тестируемости.
+ *
+ * Чипы ([chips]): направление карточки, выводимое
+ * [TranslationModelSelector.directionOf], и обратное — только для
+ * установленных ГОТОВЫХ карточек категории TRANSLATION, у которых
+ * languages — ровно пара языков этого направления (как в каталоге).
+ * У неготовой карточки чипов нет (как у STT), у карточек других категорий
+ * и карточек без определённого направления — тоже нет.
+ *
+ * Подсветка ([activeDirections]): чип направления активен, если
+ * фактически подбор рантайма [TranslationModelSelector.selectChain] для
+ * этого направления (с учётом явных назначений [assignments]) использует
+ * эту модель — т.е. либо направление явно назначено этой модели
+ * (переназначение перекрывает автоподбор, в т.ч. обратным направлением),
+ * либо без назначения автоцепочка направления проходит через эту модель.
+ *
+ * @param card карточка каталога (или синтетическая карточка импортированной модели).
+ * @param installedReady установлена ли модель карточки и готова.
+ * @param readyTranslationModels установленные готовые модели перевода
+ *        секции — список для автоподбора цепочек.
+ * @param assignments карта «направление → id» из настроек
+ *        ([com.plox.llmtranslate.domain.ModelManager.translationByDirection]).
+ */
+internal data class TranslationCardState(
+    val chips: List<Pair<String, String>>,
+    val activeDirections: Set<Pair<String, String>>
+)
+
+internal fun translationCardState(
+    card: ModelCard,
+    installedReady: Boolean,
+    readyTranslationModels: List<InstalledModel>,
+    assignments: Map<String, String>
+): TranslationCardState {
+    if (card.category != ModelCategory.TRANSLATION || !installedReady) {
+        return TranslationCardState(emptyList(), emptySet())
+    }
+    val direction = TranslationModelSelector.directionOf(card)
+        ?: return TranslationCardState(emptyList(), emptySet())
+    if (card.languages.size != 2 ||
+        card.languages.toSet() != setOf(direction.first, direction.second)
+    ) {
+        return TranslationCardState(emptyList(), emptySet())
+    }
+    val chips = listOf(direction, direction.second to direction.first)
+    val active = chips.filter { (source, target) ->
+        TranslationModelSelector.selectChain(readyTranslationModels, source, target, assignments)
+            ?.any { it.id == card.id } == true
+    }.toSet()
+    return TranslationCardState(chips, active)
 }

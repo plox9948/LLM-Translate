@@ -103,6 +103,7 @@
     <string name="models_import">Импорт</string>
     <string name="models_stt_lang_label">Язык распознавания:</string>
     <string name="models_tts_lang_label">Язык озвучивания:</string>
+    <string name="models_translation_lang_label">Направление перевода:</string>
     <string name="models_tts_hint">Чтобы сделать модель активной для озвучивания на языке, коснитесь значка языка на её карточке.</string>
     <string name="models_tts_chip_download_first">Сначала скачайте модель</string>
     <string name="models_required_for">Нужно для %1$s</string>

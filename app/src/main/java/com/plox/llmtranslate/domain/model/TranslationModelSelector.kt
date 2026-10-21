@@ -90,26 +90,62 @@ object TranslationModelSelector {
 
     /**
      * Подбирает цепочку моделей для направления from→to.
+     *
+     * Явные назначения (issue #96): [assignments] — карта
+     * "исходный>целевой" → id модели (ключ — [directionKey]). Для каждого
+     * звена цепочки приоритет: (a) явно назначенная модель, если она есть
+     * среди подобранных (установленных готовых); (b) автоподбор прямой
+     * модели по направлению; (c) фолбэк через хаб с тем же порядком на
+     * каждое звено. Назначение на модель вне списка (не готова/не
+     * установлена) игнорируется — работает автоподбор.
+     *
      * @return список из 1 модели (прямая) или 2 (через английский), либо null.
      */
-    fun selectChain(models: List<InstalledModel>, from: String, to: String): List<InstalledModel>? {
+    fun selectChain(
+        models: List<InstalledModel>,
+        from: String,
+        to: String,
+        assignments: Map<String, String> = emptyMap()
+    ): List<InstalledModel>? {
         if (from == to) return null
 
         // Направление каждой модели считаем один раз (ревью): прежние
         // firstOrNull+directionOf пересчитывали направление на каждое сравнение.
         val directions = models.map { it to directionOf(it) }
 
+        // Явное назначение звена: только модель из переданного списка.
+        fun assigned(direction: Pair<String, String>): InstalledModel? {
+            // Дегенеративное звено (язык == хаб) не назначается: такие ключи
+            // чипами не создаются, а назначение на любую модель искало бы
+            // цепочку от хаба.
+            if (direction.first == direction.second) return null
+            val id = assignments[directionKey(direction.first, direction.second)] ?: return null
+            return models.firstOrNull { it.id == id }
+        }
+
+        // Порядок выбора звена: назначение → автоподбор по направлению.
+        fun pick(direction: Pair<String, String>): InstalledModel? =
+            assigned(direction) ?: directions.firstOrNull { it.second == direction }?.first
+
         // Прямая модель для направления.
-        directions.firstOrNull { it.second == (from to to) }?.first
-            ?.let { return listOf(it) }
+        pick(from to to)?.let { return listOf(it) }
 
         // Fallback через английский: from→en, затем en→to.
-        val toHub = directions.firstOrNull { it.second == (from to HUB_LANG) }?.first
-        val fromHub = directions.firstOrNull { it.second == (HUB_LANG to to) }?.first
+        val toHub = pick(from to HUB_LANG)
+        val fromHub = pick(HUB_LANG to to)
         if (toHub != null && fromHub != null) return listOf(toHub, fromHub)
 
         return null
     }
+
+    /**
+     * Ключ карты назначений «направление → id модели перевода» (issue #96):
+     * "исходный>целевой" (например "ru>en"). Формат общий для настроек
+     * ([com.plox.llmtranslate.data.prefs.ModelPreferences]) и потребителей
+     * подбора цепочек.
+     */
+    fun directionKey(sourceLang: String, targetLang: String): String =
+        "$sourceLang>$targetLang"
 
     /**
      * Подбирает недостающие звенья цепочки from→to из каталога (issue #33):

@@ -13,6 +13,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.plox.llmtranslate.domain.model.ModelCategory
+import com.plox.llmtranslate.domain.model.TranslationModelSelector
 import com.plox.llmtranslate.domain.model.TtsEngines
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -332,8 +333,40 @@ class ModelPreferences @Inject constructor(
     suspend fun setTtsForLanguage(language: String, modelId: String?) =
         setForLanguage(TTS_BY_LANGUAGE_KEY, TTS_BY_LANGUAGE_NAME, language, modelId)
 
+    // --- Модель перевода на каждое направление (issue #96) ---
+
     /**
-     * Общая запись языковой карты (STT/TTS): снять назначение при null,
+     * Карта «направление → id модели перевода» (issue #96): ключ —
+     * "исходный>целевой" (например "ru>en", формат —
+     * [TranslationModelSelector.directionKey]), значение — id модели.
+     * Явное назначение применяется поверх автоподбора по направлению.
+     * Сериализация значения — JSON-строка в preference
+     * `translation_by_direction`.
+     */
+    val translationByDirection: Flow<Map<String, String>> =
+        flowWithRecovery(TRANSLATION_BY_DIRECTION_NAME, emptyMap()) {
+            context.dataStore.data.map { prefs ->
+                decodeLanguageMapValue(
+                    json, TRANSLATION_BY_DIRECTION_NAME, prefs[TRANSLATION_BY_DIRECTION_KEY]
+                ).map
+            }
+        }
+
+    /**
+     * Назначить модель перевода направлению source→target; null — снять
+     * назначение.
+     */
+    suspend fun setTranslationForDirection(
+        sourceLang: String,
+        targetLang: String,
+        modelId: String?
+    ) = setForLanguage(
+        TRANSLATION_BY_DIRECTION_KEY, TRANSLATION_BY_DIRECTION_NAME,
+        TranslationModelSelector.directionKey(sourceLang, targetLang), modelId
+    )
+
+    /**
+     * Общая запись языковой карты (STT/TTS/перевод по направлениям): снять назначение при null,
      * удалить ключ при опустевшей карте. Issue #83, п.2: вся логика —
      * [languageMapSetRaw] в ОДНОЙ edit-транзакции; битый прежний JSON
      * перезаписывается результатом этой же транзакции, фоновый remove-редакт
@@ -367,6 +400,13 @@ class ModelPreferences @Inject constructor(
             applyLanguageMapEdit(
                 prefs, TTS_BY_LANGUAGE_KEY,
                 languageMapStripEdit(json, TTS_BY_LANGUAGE_NAME, prefs[TTS_BY_LANGUAGE_KEY], modelId)
+            )
+            applyLanguageMapEdit(
+                prefs, TRANSLATION_BY_DIRECTION_KEY,
+                languageMapStripEdit(
+                    json, TRANSLATION_BY_DIRECTION_NAME,
+                    prefs[TRANSLATION_BY_DIRECTION_KEY], modelId
+                )
             )
         }
     }
@@ -674,6 +714,13 @@ class ModelPreferences @Inject constructor(
 
         /** Имя TTS-ключа для логов. */
         private const val TTS_BY_LANGUAGE_NAME = "tts_by_language"
+
+        /** Preference с JSON-картой «направление → id модели перевода» (issue #96). */
+        private val TRANSLATION_BY_DIRECTION_KEY =
+            stringPreferencesKey("translation_by_direction")
+
+        /** Имя ключа переводных назначений для логов. */
+        private const val TRANSLATION_BY_DIRECTION_NAME = "translation_by_direction"
 
         /** Preference кода исходного языка последнего направления (issue #33). */
         private val LAST_SOURCE_LANG_KEY = stringPreferencesKey("last_source_lang")

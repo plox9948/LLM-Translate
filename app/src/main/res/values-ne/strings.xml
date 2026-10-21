@@ -103,6 +103,7 @@
     <string name="models_import">आयात</string>
     <string name="models_stt_lang_label">वाणी पहिचान भाषा:</string>
     <string name="models_tts_lang_label">वाणी संश्लेषण भाषा:</string>
+    <string name="models_translation_lang_label">अनुवादको दिशा:</string>
     <string name="models_tts_hint">कुनै भाषाका लागि ओभरइ मोडेल सक्रिय बनाउन, त्यसको कार्डमा भाषाको चिप छुनुहोस्।</string>
     <string name="models_tts_chip_download_first">पहिले मोडेल डाउनलोड गर्नुहोस्</string>
     <string name="models_required_for">%1$s का लागि आवश्यक</string>

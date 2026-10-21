@@ -192,6 +192,30 @@ class ModelManagerImpl @Inject constructor(
             preferences.setTtsForLanguage(language, modelId)
         }
 
+    override val translationByDirection: Flow<Map<String, String>> =
+        preferences.translationByDirection
+
+    override suspend fun setTranslationForDirection(
+        source: String,
+        target: String,
+        modelId: String?
+    ) = withContext(Dispatchers.IO) {
+        if (modelId != null) {
+            val model = repository.getById(modelId)
+            if (model == null ||
+                model.category != ModelCategory.TRANSLATION ||
+                !model.isReady
+            ) {
+                Timber.w(
+                    "Назначение перевода направлению $source→$target пропущено: " +
+                        "модель $modelId недоступна"
+                )
+                return@withContext
+            }
+        }
+        preferences.setTranslationForDirection(source, target, modelId)
+    }
+
     override val loadedModels: Flow<List<LoadedModelInfo>> = runtimeRouter.loadedModels
 
     // Debounce: каждое эмиссия Room-flow (статусы моделей меняются часто,

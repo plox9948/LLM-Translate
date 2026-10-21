@@ -44,6 +44,20 @@ interface ModelManager {
      */
     suspend fun setTtsForLanguage(language: String, modelId: String?)
 
+    /**
+     * Карта «направление → id модели перевода»: явные назначения перевода
+     * на направление from→to поверх автоподбора (issue #96). Ключ —
+     * "исходный>целевой" ([com.plox.llmtranslate.domain.model.TranslationModelSelector.directionKey]).
+     */
+    val translationByDirection: Flow<Map<String, String>>
+
+    /**
+     * Назначить модель перевода направлению source→target (null — снять
+     * назначение). Модель должна быть установлена, быть категории
+     * TRANSLATION и готова; иначе назначение игнорируется.
+     */
+    suspend fun setTranslationForDirection(source: String, target: String, modelId: String?)
+
     /** Свободно место на диске под модели. */
     val diskUsage: Flow<DiskUsage>
 
