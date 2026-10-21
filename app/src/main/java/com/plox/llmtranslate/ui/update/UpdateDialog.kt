@@ -17,26 +17,19 @@ import com.plox.llmtranslate.domain.update.UpdateUiState
 
 /**
  * Глобальный диалог самообновления (issue #95): показывается поверх NavHost
- * при [UpdateUiState.Available] (showDialog=true или открытие по иконке),
+ * при [UpdateUiState.Available] (showDialog=true из гейтов UpdateStateHost),
  * [UpdateUiState.Downloading] (прогресс) и [UpdateUiState.DownloadFailed]
  * (текст сбоя + «ОК»). [UpdateUiState.Downloaded] диалог не показывает —
  * MainActivity запускает системный установщик.
- *
- * @param closeRequest сброс флага принудительного открытия диалога в
- *        MainScreen (вызывается перед любым закрытием).
  */
 @Composable
 fun UpdateDialog(
     uiState: UpdateUiState,
-    closeRequest: () -> Unit,
     viewModel: UpdateHostViewModel
 ) {
     when (uiState) {
         is UpdateUiState.Available -> AlertDialog(
-            onDismissRequest = {
-                closeRequest()
-                viewModel.dismissDialog()
-            },
+            onDismissRequest = { viewModel.dismissDialog() },
             title = { Text(stringResource(R.string.update_available_title)) },
             text = {
                 Text(stringResource(R.string.update_available_text, uiState.release.version))
@@ -49,16 +42,12 @@ fun UpdateDialog(
             dismissButton = {
                 // Две колонки отказа: «напомнить позже» (snooze 24 ч) и
                 // «больше не показывать» (suppress версии) — оба скрывают
-                // диалог, иконка обновления остаётся до следующей версии.
+                // диалог до появления ещё более новой версии.
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = {
-                        closeRequest()
-                        viewModel.snooze()
-                    }) {
+                    TextButton(onClick = { viewModel.snooze() }) {
                         Text(stringResource(R.string.update_action_later))
                     }
                     TextButton(onClick = {
-                        closeRequest()
                         viewModel.suppress(uiState.release.version)
                     }) {
                         Text(stringResource(R.string.update_action_never))
@@ -91,17 +80,11 @@ fun UpdateDialog(
         )
 
         is UpdateUiState.DownloadFailed -> AlertDialog(
-            onDismissRequest = {
-                closeRequest()
-                viewModel.dismissDownloadError()
-            },
+            onDismissRequest = { viewModel.dismissDownloadError() },
             title = { Text(stringResource(R.string.update_failed_title)) },
             text = { Text(uiState.message) },
             confirmButton = {
-                TextButton(onClick = {
-                    closeRequest()
-                    viewModel.dismissDownloadError()
-                }) {
+                TextButton(onClick = { viewModel.dismissDownloadError() }) {
                     Text(stringResource(R.string.ok))
                 }
             }

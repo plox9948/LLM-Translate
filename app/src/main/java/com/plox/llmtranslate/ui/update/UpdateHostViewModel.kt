@@ -70,7 +70,7 @@ class UpdateHostViewModel @Inject constructor(
         }
     }
 
-    /** Закрытие диалога (иконка открыла suppressed-версию / кнопка «ОК»). */
+    /** Закрытие диалога (кнопка «ОК» или dismissed по тапу вне). */
     fun dismissDialog() {
         updateStateHost.dismissDialog()
     }

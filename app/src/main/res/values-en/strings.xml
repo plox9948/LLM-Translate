@@ -180,8 +180,6 @@
     <string name="update_downloading_text">Downloading the update… %1$d%%</string>
     <string name="update_failed_title">Update error</string>
     <string name="update_download_failed">Failed to download the update</string>
-    <string name="update_icon_cd">Update available</string>
-    <string name="update_icon_cd_idle">Update notifications</string>
     <string name="update_settings_title">App update</string>
     <string name="update_current_version">Current version: %1$s</string>
     <string name="update_auto_checks">Check for updates automatically</string>

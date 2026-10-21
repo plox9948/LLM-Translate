@@ -21,7 +21,8 @@ import javax.inject.Singleton
  *
  * Диалог показывается на [UpdateUiState.Available] при [showDialog]=true;
  * при [showDialog]=false (версия скрыта «больше не показывать» или активен
- * snooze) иконка обновления остаётся, диалог — нет.
+ * snooze) диалог не показывается, но секция «Обновление» в настройках видит
+ * состояние Available и предлагает скачать релиз вручную.
  */
 sealed class UpdateUiState {
     /** Ничего не происходит (покой / автоскрытие преходящих состояний). */
@@ -32,8 +33,8 @@ sealed class UpdateUiState {
 
     /**
      * Найден релиз новее установленного.
-     * @param showDialog показывать ли диалог (false — только иконка:
-     *        версия подавлена настройкой «больше не показывать»).
+     * @param showDialog показывать ли диалог (false — подавлено «больше не
+     *        показывать» или snooze: доступен только ручной запуск из настроек).
      */
     data class Available(
         val release: ReleaseInfo,
@@ -70,8 +71,8 @@ fun UpdateCheckError.userMessage(): String = when (this) {
 /**
  * Синглтон-хост состояния самообновления (issue #95): единая точка для
  * MainActivity (автопроверка на старте процесса + запуск установщика по
- * [UpdateUiState.Downloaded]), глобального диалога в MainScreen, иконки на
- * «Переводе» и секции «Обновление» в настройках.
+ * [UpdateUiState.Downloaded]), глобального диалога в MainScreen и секции
+ * «Обновление» в настройках.
  */
 @Singleton
 class UpdateStateHost @Inject constructor(
@@ -98,8 +99,8 @@ class UpdateStateHost @Inject constructor(
      * Автопроверка при старте/возобновлении процесса: гейты — настройка
      * автопроверок и доступ в сеть. Snooze («напомнить позже») и скрытая
      * версия («больше не показывать») НЕ блокируют саму проверку: состояние
-     * [UpdateUiState.Available] выставляется и для них (иконка обновления),
-     * но с showDialog=false.
+     * [UpdateUiState.Available] выставляется и для них (скачивание доступно
+     * из настроек), но с showDialog=false.
      * У авто-проверки UpToDate/сбой состояние не оставляем — [Idle]
      * (преходящее состояние показывать негде).
      */
@@ -168,7 +169,7 @@ class UpdateStateHost @Inject constructor(
         hideDialog()
     }
 
-    /** Скрыть диалог, оставив иконку (тап вне/назад, открытие по иконке). */
+    /** Скрыть диалог (тап вне/назад). */
     fun dismissDialog() {
         hideDialog()
     }
@@ -224,7 +225,7 @@ class UpdateStateHost @Inject constructor(
         }
     }
 
-    /** Available → тот же Available, но без показа диалога (иконка остаётся). */
+    /** Available → тот же Available, но без показа диалога. */
     private fun hideDialog() {
         val current = _state.value
         if (current is UpdateUiState.Available && current.showDialog) {

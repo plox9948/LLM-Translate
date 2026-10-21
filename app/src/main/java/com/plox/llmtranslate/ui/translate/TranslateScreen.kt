@@ -4,7 +4,6 @@ import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -26,10 +25,7 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -70,16 +66,9 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Экран «Перевод»: текст или аудио → перевод → озвучивание.
- *
- * @param showUpdateIcon доступ к глобальному диалогу обновления (issue #95):
- *        акцентная иконка в верхнем ряду при наличии нового релиза.
- * @param onUpdateClick открытие диалога обновления (состояние держит
- *        UpdateStateHost в MainScreen, экран только дёргает лямбду).
  */
 @Composable
 fun TranslateScreen(
-    showUpdateIcon: Boolean = false,
-    onUpdateClick: () -> Unit = {},
     viewModel: TranslateViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -120,72 +109,31 @@ fun TranslateScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Выбор языков + колокольчик уведомлений об обновлении (issue #95):
-        // чипы занимают вес строки и при широких названиях языков
-        // прокручиваются горизонтально, а колокольчик стандартного размера
-        // прижат к правому краю с минимальным отступом — не залезает на чипы.
+        // Выбор языков.
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .horizontalScroll(rememberScrollState()),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                LanguageChip(
-                    selected = state.sourceLang,
-                    onSelect = viewModel::onSourceLangChange,
-                    allowAuto = true
-                )
-                IconButton(
-                    onClick = viewModel::swapDirections,
-                    enabled = explicitSource
-                ) {
-                    Icon(
-                        Icons.Filled.SwapHoriz,
-                        contentDescription = stringResource(R.string.translate_swap_cd),
-                        tint = if (explicitSource) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                }
-                LanguageChip(
-                    selected = state.targetLang,
-                    onSelect = viewModel::onTargetLangChange
-                )
-            }
+            LanguageChip(
+                selected = state.sourceLang,
+                onSelect = viewModel::onSourceLangChange,
+                allowAuto = true
+            )
             IconButton(
-                onClick = onUpdateClick,
-                enabled = showUpdateIcon,
-                modifier = Modifier.padding(start = 4.dp)
+                onClick = viewModel::swapDirections,
+                enabled = explicitSource
             ) {
-                BadgedBox(
-                    badge = {
-                        if (showUpdateIcon) {
-                            // Цвет контейнера бейджа по умолчанию в M3 — error
-                            // (красная точка), как у системных значков уведомлений.
-                            Badge()
-                        }
+                Icon(
+                    Icons.Filled.SwapHoriz,
+                    contentDescription = stringResource(R.string.translate_swap_cd),
+                    tint = if (explicitSource) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
                     }
-                ) {
-                    Icon(
-                        Icons.Filled.Notifications,
-                        contentDescription = stringResource(
-                            if (showUpdateIcon) {
-                                R.string.update_icon_cd
-                            } else {
-                                R.string.update_icon_cd_idle
-                            }
-                        ),
-                        tint = if (showUpdateIcon) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                }
+                )
             }
+            LanguageChip(
+                selected = state.targetLang,
+                onSelect = viewModel::onTargetLangChange
+            )
         }
 
         // Поле ввода.

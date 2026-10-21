@@ -15,9 +15,6 @@ import androidx.compose.material3.Text
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
@@ -71,19 +68,16 @@ fun MainScreen() {
 
     // Глобальный хост самообновления (issue #95): состояние — синглтон
     // UpdateStateHost за Hilt-ViewModel; диалог живёт поверх NavHost на
-    // любом экране. Открытие по иконке «Доступно обновление» на «Переводе»
-    // (forced) показывает диалог и для suppressed-версии (showDialog=false).
+    // любом экране (показывается по showDialog из гейтов UpdateStateHost).
     val updateViewModel: UpdateHostViewModel = hiltViewModel()
     val updateState by updateViewModel.state.collectAsStateWithLifecycle()
-    var updateDialogForced by rememberSaveable { mutableStateOf(false) }
 
     val updateDialogVisible = when (val state = updateState) {
-        is UpdateUiState.Available -> state.showDialog || updateDialogForced
+        is UpdateUiState.Available -> state.showDialog
         is UpdateUiState.Downloading -> true
         is UpdateUiState.DownloadFailed -> true
         else -> false
     }
-    val showUpdateIcon = updateState is UpdateUiState.Available
 
     Scaffold(
         bottomBar = {
@@ -107,10 +101,7 @@ fun MainScreen() {
             modifier = Modifier.padding(padding)
         ) {
             composable(Screen.TRANSLATE.route) {
-                TranslateScreen(
-                    showUpdateIcon = showUpdateIcon,
-                    onUpdateClick = { updateDialogForced = true }
-                )
+                TranslateScreen()
             }
             composable(Screen.HISTORY.route) {
                 HistoryScreen(
@@ -131,7 +122,6 @@ fun MainScreen() {
         if (updateDialogVisible) {
             UpdateDialog(
                 uiState = updateState,
-                closeRequest = { updateDialogForced = false },
                 viewModel = updateViewModel
             )
         }

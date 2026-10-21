@@ -180,8 +180,6 @@
     <string name="update_downloading_text">अद्यावधिक डाउनलोड हुँदैछ… %1$d%%</string>
     <string name="update_failed_title">अद्यावधिक त्रुटि</string>
     <string name="update_download_failed">अद्यावधिक डाउनलोड गर्न सकिएन</string>
-    <string name="update_icon_cd">अद्यावधिक उपलब्ध छ</string>
-    <string name="update_icon_cd_idle">अद्यावधिक सूचनाहरू</string>
     <string name="update_settings_title">एप अद्यावधिक</string>
     <string name="update_current_version">हालको संस्करण: %1$s</string>
     <string name="update_auto_checks">स्वचालित रूपमा अद्यावधिक जाँच गर्नुहोस्</string>
