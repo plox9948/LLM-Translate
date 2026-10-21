@@ -16,8 +16,11 @@ All releases: https://github.com/plox9948/LLM-Translate/releases
 2. Open the downloaded file. If Android warns that the app comes from an
    "unknown source" — allow the installation (usually in the pop-up dialog, or
    in "Install unknown apps" settings for your browser).
-3. Later updates install over the existing version: just download the new APK
-   and install it — history, favorites and models are kept.
+3. Later updates can be installed by the app itself: it notices a newer version
+   and, with your permission, downloads and installs it (see the "Self-update of
+   the app" section). Manual updating still works the same way: download the new
+   APK and install it over the existing version — history, favorites and models
+   are kept.
 
 > ⚠ **If you are running an old version of the app (before v0.5.7)**, the new
 > one will not install over it — the release signing key changed. Do this
@@ -199,6 +202,42 @@ models) together with an estimated memory consumption.
     kept in memory: switching directions becomes faster, but it uses more
     memory;
   - "Unload" — only the current model stays in memory, saving memory.
+- "App update": shows the current app version, contains the "Check for updates
+  automatically" switch (on by default — the app looks for a newer version at
+  launch whenever the phone has internet) and a "Check for update" button for a
+  manual check (it works regardless of the switch and of dismissed prompts).
+  Details in the "Self-update of the app" section below.
+
+## Self-update of the app
+
+The app checks for new releases on GitHub on its own. The internet is used
+**only** for this check and for downloading the new version — translation and
+voice features stay completely offline.
+
+- With automatic checks enabled (in "Settings", on by default) and an internet
+  connection, the app silently looks for a newer version when it launches. If
+  you already have the latest version or there is no connection, you are not
+  bothered.
+- When a newer version is found, the "A new version is available" dialog
+  appears:
+  - **"Update now"** — the app downloads the new APK showing percent progress,
+    then opens the system installer: the update installs over the existing
+    version, and history, favorites, models and settings are kept;
+  - **"Remind me later"** — the dialog is hidden, and the app asks about this
+    update again a day later;
+  - **"Don't show again"** — the dialog no longer appears for this version
+    (the app will still tell you about an even newer one).
+- Even after you decline, "Settings" → "App update" keeps showing
+  "New version: …" with a "Download" button while the update is available: if
+  you change your mind, you can install it there without waiting for a prompt.
+- Downloading and installing start **only** when you press the button: the app
+  never downloads or installs anything on its own. If the download is
+  interrupted, the app says so ("Update error") and you can retry it.
+- The APK is signed with the same release key as the version you installed
+  (releases since v0.5.7), so the update installs over the top without
+  uninstalling. On the first self-update, Android may ask you to allow
+  installing apps from LLM Translate — allow it if you want the update
+  installed.
 
 ## Speech input and read aloud
 
