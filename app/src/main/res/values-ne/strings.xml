@@ -170,4 +170,23 @@
     <string name="favorites_search_clear_cd">खोजी खाली गर्नुहोस्</string>
     <string name="favorites_update_failed">मन परेका अद्यावधिक गर्न सकिएन</string>
     <string name="favorites_observe_failed">मन परेका लोड गर्न सकिएन</string>
+
+    <!-- Самообновление (issue #95): глобальный диалог + секция в настройках -->
+    <string name="update_available_title">नयाँ संस्करण उपलब्ध छ</string>
+    <string name="update_available_text">संस्करण %1$s उपलब्ध छ। अद्यावधिक डाउनलोड गरेर स्थापना गर्ने?</string>
+    <string name="update_action_now">अहिले अद्यावधिक गर्नुहोस्</string>
+    <string name="update_action_later">पछि सम्झाउनुहोस्</string>
+    <string name="update_action_never">अब नदेखाउनुहोस्</string>
+    <string name="update_downloading_text">अद्यावधिक डाउनलोड हुँदैछ… %1$d%%</string>
+    <string name="update_failed_title">अद्यावधिक त्रुटि</string>
+    <string name="update_download_failed">अद्यावधिक डाउनलोड गर्न सकिएन</string>
+    <string name="update_settings_title">एप अद्यावधिक</string>
+    <string name="update_current_version">हालको संस्करण: %1$s</string>
+    <string name="update_auto_checks">स्वचालित रूपमा अद्यावधिक जाँच गर्नुहोस्</string>
+    <string name="update_check_button">अद्यावधिक जाँच गर्नुहोस्</string>
+    <string name="update_checking">जाँच हुँदैछ…</string>
+    <string name="update_check_failed">अद्यावधिक जाँच गर्न सकिएन</string>
+    <string name="update_not_found">अद्यावधिक भेटिएन</string>
+    <string name="update_new_version">नयाँ संस्करण: %1$s</string>
+    <string name="update_downloaded">APK डाउनलोड भयो, इन्स्टलर खुल्दैछ…</string>
 </resources>

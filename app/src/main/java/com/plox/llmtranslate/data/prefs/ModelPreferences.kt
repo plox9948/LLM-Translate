@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.plox.llmtranslate.domain.model.ModelCategory
 import com.plox.llmtranslate.domain.model.TtsEngines
@@ -576,6 +577,56 @@ class ModelPreferences @Inject constructor(
         context.dataStore.edit { it[REMOTE_CATALOG_VERSION_KEY] = version }
     }
 
+    // --- Самообновление приложения (issue #95) ---
+
+    /**
+     * Включены ли автоматические проверки обновлений при запуске.
+     * По умолчанию true (пользователь может отключить в настройках).
+     */
+    val autoUpdateChecksEnabled: Flow<Boolean> =
+        flowWithRecovery(AUTO_UPDATE_CHECKS_NAME, true) {
+            context.dataStore.data.map { prefs ->
+                prefs[AUTO_UPDATE_CHECKS_KEY] ?: true
+            }
+        }
+
+    suspend fun setAutoUpdateChecksEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs -> prefs[AUTO_UPDATE_CHECKS_KEY] = enabled }
+    }
+
+    /**
+     * До какого момента отложено напоминание об обновлении
+     * («напомнить позже»), epoch millis; 0 — snooze неактивен.
+     */
+    val updateSnoozeUntil: Flow<Long> =
+        flowWithRecovery(UPDATE_SNOOZE_UNTIL_NAME, 0L) {
+            context.dataStore.data.map { prefs ->
+                prefs[UPDATE_SNOOZE_UNTIL_KEY] ?: 0L
+            }
+        }
+
+    suspend fun setUpdateSnoozeUntil(millis: Long) {
+        context.dataStore.edit { prefs -> prefs[UPDATE_SNOOZE_UNTIL_KEY] = millis }
+    }
+
+    /**
+     * Версия, для которой пользователь выбрал «больше не показывать»
+     * (пустая строка — не скрывается ничего; сравнение с версией
+     * доступного релиза выполняет вызывающий).
+     */
+    val updatePromptSuppressedVersion: Flow<String> =
+        flowWithRecovery(UPDATE_PROMPT_SUPPRESSED_VERSION_NAME, "") {
+            context.dataStore.data.map { prefs ->
+                prefs[UPDATE_PROMPT_SUPPRESSED_VERSION_KEY] ?: ""
+            }
+        }
+
+    suspend fun setUpdatePromptSuppressedVersion(version: String) {
+        context.dataStore.edit { prefs ->
+            prefs[UPDATE_PROMPT_SUPPRESSED_VERSION_KEY] = version
+        }
+    }
+
     companion object {
         /** Тайм-аут выгрузки рантаймов по умолчанию, минуты. */
         const val DEFAULT_UNLOAD_TIMEOUT_MINUTES = 5
@@ -650,5 +701,25 @@ class ModelPreferences @Inject constructor(
 
         /** Имя preference версии удалённого каталога для логов. */
         private const val REMOTE_CATALOG_VERSION_NAME = "remote_catalog_version"
+
+        /** Preference флага автопроверок обновлений (issue #95). */
+        private val AUTO_UPDATE_CHECKS_KEY = booleanPreferencesKey("auto_update_checks")
+
+        /** Имя ключа автопроверок для логов. */
+        private const val AUTO_UPDATE_CHECKS_NAME = "auto_update_checks"
+
+        /** Preference момента snooze напоминания об обновлении, epoch millis (issue #95). */
+        private val UPDATE_SNOOZE_UNTIL_KEY = longPreferencesKey("update_snooze_until")
+
+        /** Имя snooze-ключа для логов. */
+        private const val UPDATE_SNOOZE_UNTIL_NAME = "update_snooze_until"
+
+        /** Preference версии релиза, скрытой настройкой «больше не показывать» (issue #95). */
+        private val UPDATE_PROMPT_SUPPRESSED_VERSION_KEY =
+            stringPreferencesKey("update_prompt_suppressed_version")
+
+        /** Имя suppressed-ключа для логов. */
+        private const val UPDATE_PROMPT_SUPPRESSED_VERSION_NAME =
+            "update_prompt_suppressed_version"
     }
 }

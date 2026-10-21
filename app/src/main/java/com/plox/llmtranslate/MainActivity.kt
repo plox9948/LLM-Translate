@@ -1,5 +1,7 @@
 package com.plox.llmtranslate
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -10,20 +12,27 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.core.content.FileProvider
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.BackgroundUnloadScheduler
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.defaultUiLanguageForSystemLocale
+import com.plox.llmtranslate.domain.update.UpdateStateHost
+import com.plox.llmtranslate.domain.update.UpdateUiState
 import com.plox.llmtranslate.ui.MainScreen
 import com.plox.llmtranslate.ui.theme.OfflineTranslatorTheme
 import dagger.hilt.android.AndroidEntryPoint
+import java.io.File
 import java.util.Locale
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -78,6 +87,26 @@ class MainActivity : ComponentActivity() {
         private var observerRegistered = false
 
         /**
+         * Хост самообновления последней созданной активности (Hilt-синглтон
+         * процесса) и app-scope для автопроверки (issue #95). Обновляются в
+         * onCreate вместе с [releaseTarget].
+         */
+        @Volatile
+        private var updateHost: UpdateStateHost? = null
+
+        @Volatile
+        private var appScopeRef: CoroutineScope? = null
+
+        /**
+         * Authority FileProvider из манифеста: APK обновления из кэш-каталога
+         * `updates` отдаётся системному установщику через content-URI.
+         */
+        private const val FILE_PROVIDER_AUTHORITY = "com.plox.llmtranslate.fileprovider"
+
+        /** MIME APK для интента установки. */
+        private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
+
+        /**
          * Единственный на процесс observer разгрузки: регистрируется один раз
          * при первом создании активности и не снимается. Анонимный observer
          * в каждом onCreate() накапливал наблюдателей, удерживая уничтоженные
@@ -90,6 +119,15 @@ class MainActivity : ComponentActivity() {
         private val processReleaseObserver = object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 backgroundUnload?.cancel()
+                // Автопроверка обновлений при старте/возврате процесса в
+                // передний план (issue #95): гейты (настройка, сеть, snooze)
+                // внутри UpdateStateHost; app-scope — SupervisorJob+IO+handler,
+                // сбой проверки не роняет процесс.
+                val scope = appScopeRef
+                val host = updateHost
+                if (scope != null && host != null) {
+                    scope.launch { host.checkOnAppStart() }
+                }
             }
 
             override fun onStop(owner: LifecycleOwner) {
@@ -109,6 +147,20 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var preferences: ModelPreferences
+
+    @Inject
+    lateinit var updateStateHost: UpdateStateHost
+
+    /** App-scope из DomainModule (SupervisorJob + IO + handler). */
+    @Inject
+    lateinit var appScope: CoroutineScope
+
+    /**
+     * Файл APK, для которого установщик уже запущен этой активностью
+     * (issue #95): защита от повторного открытия установщика при
+     * repeatOnLifecycle/recreate после возврата из системного диалога.
+     */
+    private var installerLaunchedFor: File? = null
 
     /** Последний применённый язык: защита от повторного apply и цикла recreate. */
     private var appliedUiLanguage: String? = null
@@ -218,11 +270,56 @@ class MainActivity : ComponentActivity() {
         // на процесс (регистрируется один раз).
         releaseTarget = modelManager
         backgroundUnload = unloadScheduler
+        updateHost = updateStateHost
+        appScopeRef = appScope
         // Регистрация однократна на процесс: повторные onCreate после recreate()
         // (смена языка) не должны добавлять наблюдателя повторно.
         if (!observerRegistered) {
             observerRegistered = true
             ProcessLifecycleOwner.get().lifecycle.addObserver(processReleaseObserver)
+        }
+
+        // Скачанный APK обновления (issue #95): по переходу состояния в
+        // Downloaded открываем системный установщик через FileProvider.
+        // Флаг installerLaunchedFor защищает от повторного открытия тем же
+        // экземпляром активности; consumeFinished сбрасывает Downloaded в
+        // Idle, чтобы восстановленная после recreate() подписка не запускала
+        // установщик второй раз.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                updateStateHost.state.collect { state ->
+                    if (state is UpdateUiState.Downloaded &&
+                        installerLaunchedFor != state.file
+                    ) {
+                        installerLaunchedFor = state.file
+                        launchInstallerUpdate(state.file)
+                        updateStateHost.consumeFinished()
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Запустить системный установщик APK из кэш-каталога `updates`
+     * (issue #95): content-URI FileProvider + временный read-грант интенту.
+     * REQUEST_INSTALL_PACKAGES объявлена в манифесте; на Android 8+ пользователь
+     * подтверждает разрешение на установку из неизвестных источников.
+     */
+    private fun launchInstallerUpdate(file: File) {
+        try {
+            val uri = FileProvider.getUriForFile(this, FILE_PROVIDER_AUTHORITY, file)
+            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                setDataAndType(uri, APK_MIME_TYPE)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            Timber.e(e, "Самообновление: нет активности для установки APK")
+        } catch (e: IllegalArgumentException) {
+            // Файл вне путей FileProvider (сбой раскладки кэша) — не роняем активность.
+            Timber.e(e, "Самообновление: FileProvider не отдаёт %s", file.name)
         }
     }
 

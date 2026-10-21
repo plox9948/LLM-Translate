@@ -4,19 +4,25 @@ import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.ModelCard
+import com.plox.llmtranslate.domain.update.UpdateStateHost
+import com.plox.llmtranslate.domain.update.UpdateUiState
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.IOException
@@ -25,13 +31,16 @@ import java.io.IOException
  * Тесты guard-записей настроек в [SettingsViewModel] (ревью #83): сбой
  * коммита DataStore (IOException) не роняет процесс, а уходит в общий баннер
  * [SettingsViewModel.observeErrorRes]; успешная запись сбоя не показывает;
- * скрытие баннера снимает ошибку.
+ * скрытие баннера снимает ошибку. Плюс секция «Обновление» (issue #95):
+ * переключатель автопроверок пишется в DataStore, срез состояния
+ * [UpdateStateHost] попадает в [SettingsUiState.updateState].
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModelTest {
 
     private val preferences = mockk<ModelPreferences>(relaxed = true)
     private val modelManager = mockk<ModelManager>(relaxed = true)
+    private val updateStateHost = mockk<UpdateStateHost>(relaxed = true)
 
     @Before
     fun setup() {
@@ -44,6 +53,8 @@ class SettingsViewModelTest {
             flowOf(ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES)
         every { preferences.modelDirectionRetention } returns
             flowOf(ModelPreferences.RETENTION_KEEP)
+        every { preferences.autoUpdateChecksEnabled } returns flowOf(true)
+        every { updateStateHost.state } returns MutableStateFlow(UpdateUiState.Idle)
     }
 
     @After
@@ -53,7 +64,7 @@ class SettingsViewModelTest {
 
     @Test
     fun `successful settings writes report no error`() {
-        val vm = SettingsViewModel(preferences, modelManager)
+        val vm = SettingsViewModel(preferences, modelManager, updateStateHost)
 
         vm.onTtsEngineChange("rhvoice")
         vm.onUiLanguageChange("en")
@@ -68,7 +79,7 @@ class SettingsViewModelTest {
 
     @Test
     fun `failed setting write reported in banner instead of process crash`() {
-        val vm = SettingsViewModel(preferences, modelManager)
+        val vm = SettingsViewModel(preferences, modelManager, updateStateHost)
 
         coEvery { preferences.setTheme(any()) } throws IOException("journal full")
         vm.onThemeChange("dark")
@@ -92,7 +103,7 @@ class SettingsViewModelTest {
 
     @Test
     fun `non numeric unload timeout value falls back to default before write`() {
-        val vm = SettingsViewModel(preferences, modelManager)
+        val vm = SettingsViewModel(preferences, modelManager, updateStateHost)
 
         vm.onUnloadTimeoutChange("abc")
 
@@ -100,5 +111,40 @@ class SettingsViewModelTest {
             preferences.setUnloadTimeoutMinutes(ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES)
         }
         assertNull(vm.observeErrorRes.value)
+    }
+
+    @Test
+    fun `auto update check switch writes preference and reflects it in ui state`() = runTest {
+        val autoChecks = MutableStateFlow(true)
+        every { preferences.autoUpdateChecksEnabled } returns autoChecks
+        val vm = SettingsViewModel(preferences, modelManager, updateStateHost)
+
+        assertTrue(vm.uiState.value.autoUpdateChecksEnabled)
+        autoChecks.value = false
+        assertFalse(vm.uiState.value.autoUpdateChecksEnabled)
+
+        vm.onAutoUpdateChecksChange(false)
+        coVerify(exactly = 1) { preferences.setAutoUpdateChecksEnabled(false) }
+        assertNull(vm.observeErrorRes.value)
+
+        // Сбой записи — общий баннер, как у остальных настроек.
+        coEvery { preferences.setAutoUpdateChecksEnabled(any()) } throws IOException()
+        vm.onAutoUpdateChecksChange(true)
+        assertEquals(R.string.settings_write_failed, vm.observeErrorRes.value)
+    }
+
+    @Test
+    fun `manual update check delegates to host and mirrors state slice`() = runTest {
+        val hostState = MutableStateFlow<UpdateUiState>(UpdateUiState.Idle)
+        every { updateStateHost.state } returns hostState
+        val vm = SettingsViewModel(preferences, modelManager, updateStateHost)
+
+        assertEquals(UpdateUiState.Idle, vm.uiState.value.updateState)
+        vm.onCheckUpdateClick()
+        coVerify(exactly = 1) { updateStateHost.checkManually() }
+        assertNull(vm.observeErrorRes.value)
+
+        hostState.value = UpdateUiState.ManualUpToDate
+        assertEquals(UpdateUiState.ManualUpToDate, vm.uiState.value.updateState)
     }
 }

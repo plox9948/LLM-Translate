@@ -3,15 +3,20 @@ package com.plox.llmtranslate.ui.settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -27,6 +32,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.plox.llmtranslate.BuildConfig
 import com.plox.llmtranslate.R
 import com.plox.llmtranslate.data.prefs.ModelPreferences
 import com.plox.llmtranslate.domain.BackgroundUnloadScheduler
@@ -34,6 +40,10 @@ import com.plox.llmtranslate.domain.ModelManager
 import com.plox.llmtranslate.domain.model.ModelCard
 import com.plox.llmtranslate.domain.model.TtsEngines
 import com.plox.llmtranslate.domain.model.visibleTtsEngineIds
+import com.plox.llmtranslate.domain.update.ReleaseInfo
+import com.plox.llmtranslate.domain.update.UpdateStateHost
+import com.plox.llmtranslate.domain.update.UpdateUiState
+import com.plox.llmtranslate.domain.update.userMessage
 import com.plox.llmtranslate.ui.ErrorBanner
 import com.plox.llmtranslate.ui.ObserveErrorTracker
 import com.plox.llmtranslate.ui.launchGuarded
@@ -55,7 +65,11 @@ data class SettingsUiState(
     val uiLanguage: String = ModelPreferences.DEFAULT_UI_LANGUAGE,
     val theme: String = ModelPreferences.DEFAULT_THEME,
     val unloadTimeoutMinutes: Int = ModelPreferences.DEFAULT_UNLOAD_TIMEOUT_MINUTES,
-    val directionRetention: String = ModelPreferences.DEFAULT_MODEL_DIRECTION_RETENTION
+    val directionRetention: String = ModelPreferences.DEFAULT_MODEL_DIRECTION_RETENTION,
+    /** Автопроверки обновлений при старте (issue #95). */
+    val autoUpdateChecksEnabled: Boolean = true,
+    /** Срез состояния хоста обновления для секции «Обновление» (issue #95). */
+    val updateState: UpdateUiState = UpdateUiState.Idle
 )
 
 /**
@@ -64,7 +78,8 @@ data class SettingsUiState(
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val preferences: ModelPreferences,
-    modelManager: ModelManager
+    modelManager: ModelManager,
+    private val updateStateHost: UpdateStateHost
 ) : ViewModel() {
 
     internal companion object {
@@ -106,6 +121,14 @@ class SettingsViewModel @Inject constructor(
         }
         watch(preferences.modelDirectionRetention, "direction_retention") { state, retention ->
             state.copy(directionRetention = retention)
+        }
+        // Самообновление (issue #95): настройка автопроверок + срез состояния
+        // общего хоста UpdateStateHost для секции «Обновление».
+        watch(preferences.autoUpdateChecksEnabled, "auto_update_checks") { state, enabled ->
+            state.copy(autoUpdateChecksEnabled = enabled)
+        }
+        watch(updateStateHost.state, "update_state") { state, updateState ->
+            state.copy(updateState = updateState)
         }
     }
 
@@ -178,6 +201,43 @@ class SettingsViewModel @Inject constructor(
      */
     fun onDirectionRetentionChange(value: String) {
         writeSetting("direction_retention") { preferences.setModelDirectionRetention(value) }
+    }
+
+    /**
+     * Переключатель автопроверок обновлений (issue #95).
+     */
+    fun onAutoUpdateChecksChange(enabled: Boolean) {
+        writeSetting("auto_update_checks") { preferences.setAutoUpdateChecksEnabled(enabled) }
+    }
+
+    /**
+     * Ручная проверка обновления из секции «Обновление» (issue #95):
+     * результат транслирует в uiState.updateState сам UpdateStateHost
+     * (ManualUpToDate / ManualCheckFailed / Available с showDialog=true).
+     */
+    fun onCheckUpdateClick() {
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.update_check_failed,
+            errors = observeErrors,
+            logMessage = "Самообновление: сбой ручной проверки из настроек",
+            marker = "update_check"
+        ) {
+            updateStateHost.checkManually()
+        }
+    }
+
+    /** «Скачать» в секции «Обновление» — загрузка APK найденного релиза. */
+    fun onDownloadUpdateClick(release: ReleaseInfo) {
+        launchGuarded(
+            scope = viewModelScope,
+            messageRes = R.string.update_download_failed,
+            errors = observeErrors,
+            logMessage = "Самообновление: сбой скачивания APK из настроек",
+            marker = "update_download"
+        ) {
+            updateStateHost.startDownload(release)
+        }
     }
 }
 
@@ -310,6 +370,106 @@ fun SettingsScreen(
                     stringResource(R.string.settings_retention_keep_hint)
             )
         )
+
+        // Самообновление (issue #95): версия, автопроверки, ручная проверка
+        // и скачивание найденного релиза; транзиты состояния показывает
+        // срез UpdateStateHost (тот же хост, что у глобального диалога).
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    text = stringResource(R.string.update_settings_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = stringResource(R.string.update_current_version, BuildConfig.VERSION_NAME),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = stringResource(R.string.update_auto_checks),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = state.autoUpdateChecksEnabled,
+                        onCheckedChange = viewModel::onAutoUpdateChecksChange
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = viewModel::onCheckUpdateClick,
+                    enabled = state.updateState !is UpdateUiState.Checking &&
+                        state.updateState !is UpdateUiState.Downloading
+                ) {
+                    Text(
+                        stringResource(
+                            if (state.updateState is UpdateUiState.Checking) {
+                                R.string.update_checking
+                            } else {
+                                R.string.update_check_button
+                            }
+                        )
+                    )
+                }
+                when (val updateState = state.updateState) {
+                    is UpdateUiState.Available -> Column {
+                        Text(
+                            text = stringResource(R.string.update_new_version, updateState.release.version),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Button(onClick = { viewModel.onDownloadUpdateClick(updateState.release) }) {
+                            Text(stringResource(R.string.download))
+                        }
+                    }
+
+                    UpdateUiState.ManualUpToDate -> Text(
+                        text = stringResource(R.string.update_not_found),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    is UpdateUiState.ManualCheckFailed -> Text(
+                        // Готовый user-facing текст домена (pattern userMessage).
+                        text = updateState.reason.userMessage(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+
+                    is UpdateUiState.Downloading -> Column {
+                        Text(
+                            text = stringResource(R.string.update_downloading_text, updateState.progress),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        LinearProgressIndicator(
+                            progress = { updateState.progress / 100f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    is UpdateUiState.Downloaded -> Text(
+                        text = stringResource(R.string.update_downloaded),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    is UpdateUiState.DownloadFailed -> Text(
+                        text = updateState.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+
+                    else -> Unit
+                }
+            }
+        }
     }
 }
 
