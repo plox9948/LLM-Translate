@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -119,14 +121,42 @@ fun TranslateScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Колокольчик уведомлений об обновлении (issue #95) — правый верхний
-        // угол экрана; бейдж-точка горит, когда доступна новая версия
-        // (по аналогии со значками уведомлений приложений).
-        Row(modifier = Modifier.fillMaxWidth()) {
+        // Выбор языков + колокольчик уведомлений об обновлении (issue #95):
+        // компактный IconButton 40dp в конце строки и визуально выше чипов
+        // (align Top + отрицательный offset — не добавляет высоты строке);
+        // бейдж-точка горит, когда доступна новая версия.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            LanguageChip(
+                selected = state.sourceLang,
+                onSelect = viewModel::onSourceLangChange,
+                allowAuto = true
+            )
+            IconButton(
+                onClick = viewModel::swapDirections,
+                enabled = explicitSource
+            ) {
+                Icon(
+                    Icons.Filled.SwapHoriz,
+                    contentDescription = stringResource(R.string.translate_swap_cd),
+                    tint = if (explicitSource) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
+            LanguageChip(
+                selected = state.targetLang,
+                onSelect = viewModel::onTargetLangChange
+            )
             Spacer(modifier = Modifier.weight(1f))
             IconButton(
                 onClick = onUpdateClick,
-                enabled = showUpdateIcon
+                enabled = showUpdateIcon,
+                modifier = Modifier
+                    .size(40.dp)
+                    .align(Alignment.Top)
+                    .offset(y = (-10).dp)
             ) {
                 BadgedBox(
                     badge = {
@@ -154,33 +184,6 @@ fun TranslateScreen(
                     )
                 }
             }
-        }
-
-        // Выбор языков.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            LanguageChip(
-                selected = state.sourceLang,
-                onSelect = viewModel::onSourceLangChange,
-                allowAuto = true
-            )
-            IconButton(
-                onClick = viewModel::swapDirections,
-                enabled = explicitSource
-            ) {
-                Icon(
-                    Icons.Filled.SwapHoriz,
-                    contentDescription = stringResource(R.string.translate_swap_cd),
-                    tint = if (explicitSource) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-            }
-            LanguageChip(
-                selected = state.targetLang,
-                onSelect = viewModel::onTargetLangChange
-            )
         }
 
         // Поле ввода.
