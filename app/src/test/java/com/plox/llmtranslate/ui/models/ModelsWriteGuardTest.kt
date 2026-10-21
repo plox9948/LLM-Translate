@@ -204,7 +204,13 @@ class ModelsWriteGuardTest {
         val vm = newViewModel()
 
         vm.onDownloadClick(sttCard("card-blocked"))
-        awaitUntil { vm.blockedReason.value != null }
+        // В VM порядке Blocked-ветки сначала публикуется blockedReason, затем
+        // снимается pending (смежные операции на потоке resume из IO) — ждём
+        // обе транзиции, иначе assert ловит промежуточное состояние (flaky).
+        awaitUntil {
+            vm.blockedReason.value != null &&
+                "card-blocked" !in vm.uiState.value.pendingDownloadIds
+        }
 
         assertEquals("NOT_ENOUGH_SPACE", vm.blockedReason.value)
         assertFalse("card-blocked" in vm.uiState.value.pendingDownloadIds)
