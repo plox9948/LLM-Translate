@@ -172,6 +172,7 @@
     <string name="update_failed_title">Ошибка обновления</string>
     <string name="update_download_failed">Не удалось скачать обновление</string>
     <string name="update_icon_cd">Доступно обновление</string>
+    <string name="update_icon_cd_idle">Уведомления об обновлениях</string>
     <string name="update_settings_title">Обновление приложения</string>
     <string name="update_current_version">Текущая версия: %1$s</string>
     <string name="update_auto_checks">Проверять обновления автоматически</string>

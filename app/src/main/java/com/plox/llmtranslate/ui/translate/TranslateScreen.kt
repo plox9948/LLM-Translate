@@ -25,8 +25,10 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -117,6 +119,43 @@ fun TranslateScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Колокольчик уведомлений об обновлении (issue #95) — правый верхний
+        // угол экрана; бейдж-точка горит, когда доступна новая версия
+        // (по аналогии со значками уведомлений приложений).
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Spacer(modifier = Modifier.weight(1f))
+            IconButton(
+                onClick = onUpdateClick,
+                enabled = showUpdateIcon
+            ) {
+                BadgedBox(
+                    badge = {
+                        if (showUpdateIcon) {
+                            // Цвет контейнера бейджа по умолчанию в M3 — error
+                            // (красная точка), как у системных значков уведомлений.
+                            Badge()
+                        }
+                    }
+                ) {
+                    Icon(
+                        Icons.Filled.Notifications,
+                        contentDescription = stringResource(
+                            if (showUpdateIcon) {
+                                R.string.update_icon_cd
+                            } else {
+                                R.string.update_icon_cd_idle
+                            }
+                        ),
+                        tint = if (showUpdateIcon) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+            }
+        }
+
         // Выбор языков.
         Row(verticalAlignment = Alignment.CenterVertically) {
             LanguageChip(
@@ -142,19 +181,6 @@ fun TranslateScreen(
                 selected = state.targetLang,
                 onSelect = viewModel::onTargetLangChange
             )
-            // Иконка доступного обновления (issue #95): акцентная, открывает
-            // глобальный диалог UpdateStateHost; раскладку чипов не меняет —
-            // разделитель только доживает до правого края.
-            if (showUpdateIcon) {
-                Spacer(modifier = Modifier.weight(1f))
-                IconButton(onClick = onUpdateClick) {
-                    Icon(
-                        Icons.Filled.SystemUpdate,
-                        contentDescription = stringResource(R.string.update_icon_cd),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
         }
 
         // Поле ввода.
