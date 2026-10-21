@@ -308,8 +308,10 @@ same time (via English).
 
 **Nepali translation sometimes "thinks" longer than usual.**
 If the model is unsure about a short text or falls into a repetition, the app
-automatically makes one second translation pass; very long texts are translated
-in parts (paragraphs are preserved). This is normal and needs no action from
+suppresses the repetition at generation level and, when needed, runs an
+alternative translation pass; very long texts are translated in parts — each
+sentence as its own chunk, paragraphs preserved. Deliberate repeats in your
+own text are kept in the translation. This is normal and needs no action from
 you.
 
 **Why did "3 hours later" come back as "after 3 hours"?**
