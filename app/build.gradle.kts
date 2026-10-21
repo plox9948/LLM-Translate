@@ -50,8 +50,8 @@ android {
         applicationId = "com.plox.llmtranslate"
         minSdk = 26
         targetSdk = 34
-        versionCode = 26
-        versionName = "0.5.20"
+        versionCode = 27
+        versionName = "0.5.21"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
