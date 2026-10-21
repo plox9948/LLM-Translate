@@ -10,10 +10,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Unit-тесты чистой функции [translationCardState] (issue #96): чипы
- * направления на TRANSLATION-карточках (направление карточки и обратное)
- * и подсветка активных чипов по фактическому подбору рантайма —
- * автоподбор по направлению и явные назначения «направление → модель».
+ * Unit-тесты чистой функции [translationCardState] (issue #96): чип
+ * собственного направления на TRANSLATION-карточках (модели односторонние,
+ * обратного чипа нет) и подсветка активного чипа по фактическому подбору
+ * рантайма — автоподбор по направлению и явные назначения
+ * «направление → модель».
  */
 class ModelsTranslationCardStateTest {
 
@@ -71,9 +72,11 @@ class ModelsTranslationCardStateTest {
     private val ruEnModel = installed("slimt-ru-en", "Firefox Translations (RU→EN)", listOf("ru", "en"))
     private val enRuModel = installed("slimt-en-ru", "Firefox Translations (EN→RU)", listOf("ru", "en"))
     private val readyModels = listOf(ruEnModel, enRuModel)
+    private val ruEnAltCard = card("slimt-ru-en-alt", "Firefox Translations (RU→EN) Alt", listOf("ru", "en"))
+    private val ruEnAltModel = installed("slimt-ru-en-alt", "Firefox Translations (RU→EN) Alt", listOf("ru", "en"))
 
     @Test
-    fun `translation card exposes its direction and the reverse as chips`() {
+    fun `translation card exposes only its own direction as chip`() {
         val state = translationCardState(
             card = ruEnCard,
             installedReady = true,
@@ -81,15 +84,14 @@ class ModelsTranslationCardStateTest {
             assignments = emptyMap()
         )
         assertEquals(
-            listOf("ru" to "en", "en" to "ru"),
+            listOf("ru" to "en"),
             state.chips
         )
     }
 
     @Test
     fun `auto-selected card has its own direction chip active`() {
-        // Без назначений RU→EN обслуживает эта модель — её чип RU→EN активен;
-        // обратный чип EN→RU принадлежит автоподбору en→ru модели.
+        // Без назначений RU→EN обслуживает эта модель — её чип RU→EN активен.
         val state = translationCardState(
             card = ruEnCard,
             installedReady = true,
@@ -100,26 +102,22 @@ class ModelsTranslationCardStateTest {
     }
 
     @Test
-    fun `explicit assignment activates the chip on the assigned card`() {
-        // Явное назначение EN→RU этой модели перекрывает автоподбор —
-        // чип EN→RU становится активен на её карточке.
+    fun `assignment to another direction does not affect the own chip`() {
+        // Явное назначение EN→RU этой модели не относится к её чипу RU→EN:
+        // чип собственного направления остаётся активен по автоподбору.
         val state = translationCardState(
             card = ruEnCard,
             installedReady = true,
             readyTranslationModels = readyModels,
             assignments = mapOf("en>ru" to "slimt-ru-en")
         )
-        assertEquals(
-            setOf("ru" to "en", "en" to "ru"),
-            state.activeDirections
-        )
+        assertEquals(setOf("ru" to "en"), state.activeDirections)
     }
 
     @Test
     fun `assignment to another model removes the chip highlight`() {
         // Назначение RU→EN другой модели снимает подсветку с автокарточки:
-        // эффективная цепочка RU→EN больше не проходит через эту модель,
-        // а EN→RU обслуживает её собственная авто-модель (не этот пучок).
+        // эффективная цепочка RU→EN больше не проходит через эту модель.
         val state = translationCardState(
             card = ruEnCard,
             installedReady = true,
@@ -127,6 +125,43 @@ class ModelsTranslationCardStateTest {
             assignments = mapOf("ru>en" to "slimt-en-ru")
         )
         assertTrue(state.activeDirections.isEmpty())
+    }
+
+    @Test
+    fun `second card for the same direction wins only when explicitly assigned`() {
+        // Две карты одного направления RU→EN: автоподбор выбирает первую,
+        // её чип активен, у второй — нет.
+        val readyWithAlt = listOf(ruEnModel, ruEnAltModel)
+        val auto = translationCardState(
+            card = ruEnCard,
+            installedReady = true,
+            readyTranslationModels = readyWithAlt,
+            assignments = emptyMap()
+        )
+        assertEquals(setOf("ru" to "en"), auto.activeDirections)
+        val autoAlt = translationCardState(
+            card = ruEnAltCard,
+            installedReady = true,
+            readyTranslationModels = readyWithAlt,
+            assignments = emptyMap()
+        )
+        assertTrue(autoAlt.activeDirections.isEmpty())
+        // Явное назначение второй модели переносит подсветку на её чип,
+        // чип первой становится неактивен (эффективная цепочка — назначение).
+        val assigned = translationCardState(
+            card = ruEnAltCard,
+            installedReady = true,
+            readyTranslationModels = readyWithAlt,
+            assignments = mapOf("ru>en" to "slimt-ru-en-alt")
+        )
+        assertEquals(setOf("ru" to "en"), assigned.activeDirections)
+        val demoted = translationCardState(
+            card = ruEnCard,
+            installedReady = true,
+            readyTranslationModels = readyWithAlt,
+            assignments = mapOf("ru>en" to "slimt-ru-en-alt")
+        )
+        assertTrue(demoted.activeDirections.isEmpty())
     }
 
     @Test

@@ -396,10 +396,10 @@ fun ModelsScreen(
                     readySttModels = installed.filter { it.isReady }
                 )
                 // Чипы «Направление перевода» на TRANSLATION-карточках (issue #96):
-                // направление карточки и обратное; подсветка — по фактическому
-                // выбору рантайма (назначение направления → автоподбор), тап
-                // назначает/снимает явное назначение. Вся логика — в чистой
-                // функции [translationCardState].
+                // только собственное направление карточки (модели односторонние);
+                // подсветка — по фактическому выбору рантайма (назначение
+                // направления → автоподбор), тап назначает/снимает явное
+                // назначение. Вся логика — в чистой функции [translationCardState].
                 val translation = translationCardState(
                     card = card,
                     installedReady = installedModel?.isReady == true,
@@ -1228,19 +1228,20 @@ internal fun ttsCardState(
  * Состояние чипов направления на TRANSLATION-карточке (issue #96).
  * Чистая логика — вынесена из цикла карточек для тестируемости.
  *
- * Чипы ([chips]): направление карточки, выводимое
- * [TranslationModelSelector.directionOf], и обратное — только для
+ * Чипы ([chips]): только собственное направление карточки, выводимое
+ * [TranslationModelSelector.directionOf] — модели перевода односторонние,
+ * обратного чипа нет (правка issue #96). Чип появляется только у
  * установленных ГОТОВЫХ карточек категории TRANSLATION, у которых
  * languages — ровно пара языков этого направления (как в каталоге).
  * У неготовой карточки чипов нет (как у STT), у карточек других категорий
  * и карточек без определённого направления — тоже нет.
  *
- * Подсветка ([activeDirections]): чип направления активен, если
- * фактически подбор рантайма [TranslationModelSelector.selectChain] для
- * этого направления (с учётом явных назначений [assignments]) использует
- * эту модель — т.е. либо направление явно назначено этой модели
- * (переназначение перекрывает автоподбор, в т.ч. обратным направлением),
- * либо без назначения автоцепочка направления проходит через эту модель.
+ * Подсветка ([activeDirections]): чип собственного направления активен,
+ * если фактически подбор рантайма [TranslationModelSelector.selectChain]
+ * для этого направления (с учётом явных назначений [assignments])
+ * использует эту модель — т.е. либо направление явно назначено этой модели
+ * (переназначение перекрывает автоподбор), либо без назначения автоцепочка
+ * направления проходит через эту модель.
  *
  * @param card карточка каталога (или синтетическая карточка импортированной модели).
  * @param installedReady установлена ли модель карточки и готова.
@@ -1270,7 +1271,7 @@ internal fun translationCardState(
     ) {
         return TranslationCardState(emptyList(), emptySet())
     }
-    val chips = listOf(direction, direction.second to direction.first)
+    val chips = listOf(direction)
     val active = chips.filter { (source, target) ->
         TranslationModelSelector.selectChain(readyTranslationModels, source, target, assignments)
             ?.any { it.id == card.id } == true
