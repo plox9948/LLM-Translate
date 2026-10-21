@@ -9,8 +9,9 @@ import java.io.File
 
 /**
  * Тесты плана чанков для движков с ограничением позиций энкодера (issue #63).
- * [tokenCount] — фейковый счётчик «число слов × 2» — проверка упаковки,
- * а не реальной токенизации.
+ * [tokenCount] — фейковый счётчик «число слов × 2» — проверка
+ * предложеничнанкинга (1 предложение = 1 чанк) и дорезки сверхбюджетных
+ * сегментов, а не реальной токенизации.
  */
 class ChunkPlannerTest {
 
@@ -19,19 +20,21 @@ class ChunkPlannerTest {
         text.split(Regex("\\s+")).filter { it.isNotBlank() }.size * 2
 
     @Test
-    fun `packs consecutive segments into one chunk within budget`() {
+    fun `every sentence becomes its own chunk within budget`() {
+        // Многосоставный вход в пределах бюджета: N предложений = N чанков,
+        // разделители — границы исходника.
         val plan = planChunks("Hello there. Fine thanks. Ok.", ::wordTokens, budget = 100)
-        assertEquals(listOf("Hello there. Fine thanks. Ok."), plan.chunks)
-        assertTrue(plan.separators.isEmpty())
+        assertEquals(listOf("Hello there.", "Fine thanks.", "Ok."), plan.chunks)
+        assertEquals(listOf(" ", " "), plan.separators)
     }
 
     @Test
-    fun `overbudget packing closes chunk on segment boundary`() {
-        // Бюджет 6 токенов = 3 слова: «Hello there.» (2 слова) + «Fine thanks.»
-        // (2 слова) = 4 слова = 8 > 6 → разрыв на границе предложений.
+    fun `sentences are not merged even when joined they fit budget`() {
+        // Бюджет 6 токенов = 3 слова: соседние по 2 слова поместились бы
+        // склеенными, но упаковка удалена — каждый сегмент отдельный чанк.
         val plan = planChunks("Hello there. Fine thanks. Ok.", ::wordTokens, budget = 6)
-        assertEquals(listOf("Hello there.", "Fine thanks. Ok."), plan.chunks)
-        assertEquals(listOf(" "), plan.separators)
+        assertEquals(listOf("Hello there.", "Fine thanks.", "Ok."), plan.chunks)
+        assertEquals(listOf(" ", " "), plan.separators)
     }
 
     @Test
@@ -87,11 +90,12 @@ class ChunkPlannerTest {
     }
 
     @Test
-    fun `budget exactly equal to joined size keeps single chunk`() {
-        // 4 слова × 2 = ровно 8.
+    fun `budget exactly equal to joined size still splits per sentence`() {
+        // 4 слова × 2 = ровно 8: склеенный вход влезал бы в бюджет, но
+        // упаковка удалена — каждое предложение отдельный чанк.
         val plan = planChunks("aa bb. cc dd.", ::wordTokens, budget = 8)
-        assertEquals(listOf("aa bb. cc dd."), plan.chunks)
-        assertTrue(plan.separators.isEmpty())
+        assertEquals(listOf("aa bb.", "cc dd."), plan.chunks)
+        assertEquals(listOf(" "), plan.separators)
     }
 
     @Test
@@ -126,8 +130,8 @@ class ChunkPlannerTest {
 
     @Test
     fun `length-based counter keeps every chunk within budget over many segments`() {
-        // Аддитивный счётчик (длина строки) — проверка точности границ
-        // при упаковке многих сегментов в один чанк.
+        // Аддитивный счётчик (длина строки) — проверка точности границ:
+        // каждый сегмент остаётся отдельным чанком в пределах бюджета.
         val segments = (1..40).map { "line $it has words." }
         val text = segments.joinToString("\n")
         val plan = planChunks(text, { it.length }, budget = 60)
@@ -141,7 +145,7 @@ class ChunkPlannerTest {
             }
         }
         assertEquals(text, reconstructed)
-        assertTrue("ожидались многосегментные чанки", plan.chunks.size < segments.size)
+        assertEquals("каждое предложение — отдельный чанк", segments.size, plan.chunks.size)
     }
 
     @Test
