@@ -4,6 +4,7 @@ import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,9 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -122,41 +121,44 @@ fun TranslateScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // Выбор языков + колокольчик уведомлений об обновлении (issue #95):
-        // компактный IconButton 40dp в конце строки и визуально выше чипов
-        // (align Top + отрицательный offset — не добавляет высоты строке);
-        // бейдж-точка горит, когда доступна новая версия.
+        // чипы занимают вес строки и при широких названиях языков
+        // прокручиваются горизонтально, а колокольчик стандартного размера
+        // прижат к правому краю с минимальным отступом — не залезает на чипы.
         Row(verticalAlignment = Alignment.CenterVertically) {
-            LanguageChip(
-                selected = state.sourceLang,
-                onSelect = viewModel::onSourceLangChange,
-                allowAuto = true
-            )
-            IconButton(
-                onClick = viewModel::swapDirections,
-                enabled = explicitSource
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Filled.SwapHoriz,
-                    contentDescription = stringResource(R.string.translate_swap_cd),
-                    tint = if (explicitSource) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
+                LanguageChip(
+                    selected = state.sourceLang,
+                    onSelect = viewModel::onSourceLangChange,
+                    allowAuto = true
+                )
+                IconButton(
+                    onClick = viewModel::swapDirections,
+                    enabled = explicitSource
+                ) {
+                    Icon(
+                        Icons.Filled.SwapHoriz,
+                        contentDescription = stringResource(R.string.translate_swap_cd),
+                        tint = if (explicitSource) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                LanguageChip(
+                    selected = state.targetLang,
+                    onSelect = viewModel::onTargetLangChange
                 )
             }
-            LanguageChip(
-                selected = state.targetLang,
-                onSelect = viewModel::onTargetLangChange
-            )
-            Spacer(modifier = Modifier.weight(1f))
             IconButton(
                 onClick = onUpdateClick,
                 enabled = showUpdateIcon,
-                modifier = Modifier
-                    .size(40.dp)
-                    .align(Alignment.Top)
-                    .offset(y = (-10).dp)
+                modifier = Modifier.padding(start = 4.dp)
             ) {
                 BadgedBox(
                     badge = {
