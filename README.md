@@ -602,7 +602,7 @@ sherpa — по таймауту фонового простоя. Таймаут
 `getExternalFilesDir("models")/<RUNTIME>/<id>/` (забрать через adb из `models/`;
 см. также примечания к таблице RAM).
 
-С main после v0.5.18 (issue #90) добавлен on-device eval-харнесc `GoldRuNeEvalTest`:
+С v0.5.19 (issue #90) добавлен on-device eval-харнесc `GoldRuNeEvalTest`:
 прогон RU⇄NE по корпусу `Gold_NE.csv` через цепочку slimt+IndicTrans с оценкой
 round-trip chrF; markdown-отчёт пишется в external files `files/eval/`, замеры
 прогонов фиксируются в каталоге `eval/` репозитория. Это eval-измерение, а не
