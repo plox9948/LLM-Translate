@@ -125,13 +125,24 @@ class GoldenCorpusNeTest {
      * Вывод не должен нести следов вырождения декодера: пустой вывод, повтор,
      * не схлопнутый триммером (issue #28/#30), или длина за пределом разумной —
      * признаки 128-токенного цикла декодера.
+     *
+     * [sourceText] — исход фрагмента, породившего этот вывод: легитимные
+     * повторы блоков входа (абзац, намеренно собранный из одинаковых
+     * предложений при чанкинге «1 предложение = 1 чанк», issue #91)
+     * сохраняются триммером до множественности входа; циклы декодера сверх
+     * этого разрешения по-прежнему схлопываются.
      */
-    private fun assertNoDegeneration(text: String, maxLen: Int = MAX_CORPUS_OUTPUT_LEN) {
+    private fun assertNoDegeneration(
+        text: String,
+        maxLen: Int = MAX_CORPUS_OUTPUT_LEN,
+        sourceText: String? = null,
+    ) {
         assertTrue("Пустой перевод", text.isNotBlank())
+        val allowedRepeats = sourceText?.let { RepetitionTrimmer.maxSourceRepeats(it) } ?: 1
         assertEquals(
             "Остался повтор в выводе: «$text»",
             text,
-            RepetitionTrimmer.trim(text),
+            RepetitionTrimmer.trim(text, allowedRepeats),
         )
         assertTrue(
             "Вывод длиннее $maxLen символов (признак цикла декодера): «$text»",
@@ -155,7 +166,7 @@ class GoldenCorpusNeTest {
         assertTrue("${pair.id}: ошибка перевода: ${result.exceptionOrNull()}", result.isSuccess)
         val output = result.getOrThrow()
 
-        assertNoDegeneration(output)
+        assertNoDegeneration(output, sourceText = pair.src)
         // Детокенизация уже применена рантаймом — постобработка идемпотентна
         // («пунктуация приклеена»: повторный пропуск через postprocess не меняется).
         assertEquals(
@@ -284,7 +295,7 @@ class GoldenCorpusNeTest {
         val result = runBlocking { engine.translate(paragraph, "ne", "en") }
         assertTrue("Длинный ne-абзац не переведён: ${result.exceptionOrNull()}", result.isSuccess)
         val out = result.getOrThrow()
-        assertNoDegeneration(out, 4000)
+        assertNoDegeneration(out, 4000, sourceText = paragraph)
         assertTrue("Длинный абзац дал пустой вывод", out.isNotBlank())
         runBlocking { engine.release() }
     }
@@ -345,7 +356,7 @@ class GoldenCorpusNeTest {
             assertTrue("CHAIN «$input»: ошибка EN→NE: ${result.exceptionOrNull()}", result.isSuccess)
             val ne = result.getOrThrow()
             println("CHAIN «$input» → NE: «$ne»")
-            assertNoDegeneration(ne, MAX_CHAIN_OUTPUT_LEN)
+            assertNoDegeneration(ne, MAX_CHAIN_OUTPUT_LEN, sourceText = mid)
             assertTrue(
                 "CHAIN «$input»: в NE-выводе нет ни одного маркера «озеро» " +
                     "($lakeTokens): «$ne»",
