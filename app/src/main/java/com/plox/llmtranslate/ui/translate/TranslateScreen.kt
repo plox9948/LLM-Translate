@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -66,9 +67,16 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Экран «Перевод»: текст или аудио → перевод → озвучивание.
+ *
+ * @param showUpdateIcon доступ к глобальному диалогу обновления (issue #95):
+ *        акцентная иконка в верхнем ряду при наличии нового релиза.
+ * @param onUpdateClick открытие диалога обновления (состояние держит
+ *        UpdateStateHost в MainScreen, экран только дёргает лямбду).
  */
 @Composable
 fun TranslateScreen(
+    showUpdateIcon: Boolean = false,
+    onUpdateClick: () -> Unit = {},
     viewModel: TranslateViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -134,6 +142,19 @@ fun TranslateScreen(
                 selected = state.targetLang,
                 onSelect = viewModel::onTargetLangChange
             )
+            // Иконка доступного обновления (issue #95): акцентная, открывает
+            // глобальный диалог UpdateStateHost; раскладку чипов не меняет —
+            // разделитель только доживает до правого края.
+            if (showUpdateIcon) {
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(onClick = onUpdateClick) {
+                    Icon(
+                        Icons.Filled.SystemUpdate,
+                        contentDescription = stringResource(R.string.update_icon_cd),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
         }
 
         // Поле ввода.

@@ -162,6 +162,26 @@
     <string name="settings_retention_keep_hint">Удерживает модели перевода и распознавания речи: ускоряет смену направления, но требует больше памяти</string>
     <string name="settings_retention_unload">Выгружать</string>
 
+    <!-- Самообновление (issue #95): глобальный диалог + секция в настройках -->
+    <string name="update_available_title">Доступна новая версия</string>
+    <string name="update_available_text">Доступна версия %1$s. Скачать и установить обновление?</string>
+    <string name="update_action_now">Обновить сейчас</string>
+    <string name="update_action_later">Напомнить позже</string>
+    <string name="update_action_never">Больше не показывать</string>
+    <string name="update_downloading_text">Скачивание обновления… %1$d%%</string>
+    <string name="update_failed_title">Ошибка обновления</string>
+    <string name="update_download_failed">Не удалось скачать обновление</string>
+    <string name="update_icon_cd">Доступно обновление</string>
+    <string name="update_settings_title">Обновление приложения</string>
+    <string name="update_current_version">Текущая версия: %1$s</string>
+    <string name="update_auto_checks">Проверять обновления автоматически</string>
+    <string name="update_check_button">Проверить обновление</string>
+    <string name="update_checking">Проверка…</string>
+    <string name="update_check_failed">Не удалось проверить обновление</string>
+    <string name="update_not_found">Обновление не найдено</string>
+    <string name="update_new_version">Новая версия: %1$s</string>
+    <string name="update_downloaded">APK скачан, открывается установщик…</string>
+
     <!-- Вкладка «Избранное» -->
     <string name="nav_favorites">Избранное</string>
     <string name="favorites_empty">Избранное пусто</string>

@@ -15,9 +15,14 @@ import androidx.compose.material3.Text
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavOptionsBuilder
 import androidx.navigation.compose.NavHost
@@ -25,11 +30,14 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.plox.llmtranslate.R
+import com.plox.llmtranslate.domain.update.UpdateUiState
 import com.plox.llmtranslate.ui.favorites.FavoritesScreen
 import com.plox.llmtranslate.ui.history.HistoryScreen
 import com.plox.llmtranslate.ui.models.ModelsScreen
 import com.plox.llmtranslate.ui.settings.SettingsScreen
 import com.plox.llmtranslate.ui.translate.TranslateScreen
+import com.plox.llmtranslate.ui.update.UpdateDialog
+import com.plox.llmtranslate.ui.update.UpdateHostViewModel
 
 /**
  * Экраны приложения.
@@ -61,6 +69,22 @@ fun MainScreen() {
 
     fun navigateTab(route: String) = navController.navigate(route) { tabMode() }
 
+    // Глобальный хост самообновления (issue #95): состояние — синглтон
+    // UpdateStateHost за Hilt-ViewModel; диалог живёт поверх NavHost на
+    // любом экране. Открытие по иконке «Доступно обновление» на «Переводе»
+    // (forced) показывает диалог и для suppressed-версии (showDialog=false).
+    val updateViewModel: UpdateHostViewModel = hiltViewModel()
+    val updateState by updateViewModel.state.collectAsStateWithLifecycle()
+    var updateDialogForced by rememberSaveable { mutableStateOf(false) }
+
+    val updateDialogVisible = when (val state = updateState) {
+        is UpdateUiState.Available -> state.showDialog || updateDialogForced
+        is UpdateUiState.Downloading -> true
+        is UpdateUiState.DownloadFailed -> true
+        else -> false
+    }
+    val showUpdateIcon = updateState is UpdateUiState.Available
+
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -82,7 +106,12 @@ fun MainScreen() {
             startDestination = Screen.TRANSLATE.route,
             modifier = Modifier.padding(padding)
         ) {
-            composable(Screen.TRANSLATE.route) { TranslateScreen() }
+            composable(Screen.TRANSLATE.route) {
+                TranslateScreen(
+                    showUpdateIcon = showUpdateIcon,
+                    onUpdateClick = { updateDialogForced = true }
+                )
+            }
             composable(Screen.HISTORY.route) {
                 HistoryScreen(
                     onUseEntry = { navigateTab(Screen.TRANSLATE.route) }
@@ -96,5 +125,16 @@ fun MainScreen() {
             composable(Screen.MODELS.route) { ModelsScreen() }
             composable(Screen.SETTINGS.route) { SettingsScreen() }
         }
+
+        // Диалог обновления поверх NavHost на любой вкладке (issue #95);
+        // Downloaded не показывается — установщик запускает MainActivity.
+        if (updateDialogVisible) {
+            UpdateDialog(
+                uiState = updateState,
+                closeRequest = { updateDialogForced = false },
+                viewModel = updateViewModel
+            )
+        }
     }
 }
+

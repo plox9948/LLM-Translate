@@ -170,4 +170,24 @@
     <string name="favorites_search_clear_cd">Clear search</string>
     <string name="favorites_update_failed">Failed to update favorites</string>
     <string name="favorites_observe_failed">Failed to load favorites</string>
+
+    <!-- Самообновление (issue #95): глобальный диалог + секция в настройках -->
+    <string name="update_available_title">A new version is available</string>
+    <string name="update_available_text">Version %1$s is available. Download and install the update?</string>
+    <string name="update_action_now">Update now</string>
+    <string name="update_action_later">Remind me later</string>
+    <string name="update_action_never">Don\'t show again</string>
+    <string name="update_downloading_text">Downloading the update… %1$d%%</string>
+    <string name="update_failed_title">Update error</string>
+    <string name="update_download_failed">Failed to download the update</string>
+    <string name="update_icon_cd">Update available</string>
+    <string name="update_settings_title">App update</string>
+    <string name="update_current_version">Current version: %1$s</string>
+    <string name="update_auto_checks">Check for updates automatically</string>
+    <string name="update_check_button">Check for update</string>
+    <string name="update_checking">Checking…</string>
+    <string name="update_check_failed">Failed to check for an update</string>
+    <string name="update_not_found">No update found</string>
+    <string name="update_new_version">New version: %1$s</string>
+    <string name="update_downloaded">APK downloaded, opening the installer…</string>
 </resources>

@@ -1,6 +1,7 @@
 package com.plox.llmtranslate.di
 
 import com.plox.llmtranslate.data.prefs.ModelPreferences
+import com.plox.llmtranslate.data.update.GitHubReleaseRepository
 import com.plox.llmtranslate.domain.AndroidDeviceInfoProvider
 import com.plox.llmtranslate.domain.DeviceInfoProvider
 import com.plox.llmtranslate.domain.ModelManager
@@ -8,6 +9,7 @@ import com.plox.llmtranslate.domain.ModelManagerImpl
 import com.plox.llmtranslate.domain.ModelRetentionProvider
 import com.plox.llmtranslate.domain.UnloadTimeoutProvider
 import com.plox.llmtranslate.domain.runtime.DownloadWatchClock
+import com.plox.llmtranslate.domain.update.UpdateReleaseRepository
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -37,6 +39,10 @@ abstract class DomainModule {
     @Binds
     @Singleton
     abstract fun bindDeviceInfoProvider(impl: AndroidDeviceInfoProvider): DeviceInfoProvider
+
+    @Binds
+    @Singleton
+    abstract fun bindUpdateReleaseRepository(impl: GitHubReleaseRepository): UpdateReleaseRepository
 
     companion object {
         /**

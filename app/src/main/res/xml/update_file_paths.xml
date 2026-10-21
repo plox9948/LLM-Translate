@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Пути FileProvider для самообновления (issue #95): APK-обновление
+    скачивается в кэш-каталог `updates` и отдаётся установщику через
+    content-URI (FileProvider authorities = "com.plox.llmtranslate.fileprovider").
+-->
+<paths>
+    <cache-path name="updates" path="updates" />
+</paths>
