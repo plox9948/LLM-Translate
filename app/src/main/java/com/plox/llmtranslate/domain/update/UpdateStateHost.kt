@@ -96,9 +96,10 @@ class UpdateStateHost @Inject constructor(
 
     /**
      * Автопроверка при старте/возобновлении процесса: гейты — настройка
-     * автопроверок, доступ в сеть, snooze. Скрытая версия («больше не
-     * показывать») НЕ блокирует саму проверку: состояние [UpdateUiState.Available]
-     * выставляется и для неё (иконка обновления), но с showDialog=false.
+     * автопроверок и доступ в сеть. Snooze («напомнить позже») и скрытая
+     * версия («больше не показывать») НЕ блокируют саму проверку: состояние
+     * [UpdateUiState.Available] выставляется и для них (иконка обновления),
+     * но с showDialog=false.
      * У авто-проверки UpToDate/сбой состояние не оставляем — [Idle]
      * (преходящее состояние показывать негде).
      */
@@ -106,15 +107,15 @@ class UpdateStateHost @Inject constructor(
         try {
             if (!preferences.autoUpdateChecksEnabled.first()) return
             if (!internetProbe()) return
-            if (System.currentTimeMillis() < preferences.updateSnoozeUntil.first()) return
 
             _state.value = UpdateUiState.Checking
             when (val result = repo.checkForUpdate(BuildConfig.VERSION_NAME)) {
                 is UpdateCheckResult.UpdateAvailable -> {
                     val suppressed = preferences.updatePromptSuppressedVersion.first()
+                    val snoozed = System.currentTimeMillis() < preferences.updateSnoozeUntil.first()
                     _state.value = UpdateUiState.Available(
                         release = result.release,
-                        showDialog = suppressed != result.release.version
+                        showDialog = !snoozed && suppressed != result.release.version
                     )
                 }
                 UpdateCheckResult.UpToDate -> _state.value = UpdateUiState.Idle

@@ -93,15 +93,17 @@ class UpdateStateHostTest {
     }
 
     @Test
-    fun `snooze in the future blocks the auto check`() = runTest {
+    fun `snooze in the future hides dialog but keeps check and icon`() = runTest {
         every { preferences.updateSnoozeUntil } returns
             flowOf(System.currentTimeMillis() + 60_000L)
         repo.checkResult = UpdateCheckResult.UpdateAvailable(release)
 
         host.checkOnAppStart()
 
-        assertEquals(0, repo.checkCalls)
-        assertEquals(UpdateUiState.Idle, host.state.value)
+        assertEquals(1, repo.checkCalls)
+        val state = host.state.value as UpdateUiState.Available
+        assertEquals(false, state.showDialog)
+        assertEquals(release, state.release)
     }
 
     @Test
