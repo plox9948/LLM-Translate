@@ -36,10 +36,15 @@ private const val JOIN_MARGIN = 4
  *    дорезается по словам наравне с прочими (ревью #79: прежний ранний
  *    возврат «один сегмент — как есть» оставлял сверхбюджетный чанк
  *    нетронутым).
- * 2. Жадная упаковка последовательных сегментов в чанк, пока [tokenCount]
- *    склеенного (через исходные разделители) чанка не превысит [budget];
- *    переполнение — закрытие чанка, разделитель разрыва = разделитель той
- *    границы исходника, на которой произошёл разрыв.
+ * 2. Каждый сегмент — отдельный чанк (1 предложение = 1 чанк): жадная
+ *    упаковка последовательных сегментов удалена — апстрим IndicTrans тоже
+ *    всегда сплитит предложения перед декодом, и на коротких входах
+ *    повторение-цикл исчезает (наблюдение ai4bharat/IndicTrans2 issue #105);
+ *    разделитель склейки смежных чанков = разделитель границы исходника
+ *    между соответствующими сегментами.
+ *    Побочный эффект: декудов больше → длинный многосоставный вход
+ *    медленнее, но детектор вырождения и ретрай локализуются по
+ *    предложению, риск цикла снижается.
  * 3. Одиночный сегмент сам больше бюджета — дорезка по пробелам: слова
  *    накапливаются, пока укладываемся в бюджет; хвост слов уходит в чанк
  *    всегда, даже при превышении (слово длиннее бюджета — [Timber.w]);
@@ -69,10 +74,6 @@ internal fun planChunks(text: String, tokenCount: (String) -> Int, budget: Int):
     // Разделитель ПЕРЕД следующим открываемым чанком: им помечается граница
     // исходника (или внутренний пробел дорезки), на которой закрыт предыдущий.
     var sepBeforeNext = " "
-    // Накопленный незакрытый контент текущего чанка и его оценка в токенах
-    // (сумма токенов составляющих; см. [JOIN_MARGIN]).
-    var current = ""
-    var currentTokens = 0
 
     fun openChunk(content: String) {
         if (chunks.isNotEmpty()) {
@@ -105,28 +106,15 @@ internal fun planChunks(text: String, tokenCount: (String) -> Int, budget: Int):
     for (index in segments.indices) {
         val seg = segments[index]
         val segTokens = tokenCount(seg)
-        val boundarySep = if (index > 0) segSeps[index - 1] else " "
-        val sepTokens = tokenCount(boundarySep)
 
-        // Доупаковка сегмента в текущий чанк, пока целиком помещается.
-        if (current.isNotEmpty() &&
-            fitsJoined(current, currentTokens, boundarySep, sepTokens, seg, segTokens)
-        ) {
-            current += boundarySep + seg
-            currentTokens += sepTokens + segTokens
-            continue
-        }
-        if (current.isNotEmpty()) {
-            openChunk(current)
-            current = ""
-            currentTokens = 0
-            // Следующий чанк склеивается с закрытым разделителем границы разрыва.
-            sepBeforeNext = boundarySep
+        // 1 предложение = 1 чанк: следующий чанк склеивается с закрытым
+        // разделителем границы исходника перед этим сегментом.
+        if (index > 0) {
+            sepBeforeNext = segSeps[index - 1]
         }
 
         if (segTokens <= budget) {
-            current = seg
-            currentTokens = segTokens
+            openChunk(seg)
             continue
         }
 
@@ -155,11 +143,9 @@ internal fun planChunks(text: String, tokenCount: (String) -> Int, budget: Int):
             piece = word
             pieceTokens = wordTokens
         }
-        current = piece
-        currentTokens = pieceTokens
-    }
-    if (current.isNotEmpty()) {
-        openChunk(current)
+        if (piece.isNotEmpty()) {
+            openChunk(piece)
+        }
     }
     return ChunkPlan(chunks, separators)
 }

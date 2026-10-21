@@ -49,11 +49,29 @@ package com.plox.llmtranslate.domain.runtime
  *   целиком), поэтому триммер идемпотентен: trim(trim(x)) == trim(x);
  * - текст без повторов возвращается дословно; после схлопывания слова
  *   соединяются одинарными пробелами.
+ *
+ * Input-aware разрешение (issue #91): у [trim] есть [allowedRepeats] —
+ * множественность повторов соответствующих блоков ВХОДА (считается
+ * [maxSourceRepeats]). Точные повторы, пришедшие из легитимно
+ * повторяющегося входа (абзац из одинаковых предложений при чанкинге
+ * «1 предложение = 1 чанк», «thank you thank you»), разрешены и не
+ * схлопываются; циклы декодера сверх разрешения гасятся как раньше.
+ * Аналог скидки «повтор из входа» в [isDegenerateOutput].
  */
 internal object RepetitionTrimmer {
 
     /** Разделитель слов: компилируется один раз (вызов после каждого декада). */
     private val WHITESPACE = Regex("\\s+")
+
+    /**
+     * Границы токенов для токенизации ВХОДА в [maxSourceRepeats]: пробелы +
+     * пунктуационные границы (данда ।/॥ — см.SentenceSplitter, terminator'ы
+     * `.`/`!`/`?`/`…`, разделительные `,`/`;`/`:`). Токен — максимальная
+     * подстрока без пробелов и без этих знаков: на стыках копий входа,
+     * склеенных пунктуацией без пробела («base।base»), слово одной копии
+     * не сливается с дандой/словом следующей в составной токен.
+     */
+    private val SOURCE_TOKEN_BOUNDARY = Regex("[\\s\\u0964\\u0965.!?,;:…]+")
 
     /**
      * TODO(стоимость): [findDuplicate] — перебор start×period, O(n²) по числу
@@ -69,10 +87,24 @@ internal object RepetitionTrimmer {
      * Убрать повторения декодера: подряд идущие повторы многословных блоков
      * (правило 1) и хвостовой дубль одного слова с пунктуацией (правило 2).
      *
+     * [allowedRepeats] — максимальное число подряд идущих вхождений блока,
+     * легитимное для данного входа (issue #91): считается [maxSourceRepeats]
+     * по тексту чанка. Блок, повторённый в выводе не чаще, чем соответствующий
+     * блок во входе исходника, артефактом декодера НЕ считается (аналог скидки
+     * «повтор из входа» в [isDegenerateOutput]): циклы правила 1 сверх
+     * разрешения схлопываются до [allowedRepeats] вхождений (не до одного),
+     * правило 2 (ровно два вхождения) при [allowedRepeats] >= 2 не
+     * применяется вовсе. По умолчанию 1 — прежнее поведение, зафиксированное
+     * основными тестами.
+     *
      * @param text финальный декодированный текст перевода.
-     * @return текст без дублирующихся блоков; без повторов — исходная строка.
+     * @param allowedRepeats разрешение множественности повторов из входа (>= 1,
+     *        значения < 1 зажимаются к 1).
+     * @return текст без дублирующихся блоков сверх разрешения; без повторов —
+     *         исходная строка.
      */
-    fun trim(text: String): String {
+    fun trim(text: String, allowedRepeats: Int = 1): String {
+        val allowed = maxOf(1, allowedRepeats)
         // Минимум для любого правила — два словесных токена
         // («Hello, Hello.» — даже два токена с прилипшей пунктуацией).
         val words = text.trim().split(WHITESPACE)
@@ -81,15 +113,18 @@ internal object RepetitionTrimmer {
         var current = words
         var changed = false
         while (true) {
-            val dup = findDuplicate(current)
+            val dup = findDuplicate(current, allowed)
             if (dup != null) {
                 current =
-                    current.subList(0, dup.start + dup.period) +
+                    current.subList(0, dup.start + dup.period * allowed) +
                         current.subList(dup.start + dup.period * dup.times, current.size)
                 changed = true
                 continue
             }
-            val single = findSingleDuplicate(current) ?: break
+            // Ровно два вхождения одного слова — внутри разрешения входа
+            // (allowed >= 2): легитимный перенос повтора из входа, не трогаем.
+            val single = if (allowed >= 2) null else findSingleDuplicate(current)
+            if (single == null) break
             current =
                 current.subList(0, single.first + 1) +
                     (if (single.punctTail.isNotEmpty()) listOf(single.punctTail) else emptyList()) +
@@ -97,6 +132,44 @@ internal object RepetitionTrimmer {
             changed = true
         }
         return if (changed) current.joinToString(" ") else text
+    }
+
+    /**
+     * Максимальная подряд идущая множественность блока слов в тексте ВХОДА
+     * (issue #91) — основа разрешения [trim]. Декодер переносит легитимные
+     * повторы входа в вывод (абзац, собранный из одинаковых предложений;
+     * «no no no»; «thank you thank you»), и триммер обязан их сохранить,
+     * продолжая сжимать циклы декодера сверх множественности входа.
+     *
+     * Считается максимум повторов подряд любого блока (период от 1 слова);
+     * сравнение по «голым» токенам (без прилипшей пунктуации, без учёта
+     * регистра). Токенизация входа — по границам [SOURCE_TOKEN_BOUNDARY]
+     * (пробелы + пунктуационные границы): склейка копий входа дандой или
+     * точкой без пробела не склеивает токен на стыке копий (девайс-верификация
+     * #91:longNepaliParagraphChunking, плотная склейка `base।base।base`).
+     * Минимум — 1 (входа без подряд идущих повторов нет).
+     *
+     * Стоимость — O(n^2) по числу слов входа: считается один раз на чанк
+     * (или на проверку), не в цикле триммера.
+     */
+    fun maxSourceRepeats(sourceText: String): Int {
+        val words = sourceText.split(SOURCE_TOKEN_BOUNDARY)
+            .map { word -> bare(word).lowercase() }
+            .filter { word -> word.isNotEmpty() }
+        var best = 1
+        for (start in words.indices) {
+            for (period in 1..(words.size - start) / 2) {
+                var len = 0
+                while (start + period + len < words.size &&
+                    words[start + len] == words[start + period + len]
+                ) {
+                    len++
+                }
+                val times = 1 + len / period
+                if (times > best) best = times
+            }
+        }
+        return best
     }
 
     /**
@@ -117,8 +190,10 @@ internal object RepetitionTrimmer {
 
     /**
      * Поиск кандидата с максимумом удаляемых слов (при равенстве — к хвосту).
+     * Кандидатами считаются только повторения с числом вхождений больше
+     * [allowedRepeats]: повторы в пределах разрешения входа легитимны.
      */
-    private fun findDuplicate(words: List<String>): Duplicate? {
+    private fun findDuplicate(words: List<String>, allowedRepeats: Int): Duplicate? {
         var best: Duplicate? = null
         for (start in words.indices) {
             val maxPeriod = (words.size - start) / 2
@@ -136,7 +211,7 @@ internal object RepetitionTrimmer {
                     len++
                 }
                 val times = 1 + len / period
-                if (times >= 2) {
+                if (times > allowedRepeats) {
                     val candidate = Duplicate(start, period, times)
                     val cur = best
                     if (cur == null || candidate.removedWords > cur.removedWords ||

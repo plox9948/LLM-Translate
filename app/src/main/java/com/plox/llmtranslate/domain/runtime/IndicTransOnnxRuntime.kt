@@ -70,7 +70,12 @@ class IndicTransOnnxRuntime @Inject constructor(
          * EOS, а рост от punc_norm уже учтён в оценке.
          */
         private const val CHUNK_BUDGET_CAP = 250
-        /** Размер no_repeat_ngram для ретрайного прохода при вырожденном выводе (issue #62). */
+        /**
+         * Размер no_repeat_ngram ОСНОВНОГО прохода (issue #62, артефакты
+         * dist-200M): маска гасит цикл генерации с первого токена, EOS она
+         * не блокирует. Ретрай идёт БЕЗ маски (чистый greedy — фолбэк для
+         * легитимных повторных 3-грамм входа вроде «no no no…»).
+         */
         private const val NO_REPEAT_NGRAM_SIZE = 3
         /** Значение по умолчанию для unk_id из tokenizer_meta.json (в каталоге = 3). */
         private const val DEFAULT_UNK_ID = 3
@@ -276,6 +281,8 @@ class IndicTransOnnxRuntime @Inject constructor(
      * `encode(preprocess(...))`, а не сырой текст (прежняя оценка по сырому
      * тексту не видела добавленные пунктуацией токены и допускала превышение
      * лимита). Сверху накладывается [CHUNK_BUDGET_CAP] = 250 как страховка.
+     * [planChunks] отдаёт каждое предложение отдельным чанком, поэтому
+     * бюджет ограничивает длину ОДНОГО предложения, а не всего входа.
      */
     private fun chunkBudget(srcTok: TokenizerJson): Int {
         val eosTokens = if (srcTok.eosId() != null) 1 else 0
@@ -293,7 +300,9 @@ class IndicTransOnnxRuntime @Inject constructor(
      * Язык задаётся flores-префиксом в тексте по схеме IndicTransToolkit.
      * Вход энкодера: `punc_norm(prompt) → encode → clamp → +EOS`
      * (preprocess уже включает punc_norm; EOS на входе — симметрия с Marian).
-     * Выход: `decode → RepetitionTrimmer.trim → postprocess`
+     * Выход: `greedy с маской no_repeat_ngram → (при вырождении — ретрай
+     * чистым greedy) → RepetitionTrimmer.trim (на выходе КАЖДОГО чанка, с
+     * разрешением повторов по входу чанка — issue #91) → postprocess`
      * (детокенизация строго после триммера — см. комментарий в теле).
      * Инференс идёт по активному пучку кэша — [ensureLoaded] вызывают перед
      * переводом, поэтому активный пучок соответствует модели направления;
@@ -301,9 +310,17 @@ class IndicTransOnnxRuntime @Inject constructor(
      *
      * Чанкинг (issue #63): IndicTrans кодирует вход целиком в окно
      * позиционных эмбеддингов (258), поэтому вход разбивается [planChunks]
-     * на чанки по бюджету текста [chunkBudget]; каждый чанк проходит ту же
-     * цепочку [translateSingleChunk], успешные переводы склеиваются
-     * разделителями границ исходника. Один чанк — поведение как раньше.
+     * на чанки по бюджету текста [chunkBudget]; каждое предложение —
+     * отдельный чанк (короткие входы не зацикливаются — наблюдение апстрим
+      * issue #105), каждый чанк проходит ту же цепочку [translateSingleChunk],
+      * успешные переводы склеиваются разделителями границ исходника.
+      * Склейка переводов триммером повторно НЕ обрабатывается (issue #91):
+      * идентичные переводы легитимно повторяющихся предложений исходника
+      * (абзац «base।base।base।») остаются в итоге как есть; циклы гасятся
+      * на выходе каждого чанка.
+      * Декудов больше → длинный многосоставный вход медленнее, но детектор
+     * вырождения и ретрай локализуются по предложению. Один чанк —
+     * поведение как раньше.
      */
     override suspend fun translate(text: String, from: String, to: String): Result<String> =
         withContext(Dispatchers.IO) {
@@ -415,8 +432,9 @@ class IndicTransOnnxRuntime @Inject constructor(
     /**
      * Один проход полной цепочки перевода ОДНОГО чанка текста:
      * `preprocess (префикс + punc_norm) → encode → clamp → +EOS →
-     * greedy-проход → при вырожденном выводе ровно один ретрай с
-     * no_repeat_ngram → RepetitionTrimmer → postprocess`.
+     * greedy-проход с маской no_repeat_ngram → при вырожденном выводе
+     * ровно один ретрай чистым greedy → RepetitionTrimmer (с разрешением
+     * повторов из текста чанка, issue #91) → postprocess`.
      * Вызывается из [translate] под мьютексом [engineCache] — по одному разу на чанк
      * (issue #63) или один раз на весь текст, когда план одночанковый.
      */
@@ -465,14 +483,26 @@ class IndicTransOnnxRuntime @Inject constructor(
 
         val attentionMask = LongArray(inputIds.size) { 1L }
 
-        // Decode-hygiene (issue #62): первый проход — чистый greedy
-        // без маски; если вывод вырожден (хвостовой цикл / бедный
-        // словарь / упор в лимит без EOS) — РОВНО ОДИН ретрай с
-        // жёсткой маской no_repeat_ngram. Детектор — по TRIMMED
-        // тексту; порядок decode → trim → postprocess фиксирован,
+        // Decode-hygiene (issue #62, артефакты dist-200M): первый проход —
+        // с жёсткой маской no_repeat_ngram, цикл генерации гасится ДО
+        // детокенизации с первого токена (EOS маска не блокирует); если
+        // вывод вырожден (хвостовой цикл / бедный словарь / упор в лимит
+        // без EOS) — РОВНО ОДИН ретрай чистым greedy: фолбэк для легитимных
+        // повторных 3-грамм ВХОДА, которые маска запрещает. Детектор — по
+        // TRIMMED тексту; порядок decode → trim → postprocess фиксирован,
         // postprocess — финальному победителю и ровно один раз.
+        // Триммер с разрешением из текста чанка (issue #91): блок, повторённый
+        // во входе чанка подряд, переносится декодером в вывод легитимно
+        // («thank you thank you», беспунктуный «base base base» одним чанком) —
+        // RepetitionTrimmer сохраняет его до множественности входа и сжимает
+        // только циклы декодера сверх разрешения (аналог скидки
+        // «повтор из входа» в isDegenerateOutput). Для входа без подряд идущих
+        // повторов разрешение = 1 — поведение триммера прежнее.
+        val allowedRepeats = RepetitionTrimmer.maxSourceRepeats(text)
         val (firstText, firstOutcome) = translateOnce(
-            ortEnv, bundle, inputIds, attentionMask, noRepeatNgramSize = 0
+            ortEnv, bundle, inputIds, attentionMask,
+            noRepeatNgramSize = NO_REPEAT_NGRAM_SIZE,
+            allowedRepeats = allowedRepeats
         )
         // sourceText — текст чанка: повторяющийся паттерн ВЫХОДА, присутствующий
         // и во входе («no no no…»), не считается вырождением (ревью).
@@ -492,22 +522,24 @@ class IndicTransOnnxRuntime @Inject constructor(
             currentCoroutineContext().ensureActive()
             val (retryText, retryOutcome) = translateOnce(
                 ortEnv, bundle, inputIds, attentionMask,
-                noRepeatNgramSize = NO_REPEAT_NGRAM_SIZE
+                noRepeatNgramSize = 0,
+                allowedRepeats = allowedRepeats
             )
             val retryDegenerate = isDegenerateOutput(
                 retryText, retryOutcome.hitMaxLength, sourceText = text
             )
             Timber.d(
-                "IndicTrans: ретрай (ngram=$NO_REPEAT_NGRAM_SIZE) " +
+                "IndicTrans: ретрай (чистый greedy) " +
                     "вырожден=$retryDegenerate " +
                     "(eosReached=${retryOutcome.eosReached}, " +
                     "hitMaxLength=${retryOutcome.hitMaxLength})"
             )
             if (retryDegenerate) {
                 // Оба прохода вырождены (типично для легитимных повторов ВХОДА,
-                // где ретрай с маской тоже вырождается): ошибка теряла перевод
-                // целиком — берём лучший по доле уникальных слов из двух,
-                // при равенстве — первый (чистый greedy ближе к входу) (ревью).
+                // где основной проход с маской вырождается и ретрай без маски
+                // тоже): ошибка теряла перевод целиком — берём лучший по доле
+                // уникальных слов из двух, при равенстве — первый (маскированный
+                // ближе к корректному завершению фразы) (ревью).
                 if (uniqueWordRatio(retryText) > uniqueWordRatio(firstText)) {
                     retryText
                 } else {
@@ -544,7 +576,8 @@ class IndicTransOnnxRuntime @Inject constructor(
 
     /**
      * Один проход генерации: encoder.run → greedyDecode → декодирование →
-     * trim. Возвращает TRIMMED текст и флаги остановки цикла
+     * trim ([allowedRepeats] — разрешение повторов из текста чанка, issue #91).
+     * Возвращает TRIMMED текст и флаги остановки цикла
      * ([DecodeOutcome]). Нативные ресурсы прохода (входы энкодера и
      * encOutput) закрываются на любом пути — штатном, раннем выходе по
      * EOS/лимиту, отмена, исключение; encOutput закрывается до возврата,
@@ -561,7 +594,8 @@ class IndicTransOnnxRuntime @Inject constructor(
         bundle: ModelBundle,
         inputIds: LongArray,
         attentionMask: LongArray,
-        noRepeatNgramSize: Int
+        noRepeatNgramSize: Int,
+        allowedRepeats: Int
     ): Pair<String, DecodeOutcome> {
         val enc = bundle.encoderSession
         val dec = bundle.decoderSession
@@ -624,7 +658,9 @@ class IndicTransOnnxRuntime @Inject constructor(
             // Дедупликация полного повтора фразы декодером (issue #28):
             // post-processing без штрафов в логитах — penalty менял
             // бы качество IndicTrans2-переводов (у Marian свой penalty).
-            val trimmed = RepetitionTrimmer.trim(rawText)
+            // Разрешение из входа чанка (issue #91): точные повторы,
+            // не превышающие множественность блока во входе, легитимны.
+            val trimmed = RepetitionTrimmer.trim(rawText, allowedRepeats)
             if (trimmed != rawText) {
                 Timber.d("IndicTrans: схлопнут повтор: [$rawText] => [$trimmed]")
             }
